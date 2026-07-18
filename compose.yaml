@@ -1,5 +1,9 @@
 name: open-soverign-blog
 
+x-redis-environment: &redis-environment
+  OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+  REDISCLI_AUTH: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+
 x-redis-common: &redis-common
   image: redis:8.8.0-alpine3.23
   # Commands pass through a shell for environment expansion and Sentinel
@@ -8,8 +12,7 @@ x-redis-common: &redis-common
   user: "redis:redis"
   restart: unless-stopped
   environment:
-    OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
-    REDISCLI_AUTH: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+    <<: *redis-environment
   read_only: true
   cap_drop:
     - ALL
@@ -29,10 +32,21 @@ x-sentinel-common: &sentinel-common
       if [ ! -s /data/sentinel.conf ]; then
         cp /bootstrap/sentinel.conf /data/sentinel.conf
       fi
+      announce_host="$${OSB_SENTINEL_ANNOUNCE_HOST:?set the stable Sentinel service hostname}"
+      case "$$announce_host" in
+        *[!a-z0-9-]* ) echo >&2 "invalid Sentinel announce hostname"; exit 1 ;;
+      esac
       # Preserve Sentinel's rewritten failover state across restarts, while
-      # refreshing only the two credential directives for password rotation.
-      sed -i '/^sentinel auth-pass osb-primary /d; /^requirepass /d' /data/sentinel.conf
-      printf '\nsentinel auth-pass osb-primary %s\nrequirepass %s\n' "$${OSB_REDIS_PASSWORD}" "$${OSB_REDIS_PASSWORD}" >> /data/sentinel.conf
+      # refreshing this node's stable identity and credentials. Every Redis and
+      # Sentinel participant consistently announces a Compose DNS hostname.
+      sed -i \
+        -e '/^sentinel announce-ip /d' \
+        -e '/^sentinel announce-port /d' \
+        -e '/^sentinel auth-pass osb-primary /d' \
+        -e '/^requirepass /d' \
+        /data/sentinel.conf
+      printf '\nsentinel announce-ip %s\nsentinel announce-port 26379\nsentinel auth-pass osb-primary %s\nrequirepass %s\n' \
+        "$$announce_host" "$${OSB_REDIS_PASSWORD}" "$${OSB_REDIS_PASSWORD}" >> /data/sentinel.conf
       chmod 600 /data/sentinel.conf
       exec redis-sentinel /data/sentinel.conf
   volumes:
@@ -238,6 +252,8 @@ services:
           --appendfsync everysec \
           --aof-use-rdb-preamble yes \
           --save 60 1000 \
+          --replica-announce-ip redis-primary \
+          --replica-announce-port 6379 \
           --maxmemory "${OSB_REDIS_MAXMEMORY:-256mb}" \
           --maxmemory-policy volatile-lfu \
           --requirepass "$${OSB_REDIS_PASSWORD}" \
@@ -265,6 +281,8 @@ services:
           --aof-use-rdb-preamble yes \
           --save 60 1000 \
           --replica-read-only yes \
+          --replica-announce-ip redis-replica \
+          --replica-announce-port 6379 \
           --maxmemory "${OSB_REDIS_MAXMEMORY:-256mb}" \
           --maxmemory-policy volatile-lfu \
           --requirepass "$${OSB_REDIS_PASSWORD}" \
@@ -283,6 +301,9 @@ services:
 
   redis-sentinel-1:
     <<: *sentinel-common
+    environment:
+      <<: *redis-environment
+      OSB_SENTINEL_ANNOUNCE_HOST: redis-sentinel-1
     volumes:
       - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
       - redis-sentinel-1:/data
@@ -294,6 +315,9 @@ services:
 
   redis-sentinel-2:
     <<: *sentinel-common
+    environment:
+      <<: *redis-environment
+      OSB_SENTINEL_ANNOUNCE_HOST: redis-sentinel-2
     volumes:
       - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
       - redis-sentinel-2:/data
@@ -305,6 +329,9 @@ services:
 
   redis-sentinel-3:
     <<: *sentinel-common
+    environment:
+      <<: *redis-environment
+      OSB_SENTINEL_ANNOUNCE_HOST: redis-sentinel-3
     volumes:
       - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
       - redis-sentinel-3:/data

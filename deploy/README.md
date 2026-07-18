@@ -21,7 +21,12 @@ docker compose exec -T blog osb doctor --config /config/config.toml
 
 The online doctor runs inside the application container so it can resolve the
 private Redis/Sentinel service names without exposing their ports or secrets
-on the host.
+on the host. Every Redis and Sentinel process announces a stable Compose
+service hostname; mixing ephemeral container IPs with hostnames makes promotion
+state unsafe across container recreation. The stack tests a non-responsive
+primary while that network identity remains present. Docker's restart policy
+handles an exited container; deleting the whole container or losing the host is
+an orchestrator/recovery event, not another Sentinel failure domain.
 
 The published host port binds to loopback. Put a TLS reverse proxy in front and
 set `OSB_PUBLIC_URL` to the exact canonical origin. Do not mount a Docker socket.

@@ -124,6 +124,12 @@ survive loss of that host; canonical backups do. Do not add an application loop
 that periodically empties and reloads Redis: it creates another consistency
 protocol while duplicating Redis' own persistence and replication.
 
+Redis nodes and Sentinels announce stable Compose service hostnames consistently,
+and Sentinel rewrites the promoted hostname into its private persistent config.
+Ephemeral container IPs are never used as durable control-plane identities.
+Sentinel handles an unresponsive Redis process while Docker's restart policy
+handles an exited container; host loss still requires canonical backup restore.
+
 The dedicated Redis nodes use `volatile-lfu`: only TTL-bound response
 derivatives are eviction candidates, while the non-expiring cache-generation
 key is retained. If memory is exhausted before a derivative can be stored, the
