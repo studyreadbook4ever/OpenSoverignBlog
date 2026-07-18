@@ -1,0 +1,323 @@
+name: open-soverign-blog
+
+x-redis-common: &redis-common
+  image: redis:8.8.0-alpine3.23
+  # Commands pass through a shell for environment expansion and Sentinel
+  # initialization, so the official entrypoint cannot perform its usual
+  # privilege drop. Start directly as the image's redis user instead.
+  user: "redis:redis"
+  restart: unless-stopped
+  environment:
+    OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+    REDISCLI_AUTH: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:size=16m,mode=1777
+  stop_grace_period: 20s
+
+x-sentinel-common: &sentinel-common
+  <<: *redis-common
+  command:
+    - sh
+    - -ec
+    - |
+      umask 0077
+      if [ ! -s /data/sentinel.conf ]; then
+        cp /bootstrap/sentinel.conf /data/sentinel.conf
+      fi
+      # Preserve Sentinel's rewritten failover state across restarts, while
+      # refreshing only the two credential directives for password rotation.
+      sed -i '/^sentinel auth-pass osb-primary /d; /^requirepass /d' /data/sentinel.conf
+      printf '\nsentinel auth-pass osb-primary %s\nrequirepass %s\n' "$${OSB_REDIS_PASSWORD}" "$${OSB_REDIS_PASSWORD}" >> /data/sentinel.conf
+      chmod 600 /data/sentinel.conf
+      exec redis-sentinel /data/sentinel.conf
+  volumes:
+    - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
+  healthcheck:
+    test: ["CMD", "redis-cli", "-p", "26379", "PING"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
+
+services:
+  osb-storage-init:
+    build:
+      context: .
+    image: open-soverign-blog:local
+    user: "0:0"
+    network_mode: "none"
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      # Bootstrap creates the private backup tree as the invoking host user.
+      # This short-lived, network-isolated initializer needs to traverse that
+      # 0700 tree before handing it to the unprivileged application identity.
+      - DAC_OVERRIDE
+      # This capability is needed for chmod after ownership moves to 65532.
+      # It exists only in this short-lived initializer, not the application.
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - sh
+      - -ec
+      - |
+        [ "$$(stat -c '%u:%g' /data)" = "65532:65532" ] || chown 65532:65532 /data
+        [ "$$(stat -c '%a' /data)" = "700" ] || chmod 700 /data
+
+        backup_fs="$$(stat -f -c '%T' /backups)"
+        case "$$backup_fs" in
+          nfs*)
+            # Root-squashed NFS cannot be repaired by container capabilities.
+            # The operator must provision the entire tree as UID/GID 65532,
+            # with directories 0700 and regular files 0600.
+            [ "$$(stat -c '%u:%g:%a' /backups)" = "65532:65532:700" ] || {
+              echo >&2 "root-squashed NFS backup root must be pre-provisioned as 65532:65532 mode 0700"
+              exit 1
+            }
+            ;;
+          *)
+            # Do not follow symlinks or cross into nested mounts. Verification
+            # still rejects non-regular bundle entries before any restore.
+            find -P /backups -xdev \( ! -uid 65532 -o ! -gid 65532 \) -exec chown -h 65532:65532 {} +
+            find -P /backups -xdev -type d ! -perm 0700 -exec chmod 0700 {} +
+            find -P /backups -xdev -type f ! -perm 0600 -exec chmod 0600 {} +
+            ;;
+        esac
+    volumes:
+      - osb-data:/data
+      - type: bind
+        source: ${OSB_BACKUP_VOLUME:-./.osb-backups}
+        target: /backups
+    restart: "no"
+
+  blog:
+    build:
+      context: .
+    image: open-soverign-blog:local
+    restart: unless-stopped
+    # Give an in-flight SQLite/blob generation time to finish its atomic rename
+    # after the HTTP server receives SIGTERM.
+    stop_grace_period: 60s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    ports:
+      - "127.0.0.1:${OSB_PORT:-8787}:8787"
+    environment:
+      OSB_BIND: "0.0.0.0:8787"
+      OSB_CONFIG: "/config/config.toml"
+      OSB_PUBLIC_URL: "${OSB_PUBLIC_URL:-}"
+      OSB_ARTICLE_BASE_PATH: "${OSB_ARTICLE_BASE_PATH:-}"
+      OSB_SITE_ID: "${OSB_SITE_ID:-}"
+      OSB_NO_INDEX: "${OSB_NO_INDEX:-}"
+      OSB_INTENT: "${OSB_INTENT:-}"
+      OSB_AUTH_MODE: "${OSB_AUTH_MODE:-}"
+      OSB_REGISTRATION_OPEN: "${OSB_REGISTRATION_OPEN:-}"
+      OSB_COMMENTS: "${OSB_COMMENTS:-}"
+      OSB_COLLABORATION: "${OSB_COLLABORATION:-}"
+      OSB_CUSTOM_CSS: "${OSB_CUSTOM_CSS:-}"
+      OSB_CUSTOM_CSS_FILE: "${OSB_CUSTOM_CSS_FILE:-}"
+      OSB_AGENT_DISCOVERY: "${OSB_AGENT_DISCOVERY:-}"
+      OSB_DELIVERY_ONLY: "${OSB_DELIVERY_ONLY:-}"
+      OSB_ADMIN_TOKEN: "${OSB_ADMIN_TOKEN:-}"
+      OSB_FEATURES: "${OSB_FEATURES:-}"
+      OSB_REDIS_TOPOLOGY: "${OSB_REDIS_TOPOLOGY:-}"
+      OSB_REDIS_URL: "${OSB_REDIS_URL:-}"
+      OSB_REDIS_SENTINELS: "${OSB_REDIS_SENTINELS:-}"
+      OSB_REDIS_SENTINEL_MASTER: "${OSB_REDIS_SENTINEL_MASTER:-}"
+      OSB_REDIS_NAMESPACE: "${OSB_REDIS_NAMESPACE:-}"
+      OSB_REDIS_REQUIRED: "${OSB_REDIS_REQUIRED:-}"
+      OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+      OSB_CACHE_SIGNING_KEY: "${OSB_CACHE_SIGNING_KEY:?set OSB_CACHE_SIGNING_KEY; osb bootstrap generates it}"
+      OSB_CONTENT_RELEASE: "${OSB_CONTENT_RELEASE:-}"
+      OSB_REDIS_TTL_SECONDS: "${OSB_REDIS_TTL_SECONDS:-}"
+      OSB_REDIS_CONNECT_TIMEOUT_MS: "${OSB_REDIS_CONNECT_TIMEOUT_MS:-}"
+      OSB_DATABASE_PROFILE: "${OSB_DATABASE_PROFILE:-}"
+      OSB_MANAGED_BACKUPS: "${OSB_MANAGED_BACKUPS:-}"
+      OSB_BACKUP_DIRECTORY: "${OSB_BACKUP_DIRECTORY:-}"
+      OSB_BACKUP_INTERVAL_MINUTES: "${OSB_BACKUP_INTERVAL_MINUTES:-}"
+      OSB_BACKUP_RETENTION: "${OSB_BACKUP_RETENTION:-}"
+      RUST_LOG: "${RUST_LOG:-info}"
+    volumes:
+      - type: volume
+        source: osb-data
+        target: /data
+        read_only: ${OSB_DELIVERY_ONLY:-false}
+      # A host path is the safe default so the canonical backup generations are
+      # visibly separate from the live Docker volume. Point this at NAS/NFS for
+      # a physical failure domain: OSB_BACKUP_VOLUME=/mnt/nas/osb-backups.
+      - type: bind
+        source: ${OSB_BACKUP_VOLUME:-./.osb-backups}
+        target: /backups
+        read_only: ${OSB_DELIVERY_ONLY:-false}
+      - type: bind
+        source: ${OSB_CONFIG_SOURCE:-./config.example.toml}
+        target: /config/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OSB_CUSTOM_CSS_SOURCE:-./deploy/custom.css}
+        target: /config/custom.css
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      osb-storage-init:
+        condition: service_completed_successfully
+      redis-sentinel-1:
+        condition: service_healthy
+      redis-sentinel-2:
+        condition: service_healthy
+      redis-sentinel-3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # Delivery nodes mount canonical data read-only at runtime. This explicitly
+  # targeted maintenance service is the only Compose path that can restore a
+  # verified generation into /data; it has no network and reads /backups RO.
+  osb-restore:
+    profiles:
+      - maintenance
+    build:
+      context: .
+    image: open-soverign-blog:local
+    user: "65532:65532"
+    network_mode: "none"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    entrypoint:
+      - /usr/local/bin/osb
+    environment:
+      OSB_DATABASE: /data/open-soverign-blog.db
+      OSB_BLOB_DIRECTORY: /data/blobs
+    volumes:
+      - type: volume
+        source: osb-data
+        target: /data
+      - type: bind
+        source: ${OSB_BACKUP_VOLUME:-./.osb-backups}
+        target: /backups
+        read_only: true
+    depends_on:
+      osb-storage-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  redis-primary:
+    <<: *redis-common
+    command:
+    - sh
+    - -ec
+    - |
+        umask 0077
+        exec redis-server \
+          --appendonly yes \
+          --appendfsync everysec \
+          --aof-use-rdb-preamble yes \
+          --save 60 1000 \
+          --maxmemory "${OSB_REDIS_MAXMEMORY:-256mb}" \
+          --maxmemory-policy volatile-lfu \
+          --requirepass "$${OSB_REDIS_PASSWORD}" \
+          --masterauth "$${OSB_REDIS_PASSWORD}"
+    volumes:
+      - redis-primary:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis-replica:
+    <<: *redis-common
+    command:
+    - sh
+    - -ec
+    - |
+        umask 0077
+        exec redis-server \
+          --replicaof redis-primary 6379 \
+          --appendonly yes \
+          --appendfsync everysec \
+          --aof-use-rdb-preamble yes \
+          --save 60 1000 \
+          --replica-read-only yes \
+          --maxmemory "${OSB_REDIS_MAXMEMORY:-256mb}" \
+          --maxmemory-policy volatile-lfu \
+          --requirepass "$${OSB_REDIS_PASSWORD}" \
+          --masterauth "$${OSB_REDIS_PASSWORD}"
+    volumes:
+      - redis-replica:/data
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "PING"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  redis-sentinel-1:
+    <<: *sentinel-common
+    volumes:
+      - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
+      - redis-sentinel-1:/data
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+
+  redis-sentinel-2:
+    <<: *sentinel-common
+    volumes:
+      - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
+      - redis-sentinel-2:/data
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+
+  redis-sentinel-3:
+    <<: *sentinel-common
+    volumes:
+      - ./deploy/redis/sentinel.conf:/bootstrap/sentinel.conf:ro
+      - redis-sentinel-3:/data
+    depends_on:
+      redis-primary:
+        condition: service_healthy
+      redis-replica:
+        condition: service_healthy
+
+volumes:
+  osb-data:
+  redis-primary:
+  redis-replica:
+  redis-sentinel-1:
+  redis-sentinel-2:
+  redis-sentinel-3:

@@ -1,0 +1,60 @@
+schemaVersion: "1.0"
+id: github.sponsors
+displayName: GitHub Sponsors
+homepage: https://github.com/sponsors
+categories: [sponsorship, donation]
+integrationModes: [static, redirect, server]
+supportedRegions:
+  - provider-documented supported regions for recipients
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: null
+  kycRequired: unknown
+  notes: Individuals must contribute to open source and reside in a supported region; contributing organizations must legally operate in a supported region.
+payoutSummary: Sponsorships can be one-time or monthly. GitHub documents no fee for sponsorships from personal accounts and up to 6% for sponsorships from organization accounts; recipient payout and tax conditions still vary.
+authFields:
+  - GitHub API token for optional server-side GraphQL integration
+requiredDomains: [github.com, api.github.com]
+cookiesAndStorage:
+  - kind: none
+    purpose: A plain first-party-rendered outbound link performs no GitHub device access on the blog before the visitor follows it.
+    retention: none before navigation
+    firstParty: true
+dataAccessed:
+  - sponsorship data explicitly requested through optional GraphQL scopes
+consentPurposeIds: []
+personalizationSupported: false
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks: []
+contentRestrictions:
+  - GitHub funding links support direct financial support for open-source projects and are not supported for advertising, political, community, or charity fundraising.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents:
+  - optional static sponsor link or operator-hosted button asset
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: About GitHub Sponsors
+    url: https://docs.github.com/en/sponsors/getting-started-with-github-sponsors/about-github-sponsors
+    checkedAt: 2026-07-18
+  - title: Getting started with the Sponsors GraphQL API
+    url: https://docs.github.com/en/sponsors/integrating-with-github-sponsors/getting-started-with-the-sponsors-graphql-api
+    checkedAt: 2026-07-18
+  - title: Viewing your sponsors and sponsorships
+    url: https://docs.github.com/en/sponsors/receiving-sponsorships-through-github-sponsors/viewing-your-sponsors-and-sponsorships?apiVersion=2022-11-28
+    checkedAt: 2026-07-18
+  - title: Displaying a sponsor button in your repository
+    url: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository?apiVersion=2022-11-28
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: eligibility.kycRequired
+    note: Recipient payment, tax, and identity-verification details were not established from the cited pages.
+  - field: supportedRegions
+    note: The official source maintains the authoritative list; this entry deliberately does not duplicate a long, volatile country enumeration.
+  - field: cookiesAndStorage after navigation
+    note: GitHub destination-page cookies and retention are outside the static-link boundary and must be reviewed if an iframe or remote widget is ever proposed.
+knownRisks:
+  - Adding GraphQL or webhooks changes this from a no-runtime static link into a scoped data integration and requires separate secret, data-minimization, and retention review.
+  - A GitHub Sponsors link must not be represented as an advertisement placement or provider endorsement.

@@ -1,0 +1,41 @@
+schemaVersion: "1.0"
+id: example.open-soverign-blog.direct-sponsor
+displayName: Example direct sponsor (not a real provider)
+example: true
+categories: [direct, sponsorship, house]
+integrationModes: [static, server]
+supportedRegions: [operator-defined]
+eligibility:
+  independentDevelopers: yes
+  minimumTraffic: null
+  kycRequired: conditional
+  notes: The operator contracts directly with a sponsor; this entry makes no legal or payment claim.
+payoutSummary: Operator-defined outside the content engine.
+authFields: []
+requiredDomains: []
+cookiesAndStorage:
+  - kind: none
+    purpose: Static first-party creative with no behavioral measurement.
+    retention: none
+    firstParty: true
+dataAccessed: []
+consentPurposeIds: []
+personalizationSupported: false
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks: []
+contentRestrictions:
+  - Creative must be operator-approved, visibly disclosed, and served as a first-party asset.
+adapterStatus: core-maintained
+adapterPackage: org.open-soverign-blog.monetization-policy
+selfHostedComponents:
+  - content-addressed creative asset
+  - aggregate impression counter (optional)
+lastVerified: 2026-07-18
+maintainers: [OpenSoverignBlog maintainers]
+sources:
+  - title: OpenSoverignBlog fictional provider template
+    url: https://github.com/studyreadbook4ever/OpenSoverignBlog/blob/main/providers/README.md
+    checkedAt: 2026-07-18
+knownRisks:
+  - A direct campaign can still require consent or another legal basis if tracking, identifiers, or external resources are added.

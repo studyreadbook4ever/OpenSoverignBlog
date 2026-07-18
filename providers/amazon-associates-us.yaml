@@ -1,0 +1,70 @@
+schemaVersion: "1.0"
+id: amazon.associates.us
+displayName: Amazon Associates (Amazon.com)
+homepage: https://affiliate-program.amazon.com/
+categories: [affiliate]
+integrationModes: [static, redirect, server]
+supportedRegions:
+  - Amazon.com marketplace; applicant and payment eligibility varies
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: "No numeric pageview threshold was established. The account-review help page requires three qualifying sales within 180 days; Creators API prerequisites state at least 10 qualifying sales in the past 30 days for API access."
+  kycRequired: unknown
+  notes: Applicants need original established content, tagged Special Links, policy compliance, and successful review. This entry covers Amazon.com, not other locale programs.
+payoutSummary: Associates receive commission income for qualifying purchases under the current Commission Income Statement; rates, exclusions, thresholds, taxes, and payment methods are program- and locale-specific.
+authFields: [associateTag, creatorsApiCredentialId, creatorsApiCredentialSecret]
+requiredDomains: [amazon.com]
+cookiesAndStorage:
+  - kind: none
+    purpose: A plain tagged text link performs no Amazon device access on the publisher origin before the visitor actively follows it.
+    retention: none before navigation
+    firstParty: true
+dataAccessed:
+  - referral click and tagged-link attribution
+  - publisher site and user information obtained in connection with Special Links or Program Content
+  - product catalog fields requested through the optional Creators API
+consentPurposeIds: [affiliate.attribution]
+personalizationSupported: unknown
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks: []
+contentRestrictions:
+  - Every affiliate link needs a clear and conspicuous link-level disclosure and the site must display the Associates identification required by the Operating Agreement.
+  - Special Links and Program Content may be used only as permitted by the Operating Agreement and Participation Requirements; framing, silent redirects, altered content, incentives, and specified placements are restricted.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents:
+  - operator-authored disclosure and tagged text-link renderer
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: Creators API
+    url: https://affiliate-program.amazon.com/creatorsapi/docs/
+    checkedAt: 2026-07-18
+  - title: Associates Program Operating Agreement
+    url: https://affiliate-program.amazon.com/help/operating/agreement
+    checkedAt: 2026-07-18
+  - title: Associates Program Participation Requirements
+    url: https://affiliate-program.amazon.com/help/operating/participation/
+    checkedAt: 2026-07-18
+  - title: Why do I have to identify myself as an Associate?
+    url: https://affiliate-program.amazon.com/help/node/topic/GHQNZAU6669EZS98
+    checkedAt: 2026-07-18
+  - title: Account Dormancy and application review
+    url: https://affiliate-program.amazon.com/help/node/topic/G7MJTPEP9NC3YKMG
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: eligibility.kycRequired
+    note: Tax information can be requested, but a precise identity-verification rule was not established from the cited pages.
+  - field: supportedRegions
+    note: This is deliberately scoped to Amazon.com; residence, bank, tax, sanctions, and locale-program eligibility must be checked for the operator.
+  - field: requiredDomains and cspRequirements
+    note: amazon.com covers the static destination, but exact Creators API endpoints, product-content asset domains, redirects, and regional domains must be obtained from current credentials and documentation before API use.
+  - field: cookiesAndStorage after navigation
+    note: Amazon destination-page storage and retention were not inventoried; the static seed guarantees only that the blog does not preload or embed Amazon resources.
+  - field: personalizationSupported
+    note: The API can return product recommendations and Amazon can process referral activity, but the cited pages do not justify a configuration-wide boolean about behavioral personalization.
+knownRisks:
+  - Product data, images, marks, caching, link formats, and disclosures are contract-controlled and can impose obligations beyond this project's Unlicense.
+  - The legacy Product Advertising API was deprecated in May 2026; any future integration must target the current Creators API and re-check credentials, sales thresholds, and license terms.
+  - Affiliate links must be visibly disclosed and must never be presented as an OpenSoverignBlog endorsement.

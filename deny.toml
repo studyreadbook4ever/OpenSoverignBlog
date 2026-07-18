@@ -1,0 +1,36 @@
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  # Redis' xxhash-rust dependency uses the permissive Boost Software License.
+  "BSL-1.0",
+  # Certificate data distributed by webpki-roots uses the permissive CDLA data
+  # license. Its attribution text is bundled in THIRD_PARTY_LICENSES.txt.
+  "CDLA-Permissive-2.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  # MPL-2.0 is weak, file-level copyleft. It is currently required only by
+  # the unmodified cssparser and dtoa-short dependency source files pulled in
+  # through ammonia. Those files remain separately covered by MPL-2.0; it does
+  # not relicense original OpenSoverignBlog files. See THIRD_PARTY_NOTICES.md.
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unlicense",
+  "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

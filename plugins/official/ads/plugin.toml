@@ -1,0 +1,23 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.monetization-policy"
+name = "Monetization policy and slots"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+kinds = ["ad-provider", "render-extension"]
+description = "Named monetization slots, disclosure, consent gating, and provider adapter contracts."
+permissions = [
+  { capability = "content.read", scope = "published" },
+  { capability = "render.slot", resources = ["site.header", "article.before", "article.after", "article.inline"], reason = "Resolve explicit named slots after policy evaluation." },
+  { capability = "state.read", scope = "site" },
+  { capability = "state.write", scope = "site" }
+]
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-feature-monetization-policy"
+extension = "monetization_policy"

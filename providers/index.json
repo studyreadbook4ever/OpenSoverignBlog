@@ -1,0 +1,70 @@
+{
+  "$schema": "https://open-soverign-blog.invalid/providers/index.schema.json",
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-07-18",
+  "entries": [
+    {
+      "id": "amazon.associates.us",
+      "path": "providers/amazon-associates-us.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "carbonads.publisher",
+      "path": "providers/carbon-ads.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "ethicalads.publisher",
+      "path": "providers/ethicalads.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "example.open-soverign-blog.direct-sponsor",
+      "path": "providers/example-direct-sponsor.yaml",
+      "adapterStatus": "core-maintained",
+      "lastVerified": "2026-07-18",
+      "example": true
+    },
+    {
+      "id": "github.sponsors",
+      "path": "providers/github-sponsors.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "google.adsense",
+      "path": "providers/google-adsense.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "ko-fi.creator",
+      "path": "providers/ko-fi.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "patreon.creator",
+      "path": "providers/patreon.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "polar.creator",
+      "path": "providers/polar.yaml",
+      "adapterStatus": "catalog-only",
+      "lastVerified": "2026-07-18",
+      "example": false
+    }
+  ]
+}

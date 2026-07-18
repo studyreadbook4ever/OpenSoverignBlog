@@ -1,0 +1,25 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.external-auth"
+name = "External authentication bridge"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+kinds = ["auth-provider"]
+description = "Maps identities from an operator-approved external authentication adapter."
+permissions = [
+  { capability = "route.public", resources = ["auth.callback"], reason = "Complete an explicitly configured authentication flow." },
+  { capability = "secret.use", resources = ["external-auth-client-secret"], reason = "Authenticate this installation to the selected provider." },
+  { capability = "network.connect", resources = ["configured-auth-provider"], reason = "Connect only to the operator-approved issuer endpoints." },
+  { capability = "state.read", scope = "site" },
+  { capability = "state.write", scope = "site" }
+]
+
+[provenance]
+origin = "original"
+attestation = "Clean-room OpenSoverignBlog implementation; no provider SDK is bundled."
+
+[runtime]
+kind = "built-in"
+crate = "osb-feature-external-auth"
+extension = "external_auth"

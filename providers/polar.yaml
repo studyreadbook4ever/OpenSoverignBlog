@@ -1,0 +1,69 @@
+schemaVersion: "1.0"
+id: polar.creator
+displayName: Polar
+homepage: https://polar.sh/
+categories: [direct, sponsorship, donation]
+integrationModes: [static, redirect, iframe, server]
+supportedRegions:
+  - provider-documented Stripe Connect payout-country list
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: null
+  kycRequired: conditional
+  notes: Individuals or businesses in supported payout countries can apply, subject to Stripe Connect Express business-type support, required verification, risk review, and provider terms.
+payoutSummary: Polar documents plan-dependent revenue share, Stripe payout fees, currency-dependent minimum withdrawal thresholds, and manual withdrawals; values can change and should be read from the current fee and payout pages.
+authFields: [organizationAccessToken, webhookSecret]
+requiredDomains: [polar.sh]
+cookiesAndStorage:
+  - kind: unknown
+    purpose: Hosted or embedded checkout, security, preferences, analytics, and service improvement.
+    retention: The cited privacy policy does not provide one complete checkout-specific cookie retention inventory.
+    firstParty: false
+dataAccessed:
+  - customer IP address used for country and currency detection
+  - customer name and email when supplied to checkout
+  - checkout, order, subscription, refund, and benefit data
+  - browser, device, page, referrer, and unique-device information on provider services
+consentPurposeIds: [commerce.checkout, membership.sync]
+personalizationSupported: unknown
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks:
+  - Standard Webhooks-compatible checkout, customer, order, subscription, refund, product, and benefit events
+contentRestrictions:
+  - Products, services, and seller activity must comply with Polar's terms, acceptable-use, review, and supported-country requirements.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents:
+  - optional static checkout link
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: Polar introduction and integration options
+    url: https://polar.sh/docs/introduction
+    checkedAt: 2026-07-18
+  - title: Supported countries
+    url: https://polar.sh/docs/merchant-of-record/supported-countries
+    checkedAt: 2026-07-18
+  - title: Checkout Links
+    url: https://polar.sh/docs/features/checkout/links
+    checkedAt: 2026-07-18
+  - title: Checkout API
+    url: https://polar.sh/docs/features/checkout/session
+    checkedAt: 2026-07-18
+  - title: Setup Webhooks
+    url: https://polar.sh/docs/integrate/webhooks/endpoints
+    checkedAt: 2026-07-18
+  - title: Polar Privacy Policy
+    url: https://polar.sh/legal/privacy-policy
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: requiredDomains and cspRequirements
+    note: polar.sh is the documented service root, but exact API, checkout, CDN, sandbox, iframe, processor, redirect, and telemetry domains require configuration-specific tracing.
+  - field: cookiesAndStorage.retention
+    note: The privacy policy names cookie categories and broad data types but not a complete embedded-checkout storage table with durations.
+  - field: personalizationSupported
+    note: Functional cookies may personalize the provider service, but product- or user-level personalization semantics for a blog checkout integration were not established.
+knownRisks:
+  - An embedded checkout expands the blog's third-party resource and device-access surface; the static redirect mode has a smaller pre-navigation footprint.
+  - Passing the blog server's IP instead of the customer's IP to the Checkout API can produce incorrect country and tax behavior; do not forward a customer IP without a documented legal and security basis.

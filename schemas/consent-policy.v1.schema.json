@@ -1,0 +1,808 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opensoverignblog:schema:consent-policy:v1",
+  "title": "OpenSoverignBlog consent policy v1",
+  "description": "A versioned operator assertion used to gate device access and personal-data processing. Schema validity is not legal advice, certification, or proof of compliance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "policy_id",
+    "policy_version",
+    "effective_at",
+    "last_reviewed_at",
+    "legal_profile",
+    "controller",
+    "privacy_notice_uri",
+    "actors",
+    "purposes",
+    "resources",
+    "runtime",
+    "ui",
+    "withdrawal",
+    "evidence"
+  ],
+  "properties": {
+    "spec_version": {
+      "const": "1.0"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "policy_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "effective_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_reviewed_at": {
+      "type": "string",
+      "format": "date"
+    },
+    "supersedes_policy_version": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "legal_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["as_of", "jurisdictions", "sources"],
+      "properties": {
+        "as_of": {
+          "type": "string",
+          "format": "date"
+        },
+        "jurisdictions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}([_-][A-Z0-9]{1,8})*$"
+          }
+        },
+        "national_addenda": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["jurisdiction", "status", "uri"],
+            "properties": {
+              "jurisdiction": {
+                "type": "string",
+                "minLength": 2
+              },
+              "status": {
+                "enum": ["not-reviewed", "reviewed", "requires-counsel"]
+              },
+              "uri": {
+                "type": "string",
+                "format": "uri"
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/legalSource"
+          }
+        }
+      }
+    },
+    "controller": {
+      "$ref": "#/$defs/entity"
+    },
+    "representative": {
+      "oneOf": [
+        { "$ref": "#/$defs/entity" },
+        { "type": "null" }
+      ]
+    },
+    "dpo_contact": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "privacy_notice_uri": {
+      "type": "string",
+      "format": "uri"
+    },
+    "actors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/actor"
+      }
+    },
+    "purposes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/purpose"
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/resource"
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_deny",
+        "block_unknown_resources",
+        "gate_preconnect_and_prefetch",
+        "gate_dynamic_insertion",
+        "fail_closed",
+        "verify_redirect_domains",
+        "withdrawal_stops_future_processing"
+      ],
+      "properties": {
+        "default_deny": { "const": true },
+        "block_unknown_resources": { "const": true },
+        "gate_preconnect_and_prefetch": { "const": true },
+        "gate_dynamic_insertion": { "const": true },
+        "fail_closed": { "const": true },
+        "verify_redirect_domains": { "const": true },
+        "withdrawal_stops_future_processing": { "const": true }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content_version",
+        "supported_locales",
+        "first_layer",
+        "optional_purposes_preselected",
+        "scroll_or_swipe_is_consent",
+        "closing_is_consent",
+        "cookie_wall_without_equivalent_choice",
+        "accessibility_standard"
+      ],
+      "properties": {
+        "content_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "supported_locales": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/locale"
+          }
+        },
+        "first_layer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "summary",
+            "ad_funded_disclosure",
+            "accept_all",
+            "reject_all",
+            "manage",
+            "controls_simultaneously_available",
+            "controls_comparably_discoverable"
+          ],
+          "properties": {
+            "summary": {
+              "$ref": "#/$defs/languageMap"
+            },
+            "ad_funded_disclosure": {
+              "oneOf": [
+                { "$ref": "#/$defs/languageMap" },
+                { "type": "null" }
+              ]
+            },
+            "accept_all": {
+              "$ref": "#/$defs/uiControl"
+            },
+            "reject_all": {
+              "$ref": "#/$defs/uiControl"
+            },
+            "manage": {
+              "$ref": "#/$defs/uiControl"
+            },
+            "controls_simultaneously_available": { "const": true },
+            "controls_comparably_discoverable": { "const": true }
+          }
+        },
+        "optional_purposes_preselected": { "const": false },
+        "scroll_or_swipe_is_consent": { "const": false },
+        "closing_is_consent": { "const": false },
+        "cookie_wall_without_equivalent_choice": { "const": false },
+        "accessibility_standard": {
+          "type": "string",
+          "minLength": 1,
+          "examples": ["WCAG 2.2 AA"]
+        }
+      }
+    },
+    "withdrawal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "persistent_settings_control",
+        "control_label",
+        "no_harder_than_grant",
+        "downstream_notification",
+        "refusal_memory"
+      ],
+      "properties": {
+        "persistent_settings_control": { "const": true },
+        "control_label": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "no_harder_than_grant": { "const": true },
+        "downstream_notification": { "const": true },
+        "refusal_memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "retention_days", "identifier_mode"],
+          "properties": {
+            "enabled": { "const": true },
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3650,
+              "description": "An operator-selected interval. A value is not, by itself, a statement of legal sufficiency."
+            },
+            "identifier_mode": {
+              "enum": ["generic-flag", "pseudonymous", "account-linked"]
+            }
+          }
+        }
+      }
+    },
+    "signals": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "adapter_id",
+          "adapter_version",
+          "status",
+          "semantics",
+          "affirmative_consent_requires_context_validation"
+        ],
+        "properties": {
+          "adapter_id": {
+            "$ref": "#/$defs/stableId"
+          },
+          "adapter_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "optional-interoperability",
+              "private-framework",
+              "future-eu-standard",
+              "experimental"
+            ]
+          },
+          "semantics": {
+            "enum": ["deny-only", "deny-and-affirm"]
+          },
+          "affirmative_consent_requires_context_validation": {
+            "const": true
+          },
+          "mapped_purpose_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/stableId"
+            }
+          },
+          "documentation_uri": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "receipt_schema",
+        "policy_integrity",
+        "archive_presented_content",
+        "retention"
+      ],
+      "properties": {
+        "receipt_schema": {
+          "const": "urn:opensoverignblog:schema:consent-receipt:v1"
+        },
+        "policy_integrity": {
+          "$ref": "#/$defs/digest"
+        },
+        "archive_presented_content": { "const": true },
+        "retention": {
+          "$ref": "#/$defs/retention"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    },
+    "languageMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/locale"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value", "canonicalisation"],
+      "properties": {
+        "algorithm": {
+          "enum": ["sha-256", "sha-384", "sha-512"]
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]+$"
+        },
+        "canonicalisation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact byte or JSON canonicalisation method, including any excluded digest field."
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "contact_uri"],
+      "properties": {
+        "entity_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "contact_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "privacy_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_id", "name", "role", "domains", "privacy_uri"],
+      "properties": {
+        "actor_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "role": {
+          "enum": [
+            "controller",
+            "joint-controller",
+            "processor",
+            "subprocessor",
+            "recipient",
+            "unknown-pending-review"
+          ]
+        },
+        "domains": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "format": "hostname"
+          }
+        },
+        "privacy_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "countries": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          }
+        },
+        "contract_reference": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "description"],
+      "properties": {
+        "mode": {
+          "enum": ["fixed-duration", "session", "until-event", "indefinite", "not-applicable"]
+        },
+        "duration": {
+          "type": "string",
+          "pattern": "^P(?!$).+"
+        },
+        "description": {
+          "$ref": "#/$defs/languageMap"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "mode": { "const": "fixed-duration" } },
+            "required": ["mode"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "duration": {
+                "type": "string",
+                "pattern": "^P(?!$).+"
+              }
+            },
+            "required": ["duration"]
+          }
+        }
+      ]
+    },
+    "legalSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "title", "status", "uri", "source_date"],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "status": {
+          "enum": [
+            "binding-law",
+            "national-transposition-required",
+            "court-interpretation",
+            "edpb-guidance",
+            "voluntary-best-practice",
+            "proposal-ongoing",
+            "standardisation-work-item"
+          ]
+        },
+        "uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "source_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      }
+    },
+    "transfer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination_country", "mechanism", "safeguards_uri"],
+      "properties": {
+        "destination_country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "mechanism": {
+          "enum": [
+            "adequacy",
+            "standard-contractual-clauses",
+            "binding-corporate-rules",
+            "derogation",
+            "not-determined"
+          ]
+        },
+        "safeguards_uri": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "purpose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose_id",
+        "purpose_revision",
+        "name",
+        "description",
+        "terminal_access_basis",
+        "terminal_access_rationale",
+        "gdpr_legal_basis",
+        "operations",
+        "data_categories",
+        "actor_ids",
+        "recipients",
+        "retention",
+        "profiling",
+        "automated_decision_making",
+        "third_country_transfers"
+      ],
+      "properties": {
+        "purpose_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "purpose_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "name": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "description": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "terminal_access_basis": {
+          "enum": [
+            "consent",
+            "required-for-transmission",
+            "strictly-necessary-requested-service",
+            "not-applicable"
+          ]
+        },
+        "terminal_access_rationale": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "gdpr_legal_basis": {
+          "enum": [
+            "consent",
+            "contract",
+            "legal-obligation",
+            "vital-interests",
+            "public-task",
+            "legitimate-interests",
+            "not-personal-data",
+            "not-applicable"
+          ]
+        },
+        "legitimate_interests": {
+          "oneOf": [
+            { "$ref": "#/$defs/languageMap" },
+            { "type": "null" }
+          ]
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "cookie",
+              "local-storage",
+              "session-storage",
+              "indexed-db",
+              "cache-storage",
+              "tracking-pixel",
+              "tracking-url",
+              "client-side-js",
+              "iframe",
+              "sdk",
+              "device-fingerprinting",
+              "ip-tracking",
+              "unique-identifier",
+              "server-processing",
+              "other"
+            ]
+          }
+        },
+        "data_categories": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "actor_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/stableId"
+          }
+        },
+        "recipients": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "retention": {
+          "$ref": "#/$defs/retention"
+        },
+        "profiling": {
+          "type": "boolean"
+        },
+        "automated_decision_making": {
+          "type": "boolean"
+        },
+        "third_country_transfers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transfer"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "gdpr_legal_basis": { "const": "legitimate-interests" }
+            },
+            "required": ["gdpr_legal_basis"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "legitimate_interests": {
+                "oneOf": [
+                  { "$ref": "#/$defs/languageMap" },
+                  { "type": "null" }
+                ]
+              }
+            },
+            "required": ["legitimate_interests"]
+          }
+        }
+      ]
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resource_id",
+        "kind",
+        "url_patterns",
+        "actor_id",
+        "purpose_ids",
+        "default_state",
+        "load_condition"
+      ],
+      "properties": {
+        "resource_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "kind": {
+          "enum": [
+            "script",
+            "pixel",
+            "iframe",
+            "image",
+            "link",
+            "stylesheet",
+            "font",
+            "sdk",
+            "api",
+            "preconnect",
+            "prefetch",
+            "other"
+          ]
+        },
+        "url_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "actor_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "purpose_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/stableId"
+          }
+        },
+        "default_state": {
+          "enum": ["blocked", "allowed"]
+        },
+        "load_condition": {
+          "enum": [
+            "strictly-necessary",
+            "all-purposes-granted",
+            "manual-user-action"
+          ]
+        },
+        "integrity": {
+          "$ref": "#/$defs/digest"
+        },
+        "necessity_test_uri": {
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": { "default_state": { "const": "allowed" } },
+            "required": ["default_state"]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "load_condition": { "const": "strictly-necessary" },
+              "necessity_test_uri": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": ["necessity_test_uri"]
+          }
+        }
+      ]
+    },
+    "uiControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "label"],
+      "properties": {
+        "enabled": { "const": true },
+        "label": {
+          "$ref": "#/$defs/languageMap"
+        }
+      }
+    }
+  }
+}

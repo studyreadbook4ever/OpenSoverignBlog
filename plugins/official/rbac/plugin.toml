@@ -1,0 +1,21 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.rbac"
+name = "Role-based access control"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+kinds = ["authorization-policy"]
+description = "Optional multi-user roles layered over the kernel's deny-by-default policy port."
+permissions = [
+  { capability = "state.read", scope = "site" },
+  { capability = "state.write", scope = "site" }
+]
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-feature-rbac"
+extension = "rbac"

@@ -1,0 +1,12 @@
+[package]
+name = "osb-feature-rbac"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+osb-kernel = { version = "=0.1.0", path = "../../crates/kernel" }
+serde.workspace = true
+uuid.workspace = true

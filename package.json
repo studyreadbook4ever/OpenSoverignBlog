@@ -1,0 +1,28 @@
+{
+  "name": "open-soverign-blog",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Unlicense",
+  "workspaces": [
+    "apps/web",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run check --workspaces --if-present",
+    "dev:web": "npm run dev --workspace @opensoverignblog/web",
+    "supply-chain:generate": "node scripts/generate-supply-chain-artifacts.mjs",
+    "supply-chain:check": "node scripts/generate-supply-chain-artifacts.mjs --check",
+    "test": "npm run test --workspaces --if-present",
+    "validate:contracts": "node scripts/validate-contracts.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "smol-toml": "^1.4.2",
+    "yaml": "^2.8.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

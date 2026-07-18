@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-soverign-blog.invalid/schemas/ai2ai-envelope.v1.schema.json",
+  "title": "OpenSoverignBlog AI2AI revision proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "specVersion",
+    "messageId",
+    "idempotencyKey",
+    "occurredAt",
+    "actor",
+    "intent",
+    "proposal",
+    "policy"
+  ],
+  "properties": {
+    "specVersion": { "const": "1.0" },
+    "messageId": { "$ref": "#/$defs/uuid" },
+    "idempotencyKey": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "actor": { "$ref": "#/$defs/actor" },
+    "intent": { "type": "string", "minLength": 1, "maxLength": 2000 },
+    "proposal": { "$ref": "#/$defs/proposal" },
+    "policy": { "$ref": "#/$defs/policy" },
+    "contextReceipts": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/contextReceipt" }
+    },
+    "provenance": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/provenance" }
+    }
+  },
+  "$defs": {
+    "uuid": { "type": "string", "format": "uuid" },
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["human", "agent", "tool", "service"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "provider": { "type": "string", "maxLength": 300 },
+        "model": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "revisionActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["human", "agent", "importer", "system"] },
+        "id": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "displayName": { "type": "string", "maxLength": 300 }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "documentId",
+        "baseRevisionId",
+        "title",
+        "slug",
+        "sourceMarkdown",
+        "actor"
+      ],
+      "properties": {
+        "documentId": { "$ref": "#/$defs/uuid" },
+        "baseRevisionId": { "$ref": "#/$defs/uuid" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "slug": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "sourceMarkdown": { "type": "string", "maxLength": 10485760 },
+        "embeds": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "$ref": "content-envelope.v1.schema.json#/$defs/embed"
+          }
+        },
+        "intent": { "type": ["object", "null"] },
+        "ontology": { "type": ["object", "null"] },
+        "actor": { "$ref": "#/$defs/revisionActor" },
+        "idempotencyKey": { "type": ["string", "null"], "maxLength": 200 }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dataBoundary"],
+      "properties": {
+        "dataBoundary": {
+          "enum": [
+            "local_only",
+            "approved_providers",
+            "redact_before_send",
+            "external_allowed"
+          ]
+        },
+        "allowedProviderIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+        "allowedCapabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+        },
+        "maxCost": { "type": ["number", "null"], "minimum": 0 },
+        "maxTokens": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "contextReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference", "contentHash", "scope", "included"],
+      "properties": {
+        "reference": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "contentHash": { "$ref": "#/$defs/digest" },
+        "scope": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "included": { "type": "boolean" },
+        "exclusionReason": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "reference"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "reference": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "contentHash": { "$ref": "#/$defs/digest" }
+      }
+    }
+  }
+}

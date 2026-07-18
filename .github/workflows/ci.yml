@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.88.0
+          components: clippy,rustfmt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: npm run check
+      - run: npm run validate:contracts
+      - run: npm run supply-chain:check
+      - run: npm run build
+      - run: npm audit --audit-level=high
+
+  dependency-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.88.0
+      # Pin both the package version and its own lockfile resolution. Updating
+      # this version is an explicit dependency-policy change.
+      - run: cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo deny check licenses bans sources
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: false
+          tags: open-soverign-blog:ci
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - run: cp .env.example .env
+      - name: Generate ephemeral Redis credential
+        run: |
+          sed -i "s/^OSB_REDIS_PASSWORD=.*/OSB_REDIS_PASSWORD=$(openssl rand -hex 32)/" .env
+          sed -i "s/^OSB_CACHE_SIGNING_KEY=.*/OSB_CACHE_SIGNING_KEY=$(openssl rand -hex 32)/" .env
+      - run: cp config.example.toml config.toml
+      - run: cp deploy/custom.css custom.css
+      - name: Create a host-owned private backup fixture
+        run: |
+          mkdir -p .osb-backups/generations/host-owned-fixture
+          printf 'initializer-fixture\n' > .osb-backups/generations/host-owned-fixture/payload
+          chmod 0700 .osb-backups .osb-backups/generations .osb-backups/generations/host-owned-fixture
+          chmod 0600 .osb-backups/generations/host-owned-fixture/payload
+          test "$(stat -c '%u' .osb-backups/generations/host-owned-fixture)" != 65532
+      - name: Validate delivery filesystem boundary
+        run: |
+          OSB_DELIVERY_ONLY=true docker compose --profile maintenance config --format json | python3 -c '
+          import json, sys
+          model = json.load(sys.stdin)
+          def mount(service, target):
+              return next(item for item in model["services"][service]["volumes"] if item["target"] == target)
+          assert mount("blog", "/data").get("read_only") is True
+          assert mount("blog", "/backups").get("read_only") is True
+          assert not mount("osb-restore", "/data").get("read_only", False)
+          assert mount("osb-restore", "/backups").get("read_only") is True
+          assert model["services"]["osb-restore"]["network_mode"] == "none"
+          '
+      - run: docker compose up --build --wait --wait-timeout 240
+      - name: Exercise cache, discovery, backup, and restore
+        run: |
+          docker compose exec -T blog osb doctor --config /config/config.toml --json
+          curl --fail --silent http://127.0.0.1:8787/readyz
+          curl --fail --silent http://127.0.0.1:8787/api/v1/feed
+          curl --fail --silent http://127.0.0.1:8787/api/v1/feed
+          curl --fail --silent http://127.0.0.1:8787/agents.txt | grep 'open-soverign-blog.json'
+          test "$(docker compose exec -T blog stat -c '%u:%g:%a' /data | tr -d '\r')" = 65532:65532:700
+          test "$(docker compose exec -T blog stat -c '%u:%g:%a' /backups | tr -d '\r')" = 65532:65532:700
+          test "$(docker compose exec -T blog stat -c '%u:%g:%a' /backups/generations/host-owned-fixture | tr -d '\r')" = 65532:65532:700
+          test "$(docker compose exec -T blog stat -c '%u:%g:%a' /backups/generations/host-owned-fixture/payload | tr -d '\r')" = 65532:65532:600
+          docker compose exec -T blog test -r /backups/generations/host-owned-fixture/payload
+          test "$(docker compose exec -T redis-primary id -un | tr -d '\r')" = redis
+          docker compose exec -T redis-primary redis-cli PING | grep PONG
+          docker compose exec -T -e REDISCLI_AUTH= redis-primary redis-cli PING 2>&1 | grep NOAUTH
+          timeout 10 sh -c 'until [ "$(docker compose exec -T redis-primary redis-cli --raw DBSIZE | tr -d "\r")" -gt 0 ]; do sleep 1; done'
+          test "$(docker compose exec -T redis-primary redis-cli --raw CONFIG GET appendonly | tr -d '\r' | tail -n 1)" = yes
+          test "$(docker compose exec -T redis-primary redis-cli --raw CONFIG GET appendfsync | tr -d '\r' | tail -n 1)" = everysec
+          test "$(docker compose exec -T redis-primary redis-cli --raw CONFIG GET aof-use-rdb-preamble | tr -d '\r' | tail -n 1)" = yes
+          test "$(docker compose exec -T redis-primary redis-cli --raw CONFIG GET maxmemory-policy | tr -d '\r' | tail -n 1)" = volatile-lfu
+          docker compose exec -T redis-primary redis-cli --raw CONFIG GET save | tr -d '\r' | grep '60 1000'
+          test "$(docker compose exec -T redis-replica redis-cli --raw CONFIG GET appendonly | tr -d '\r' | tail -n 1)" = yes
+          docker compose exec -T redis-replica redis-cli --raw CONFIG GET save | tr -d '\r' | grep '60 1000'
+          timeout 30 sh -c 'until docker compose exec -T redis-primary redis-cli INFO replication | tr -d "\r" | grep -q "^connected_slaves:1$"; do sleep 1; done'
+          timeout 30 sh -c 'until docker compose exec -T redis-sentinel-1 redis-cli -p 26379 SENTINEL CKQUORUM osb-primary | grep -q "^OK"; do sleep 1; done'
+          test "$(docker compose exec -T redis-sentinel-1 stat -c '%a' /data/sentinel.conf | tr -d '\r')" = 600
+          generation=""
+          for _attempt in $(seq 1 30); do
+            generation="$(docker compose exec -T blog sh -ec 'for manifest in /backups/generations/generation-*/manifest.json; do if [ -f "$manifest" ]; then basename "$(dirname "$manifest")"; exit 0; fi; done; exit 1' 2>/dev/null || true)"
+            [ -n "$generation" ] && break
+            sleep 2
+          done
+          test -n "$generation"
+          docker compose exec -T blog osb backup verify "/backups/generations/$generation"
+          docker compose --profile maintenance run --rm --no-deps osb-restore --database /data/restore-ci.sqlite3 --blob-directory /data/restore-ci-blobs restore "/backups/generations/$generation"
+          docker compose exec -T blog test -s /data/restore-ci.sqlite3
+          docker compose exec -T blog test -d /data/restore-ci-blobs
+          curl --fail --silent http://127.0.0.1:8787/healthz | grep '"lastGeneration":"generation-'
+      - name: Exercise Sentinel promotion and application reconnection
+        run: |
+          docker compose stop redis-primary
+          timeout 90 sh -c 'until docker compose exec -T redis-sentinel-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name osb-primary | grep -q redis-replica; do sleep 2; done'
+          docker compose exec -T redis-replica redis-cli ROLE | head -n 1 | grep master
+          docker compose exec -T redis-replica redis-cli SET osb:ci:failover ok EX 60 | grep OK
+          docker compose restart redis-sentinel-1
+          timeout 30 sh -c 'until docker compose exec -T redis-sentinel-1 redis-cli -p 26379 PING | grep -q PONG; do sleep 1; done'
+          timeout 30 sh -c 'until docker compose exec -T redis-sentinel-1 redis-cli -p 26379 SENTINEL get-master-addr-by-name osb-primary | grep -q redis-replica; do sleep 1; done'
+          timeout 60 sh -c 'until curl --fail --silent http://127.0.0.1:8787/readyz >/dev/null; do sleep 2; done'
+          docker compose exec -T redis-replica redis-cli FLUSHDB | grep OK
+          curl --fail --silent http://127.0.0.1:8787/api/v1/feed
+          curl --fail --silent http://127.0.0.1:8787/api/v1/feed
+          timeout 30 sh -c 'until [ "$(docker compose exec -T redis-replica redis-cli --raw DBSIZE | tr -d "\r")" -gt 0 ]; do curl --fail --silent http://127.0.0.1:8787/api/v1/feed >/dev/null; sleep 1; done'
+      - if: always()
+        run: docker compose logs --no-color
+      - if: always()
+        run: docker compose down --volumes --remove-orphans

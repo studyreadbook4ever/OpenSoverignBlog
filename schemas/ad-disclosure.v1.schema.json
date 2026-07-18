@@ -1,0 +1,440 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opensoverignblog:schema:ad-disclosure:v1",
+  "title": "OpenSoverignBlog advertising disclosure v1",
+  "description": "A shared source for visible advertising labels and AI2AI metadata. Validation does not determine whether an ad, operator, or service satisfies applicable law.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "disclosure_id",
+    "ad_id",
+    "is_commercial_communication",
+    "ad_type",
+    "consideration",
+    "visible_disclosure",
+    "on_behalf_of",
+    "providers",
+    "resource_domains",
+    "targeting",
+    "data_processing",
+    "dsa_assessment",
+    "machine_readable"
+  ],
+  "properties": {
+    "spec_version": {
+      "const": "1.0"
+    },
+    "disclosure_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "ad_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "is_commercial_communication": {
+      "const": true
+    },
+    "ad_type": {
+      "enum": [
+        "display",
+        "native",
+        "advertorial",
+        "affiliate",
+        "sponsorship",
+        "house-ad",
+        "contextual",
+        "other"
+      ]
+    },
+    "consideration": {
+      "enum": [
+        "paid",
+        "affiliate-commission",
+        "in-kind",
+        "self-promotion",
+        "mixed",
+        "unknown-pending-review"
+      ]
+    },
+    "visible_disclosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "placement",
+        "visible_before_interaction",
+        "visually_distinct",
+        "editorial_separation"
+      ],
+      "properties": {
+        "label": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "placement": {
+          "enum": ["adjacent", "within-content", "page-level"]
+        },
+        "visible_before_interaction": { "const": true },
+        "visually_distinct": { "const": true },
+        "editorial_separation": {
+          "type": "boolean"
+        },
+        "details_uri": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "on_behalf_of": {
+      "$ref": "#/$defs/entity"
+    },
+    "paid_by": {
+      "oneOf": [
+        { "$ref": "#/$defs/entity" },
+        { "type": "null" }
+      ]
+    },
+    "providers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entity"
+      }
+    },
+    "resource_domains": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "hostname"
+      }
+    },
+    "campaign": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "campaign_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "starts_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "ends_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "targeting": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "main_parameters"],
+      "properties": {
+        "mode": {
+          "enum": ["none", "contextual", "cohort", "personalised", "unknown-pending-review"]
+        },
+        "main_parameters": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/targetingParameter"
+          }
+        },
+        "controls_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "explanation": {
+          "$ref": "#/$defs/languageMap"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "type": "object",
+            "properties": {
+              "mode": { "enum": ["cohort", "personalised"] }
+            },
+            "required": ["mode"]
+          },
+          "then": {
+            "type": "object",
+            "required": ["controls_uri", "explanation"],
+            "properties": {
+              "main_parameters": {
+                "type": "array",
+                "minItems": 1
+              },
+              "controls_uri": {
+                "type": "string",
+                "format": "uri"
+              },
+              "explanation": {
+                "$ref": "#/$defs/languageMap"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "data_processing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uses_terminal_access",
+        "uses_personal_data",
+        "profiling",
+        "special_category_profiling",
+        "minor_profiling",
+        "consent_policy_id",
+        "purpose_ids"
+      ],
+      "properties": {
+        "uses_terminal_access": {
+          "type": "boolean"
+        },
+        "uses_personal_data": {
+          "type": "boolean"
+        },
+        "profiling": {
+          "type": "boolean"
+        },
+        "special_category_profiling": {
+          "type": "boolean"
+        },
+        "minor_profiling": {
+          "type": "boolean"
+        },
+        "consent_policy_id": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+        },
+        "purpose_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/stableId"
+          }
+        },
+        "data_categories": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "legal_basis_notes": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Operator-supplied notes only; this project does not select a legal basis."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": { "uses_terminal_access": { "const": true } },
+                "required": ["uses_terminal_access"]
+              },
+              {
+                "type": "object",
+                "properties": { "uses_personal_data": { "const": true } },
+                "required": ["uses_personal_data"]
+              }
+            ]
+          },
+          "then": {
+            "type": "object",
+            "properties": {
+              "consent_policy_id": { "type": "string" },
+              "purpose_ids": {
+                "type": "array",
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "dsa_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "reviewed_at", "reviewer"],
+      "properties": {
+        "status": {
+          "enum": ["not-assessed", "not-applicable", "applicable"]
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "rationale": {
+          "type": "string",
+          "maxLength": 4000
+        }
+      }
+    },
+    "machine_readable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonical_uri", "media_type", "digest"],
+      "properties": {
+        "canonical_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "media_type": {
+          "const": "application/vnd.opensoverignblog.ad-disclosure+json;version=1"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "ad_type": { "enum": ["advertorial", "affiliate", "native"] }
+        },
+        "required": ["ad_type"]
+      },
+      "then": {
+        "type": "object",
+        "properties": {
+          "visible_disclosure": {
+            "type": "object",
+            "properties": {
+              "placement": { "enum": ["adjacent", "within-content"] }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "type": "object",
+        "properties": {
+          "dsa_assessment": {
+            "type": "object",
+            "properties": {
+              "status": { "const": "applicable" }
+            },
+            "required": ["status"]
+          }
+        },
+        "required": ["dsa_assessment"]
+      },
+      "then": {
+        "type": "object",
+        "required": ["paid_by"],
+        "properties": {
+          "paid_by": {
+            "$ref": "#/$defs/entity"
+          },
+          "data_processing": {
+            "type": "object",
+            "properties": {
+              "special_category_profiling": { "const": false },
+              "minor_profiling": { "const": false }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "locale": {
+      "type": "string",
+      "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+    },
+    "languageMap": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/locale"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000
+      }
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "value", "canonicalisation"],
+      "properties": {
+        "algorithm": {
+          "enum": ["sha-256", "sha-384", "sha-512"]
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]+$"
+        },
+        "canonicalisation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Exact byte or JSON canonicalisation method, including any excluded digest field."
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_id", "name"],
+      "properties": {
+        "entity_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "contact_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "privacy_uri": {
+          "type": "string",
+          "format": "uri"
+        },
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        }
+      }
+    },
+    "targetingParameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "value_or_range", "source"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "value_or_range": {
+          "$ref": "#/$defs/languageMap"
+        },
+        "source": {
+          "enum": ["page-context", "user-choice", "declared-profile", "inferred-profile", "location", "device", "campaign", "other"]
+        }
+      }
+    }
+  }
+}

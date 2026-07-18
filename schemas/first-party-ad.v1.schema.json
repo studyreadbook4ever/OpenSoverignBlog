@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:opensoverignblog:schema:first-party-ad:v1",
+  "title": "OpenSoverignBlog static first-party ad v1",
+  "description": "A deliberately narrow house-ad/direct-sponsor contract. Schema validation is necessary but authorization also requires the Rust semantic validator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ad_id",
+    "kind",
+    "slot",
+    "disclosure",
+    "sponsor_name",
+    "body_text",
+    "delivery"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "ad_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "kind": {
+      "enum": ["house_ad", "direct_sponsor"]
+    },
+    "slot": {
+      "const": "article_footer"
+    },
+    "disclosure": {
+      "enum": ["Advertisement", "Sponsored"]
+    },
+    "sponsor_name": {
+      "$ref": "#/$defs/sponsorName"
+    },
+    "body_text": {
+      "$ref": "#/$defs/bodyText"
+    },
+    "click_url": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://",
+      "maxLength": 2048,
+      "description": "A user-initiated navigation destination, never a passive fetch. Credentials and fragments are rejected by semantic validation."
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["media_path", "alt_text"],
+      "properties": {
+        "media_path": {
+          "type": "string",
+          "pattern": "^/media/[0-9a-f]{64}$",
+          "maxLength": 71
+        },
+        "alt_text": {
+          "$ref": "#/$defs/altText"
+        }
+      }
+    },
+    "delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "third_party_fetches",
+        "scripts",
+        "tracking_pixels",
+        "raw_html",
+        "personalization",
+        "browser_storage",
+        "identifiers",
+        "measurement"
+      ],
+      "properties": {
+        "third_party_fetches": { "const": false },
+        "scripts": { "const": false },
+        "tracking_pixels": { "const": false },
+        "raw_html": { "const": false },
+        "personalization": { "const": false },
+        "browser_storage": { "const": false },
+        "identifiers": { "const": false },
+        "measurement": { "const": false }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "house_ad" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "disclosure": { "const": "Advertisement" } },
+        "required": ["disclosure"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "kind": { "const": "direct_sponsor" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "properties": { "disclosure": { "const": "Sponsored" } },
+        "required": ["disclosure"]
+      }
+    }
+  ],
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,127}$"
+    },
+    "sponsorName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$"
+    },
+    "bodyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$"
+    },
+    "altText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300,
+      "pattern": "^[^\\u0000-\\u0008\\u000B\\u000C\\u000E-\\u001F\\u007F]*$"
+    }
+  }
+}

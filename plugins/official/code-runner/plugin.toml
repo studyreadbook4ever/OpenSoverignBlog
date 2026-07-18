@@ -1,0 +1,28 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.code-runner-client"
+name = "Isolated code runner client"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+kinds = ["code-runner-client", "render-extension"]
+description = "Submits bounded snippets to a separately operated runner; never executes inside the CMS."
+permissions = [
+  { capability = "code.execute", resources = ["configured-runner-profile"], reason = "Submit a language, source, and resource limits to the isolated runner." },
+  { capability = "network.connect", resources = ["configured-runner-endpoint"], reason = "Connect only to the operator-selected runner broker." },
+  { capability = "render.slot", resources = ["code.after"], reason = "Expose a run button only when a healthy runner capability is present." }
+]
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-feature-code-runner-client"
+extension = "code_runner_client"
+
+[limits]
+timeoutMs = 15000
+memoryMiB = 64
+outputKiB = 256
+concurrency = 2
