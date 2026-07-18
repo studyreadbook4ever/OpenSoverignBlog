@@ -1,0 +1,73 @@
+schema_version = "open-soverign-blog/1"
+
+# This is the authoritative human/AI intent. The server rejects combinations
+# that contradict it instead of guessing what an operator meant.
+[semantic]
+intent = "personal" # personal | community | delivery
+
+[server]
+bind = "0.0.0.0:8787"
+public_url = "http://localhost:8787"
+article_base_path = "blog"
+site_id = "00000000-0000-7000-8000-000000000001"
+no_index = false
+
+[storage]
+database = "/data/open-soverign-blog.db"
+blob_directory = "/data/blobs"
+profile = "durable" # durable | balanced | fast
+
+[security]
+# Secrets stay in environment variables. OSB_ADMIN_TOKEN is legacy-only.
+
+[community]
+auth = "local" # local | oauth | local_and_oauth | disabled
+registration_open = false
+comments = false
+collaboration = false
+
+[deployment]
+delivery_only = false
+
+# Redis is a core hot-path dependency. SQLite and blobs remain authoritative.
+# Credentials stay in OSB_REDIS_PASSWORD; `osb bootstrap` writes its .env with
+# mode 0600 and the bundled Redis/Sentinel services require that value.
+[redis]
+topology = "sentinel" # standalone | sentinel
+url = "redis://redis-primary:6379/"
+sentinel_urls = [
+  "redis://redis-sentinel-1:26379/",
+  "redis://redis-sentinel-2:26379/",
+  "redis://redis-sentinel-3:26379/",
+]
+sentinel_master = "osb-primary"
+namespace = "osb"
+content_release = "live"
+required = true
+response_ttl_seconds = 60
+connect_timeout_ms = 2000
+
+[appearance]
+custom_css = true
+custom_css_file = "/config/custom.css"
+
+[discovery]
+agent_txt = true
+
+[operations]
+managed_backups = true
+backup_directory = "/backups"
+backup_interval_minutes = 15
+backup_retention = 96
+
+[features]
+external_auth = false
+rbac = false
+comments = false
+seo = true
+code_runner = false
+ads = false
+
+# Ontology remains an optional sidecar on each revision rather than a global
+# runtime switch. An isolated code runner can be added with the documented
+# [runner] profile after the base deployment passes `osb doctor`.

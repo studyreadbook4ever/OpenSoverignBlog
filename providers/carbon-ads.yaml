@@ -1,0 +1,65 @@
+schemaVersion: "1.0"
+id: carbonads.publisher
+displayName: Carbon Ads
+homepage: https://www.carbonads.net/
+categories: [network]
+integrationModes: [third-party-script]
+supportedRegions: [unknown]
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: "The reapplication page states at least 10,000 pageviews in the preceding 30 days; initial acceptance remains invitation-only and capacity-dependent."
+  kycRequired: unknown
+  notes: Carbon targets developer and designer audiences, manually reviews applications, and requires approved placement and network exclusivity.
+payoutSummary: The March 2026 FAQ describes Net-30 earnings into a BuySellAds account, a USD 1 Carbon minimum before withdrawal-method minimums, and separate PayPal, check, wire, or Open Collective conditions.
+authFields: [dashboardIssuedAdCode]
+requiredDomains: [carbonads.net, syndicateads.net]
+cookiesAndStorage:
+  - kind: cookie
+    purpose: Ad serving, suitability, measurement, reporting, and maintaining service state where applicable.
+    retention: The official privacy policy does not state a fixed visitor-cookie retention period.
+    firstParty: false
+dataAccessed:
+  - browser and operating-system information
+  - pages viewed and time of view
+  - approximate geographic information
+  - ad impressions, clicks, and aggregate campaign metrics
+consentPurposeIds: [ads.delivery, ads.measurement, ads.personalization]
+personalizationSupported: unknown
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks: []
+contentRestrictions:
+  - Use only dashboard-issued code; do not modify or self-host the script.
+  - Load the code once per page and comply with above-the-fold, exclusivity, and placement requirements.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents: []
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: Carbon Ads Frequently Asked Questions
+    url: https://www.carbonads.net/faq
+    checkedAt: 2026-07-18
+  - title: Carbon Ads Placement Policy
+    url: https://www.carbonads.net/placement-policy
+    checkedAt: 2026-07-18
+  - title: Carbon Ads Privacy Policy
+    url: https://www.carbonads.net/privacy
+    checkedAt: 2026-07-18
+  - title: Reapply as a Publisher
+    url: https://www.carbonads.net/reapply
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: supportedRegions
+    note: The FAQ describes the target audience and demand geography, not a complete publisher-residence eligibility list.
+  - field: eligibility.kycRequired
+    note: Identity and tax-verification requirements were not established from the cited pages.
+  - field: requiredDomains and cspRequirements
+    note: The privacy policy names carbonads.net and syndicateads.net cookie domains, but the complete script, asset, API, redirect, and injected-CSS domain set must be captured from dashboard-issued code and runtime testing.
+  - field: personalizationSupported
+    note: The privacy policy discusses suitability and possible personalization features but does not make the active publisher-ad configuration clear enough for a boolean claim.
+  - field: adsTxtRequirements
+    note: No requirement was established from the cited official pages.
+knownRisks:
+  - The provider may inject CSS and requires use of unmodified remote code, so any eventual adapter needs a narrowly reviewed CSP and explicit post-consent loading path.
+  - The provider privacy page permits cookies and broad service data collection; marketing language elsewhere about pixel-based operation is not treated as overriding the privacy policy.

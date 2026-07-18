@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-soverign-blog.invalid/providers/provider.schema.json",
+  "title": "OpenSoverignBlog monetization provider catalog entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "displayName",
+    "categories",
+    "integrationModes",
+    "supportedRegions",
+    "eligibility",
+    "requiredDomains",
+    "cookiesAndStorage",
+    "dataAccessed",
+    "consentPurposeIds",
+    "personalizationSupported",
+    "adapterStatus",
+    "lastVerified",
+    "sources",
+    "knownRisks"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "id": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 190,
+      "pattern": "^[a-z0-9][a-z0-9.-]+[a-z0-9]$"
+    },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "example": { "type": "boolean", "default": false },
+    "homepage": { "type": "string", "format": "uri", "maxLength": 2048 },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["network", "direct", "affiliate", "sponsorship", "donation", "house"]
+      }
+    },
+    "integrationModes": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["static", "server", "iframe", "third-party-script", "redirect", "feed"]
+      }
+    },
+    "supportedRegions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 2, "maxLength": 64 }
+    },
+    "eligibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["independentDevelopers", "kycRequired"],
+      "properties": {
+        "independentDevelopers": { "enum": ["yes", "no", "unknown", "conditional"] },
+        "minimumTraffic": { "type": ["string", "null"], "maxLength": 500 },
+        "kycRequired": { "enum": ["yes", "no", "unknown", "conditional"] },
+        "notes": { "type": "string", "maxLength": 3000 }
+      }
+    },
+    "payoutSummary": { "type": "string", "maxLength": 2000 },
+    "authFields": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+    },
+    "requiredDomains": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "format": "hostname" }
+    },
+    "cookiesAndStorage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "purpose", "retention"],
+        "properties": {
+          "kind": { "enum": ["cookie", "local-storage", "session-storage", "indexed-db", "none", "unknown"] },
+          "purpose": { "type": "string", "minLength": 1, "maxLength": 1000 },
+          "retention": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "firstParty": { "type": "boolean" }
+        }
+      }
+    },
+    "dataAccessed": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "consentPurposeIds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+    },
+    "personalizationSupported": {
+      "oneOf": [
+        { "type": "boolean" },
+        { "const": "unknown" }
+      ]
+    },
+    "adsTxtRequirements": { "type": ["string", "null"], "maxLength": 2000 },
+    "cspRequirements": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "webhooks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "maxLength": 500 }
+    },
+    "contentRestrictions": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 1000 }
+    },
+    "adapterStatus": {
+      "enum": ["catalog-only", "community-adapter", "verified-adapter", "core-maintained"]
+    },
+    "adapterPackage": { "type": ["string", "null"], "maxLength": 300 },
+    "selfHostedComponents": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 500 }
+    },
+    "lastVerified": { "type": "string", "format": "date" },
+    "maintainers": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "url", "checkedAt"],
+        "properties": {
+          "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+          "url": { "type": "string", "format": "uri", "maxLength": 2048 },
+          "checkedAt": { "type": "string", "format": "date" }
+        }
+      }
+    },
+    "evidenceGaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "note"],
+        "properties": {
+          "field": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "note": { "type": "string", "minLength": 1, "maxLength": 2000 }
+        }
+      }
+    },
+    "knownRisks": {
+      "type": "array",
+      "items": { "type": "string", "maxLength": 2000 }
+    }
+  }
+}

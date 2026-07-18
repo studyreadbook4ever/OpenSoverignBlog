@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/cli",
+  "apps/server",
+  "crates/assets-fs",
+  "crates/kernel",
+  "crates/plugin-api",
+  "crates/renderer",
+  "crates/storage-sqlite",
+  "features/code-runner-client",
+  "features/comments",
+  "features/external-auth",
+  "features/monetization-policy",
+  "features/rbac",
+  "features/seo",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Unlicense"
+repository = "https://github.com/studyreadbook4ever/OpenSoverignBlog"
+
+[workspace.dependencies]
+ammonia = "4"
+anyhow = "1"
+argon2 = "0.5"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+chrono = { version = "0.4", features = ["serde"] }
+http = "1"
+pulldown-cmark = "0.13"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+redis = { version = "1.0", features = ["connection-manager", "sentinel", "tokio-rustls-comp"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rusqlite = { version = "0.37", features = ["backup", "bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "signal", "time"] }
+toml = "0.9"
+tower-http = { version = "0.6", features = ["cors", "fs", "request-id", "set-header", "trace"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v7"] }

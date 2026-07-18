@@ -1,0 +1,27 @@
+[package]
+name = "osb-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+osb-plugin-api = { version = "=0.1.0", path = "../../crates/plugin-api" }
+osb-storage-sqlite = { version = "=0.1.0", path = "../../crates/storage-sqlite" }
+rand_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+toml.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "osb"
+path = "src/main.rs"
+
+[dev-dependencies]
+tempfile.workspace = true

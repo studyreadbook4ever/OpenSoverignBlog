@@ -1,0 +1,64 @@
+schemaVersion: "1.0"
+id: ethicalads.publisher
+displayName: EthicalAds
+homepage: https://www.ethicalads.io/
+categories: [network]
+integrationModes: [third-party-script, server]
+supportedRegions: [unknown]
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: "50,000 pageviews per month; the provider says it occasionally makes exceptions for fast-growing, high-quality relevant sites."
+  kycRequired: conditional
+  notes: The publisher network is invite-only, developer-focused, and subject to placement review. Government ID may be requested in some payout circumstances.
+payoutSummary: The official publisher policy states a 70% revenue share, monthly handling, and a USD 50 minimum; supported payout methods include Stripe Connect, PayPal, OpenCollective, and GitHub Sponsors.
+authFields: [publisherId]
+requiredDomains: [server.ethicalads.io]
+cookiesAndStorage:
+  - kind: unknown
+    purpose: Contextual ad delivery and fraud-resistant impression or click measurement; the provider says ordinary ad viewers generally do not receive an identifying cookie.
+    retention: No visitor-cookie retention was established; provider logs containing IP addresses and user-agent strings are reported deleted after 10 days.
+    firstParty: false
+dataAccessed:
+  - IP address used for country-level targeting and fraud checks
+  - user-agent string in short-lived logs
+  - page content or publisher-supplied keywords for contextual targeting
+  - ad offers, views, clicks, and placement metrics
+consentPurposeIds: [ads.contextual, ads.measurement]
+personalizationSupported: false
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks: []
+contentRestrictions:
+  - EthicalAds must be the only third-party ad network shown on a page; operator house promotions are allowed.
+  - Placement must follow the provider's above-the-fold, reading-flow, and validation policy.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents: []
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: EthicalAds publishers
+    url: https://www.ethicalads.io/publishers/
+    checkedAt: 2026-07-18
+  - title: Publisher Frequently Asked Questions
+    url: https://www.ethicalads.io/publishers/faq/
+    checkedAt: 2026-07-18
+  - title: Publisher Policy
+    url: https://www.ethicalads.io/publisher-policy/
+    checkedAt: 2026-07-18
+  - title: EthicalAds Privacy Policy
+    url: https://www.ethicalads.io/privacy-policy/
+    checkedAt: 2026-07-18
+  - title: EthicalAds Terms of Service
+    url: https://www.ethicalads.io/terms-of-service/
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: supportedRegions
+    note: Official pages describe demand concentrated in North America and Western Europe but do not state a complete publisher-residence eligibility list.
+  - field: requiredDomains and cspRequirements
+    note: server.ethicalads.io is official, but a complete production asset, image, API, and redirect domain inventory must be taken from the approved publisher code and a clean-browser trace.
+  - field: adsTxtRequirements
+    note: No requirement was established from the cited official pages.
+knownRisks:
+  - The word generally in the provider's cookie statement is not a machine-verifiable guarantee for every future configuration.
+  - Country-level IP use and measurement still require the operator's own purpose, actor, transfer, and legal-basis assessment.

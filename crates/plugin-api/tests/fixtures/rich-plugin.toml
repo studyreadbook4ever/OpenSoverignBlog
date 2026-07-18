@@ -1,0 +1,110 @@
+"$schema" = "../../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.example.rich-plugin"
+name = "Representative rich plugin"
+version = "1.2.3-beta.1+fixture"
+license = "Unlicense"
+pluginApi = "1"
+coreCompatibility = ">=0.1.0 <0.2.0"
+kinds = ["macro", "render-extension", "automation"]
+description = "Exercises every rich v1 declaration without executing a runtime."
+authors = [{ name = "Fixture Author", email = "author@example.org", url = "https://example.org/author" }]
+homepage = "https://example.org/plugin"
+repository = "https://example.org/plugin/source"
+permissions = [
+  { capability = "content.read", scope = "published", reason = "Read the published projection." },
+  { capability = "render.slot", resources = ["article.after"], reason = "Render a typed model after an article." },
+  { capability = "state.read", scope = "site" },
+  { capability = "state.write", scope = "site" }
+]
+metadata = { maturity = "fixture", audited = false, priority = 1 }
+
+[provenance]
+origin = "original"
+generated = false
+generator = "manual fixture"
+sourceMaterials = ["https://example.org/specification"]
+noticeFiles = ["NOTICE.txt"]
+attestation = "Project-owned representative fixture."
+
+[runtime]
+kind = "wasi-component"
+abi = "wasi-component@1"
+component = "dist/rich-plugin.wasm"
+world = "publishing.extension"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+[config]
+schema = "schemas/config.json"
+secretBindings = ["provider.api-token"]
+
+[config.defaults]
+mode = "safe"
+maximumItems = 10
+
+[[hooks]]
+event = "content.published.v1"
+handler = "rich.on-published"
+delivery = "async"
+failurePolicy = "retry"
+priority = 10
+
+[[routes]]
+path = "/preview/{document_id}"
+methods = ["POST"]
+audience = "authenticated"
+handler = "rich.preview"
+requestSchema = "schemas/request.json"
+responseSchema = "schemas/response.json"
+
+[[renderSlots]]
+slot = "article.after"
+handler = "rich.render"
+output = "model"
+cache = "revision"
+
+[[macros]]
+id = "rich.summarize"
+handler = "rich.summarize"
+inputSchema = "schemas/macro-input.json"
+outputSchema = "schemas/macro-output.json"
+phases = ["draft", "publish"]
+deterministic = true
+cache = "inputs"
+requiresReview = true
+
+[ui]
+sandbox = "iframe"
+entrypoint = "ui/index.html"
+sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+[[ui.panels]]
+id = "rich.settings"
+location = "settings"
+
+[state]
+version = 2
+
+[[state.collections]]
+name = "rich.records"
+schema = "schemas/record.json"
+indexes = [["site_id", "document_id"]]
+
+[[migrations]]
+id = "rich.v1-to-v2"
+from = 1
+to = 2
+handler = "rich.migrate-v2"
+
+[[dependencies]]
+id = "org.example.base-plugin"
+version = ">=1.0.0 <2.0.0"
+optional = true
+
+[limits]
+timeoutMs = 2000
+cpuMillis = 1000
+memoryMiB = 64
+pids = 16
+outputKiB = 128
+concurrency = 2

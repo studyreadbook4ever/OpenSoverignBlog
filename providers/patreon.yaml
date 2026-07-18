@@ -1,0 +1,63 @@
+schemaVersion: "1.0"
+id: patreon.creator
+displayName: Patreon
+homepage: https://www.patreon.com/
+categories: [sponsorship, donation]
+integrationModes: [static, redirect, server]
+supportedRegions:
+  - payout-country dependent
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: null
+  kycRequired: conditional
+  notes: A creator account and supported payout setup are required. Patreon says earning creators may be enrolled in identity verification and then must complete it to continue payouts.
+payoutSummary: New creator pages published after 2025-08-04 use Patreon's standard 10% platform plan plus applicable payment-processing, payout, currency-conversion, and tax charges; legacy plans can differ.
+authFields: [clientId, clientSecret, creatorAccessToken, creatorRefreshToken, webhookSecret]
+requiredDomains: [www.patreon.com]
+cookiesAndStorage:
+  - kind: none
+    purpose: A plain first-party-rendered outbound link or server-to-server API call performs no Patreon device access on the blog before navigation.
+    retention: none before navigation
+    firstParty: true
+dataAccessed:
+  - creator campaign data requested by OAuth scope
+  - member identity and membership status requested by OAuth scope
+  - optional member email or address only when separately scoped
+  - webhook membership and post events selected by the creator
+consentPurposeIds: [membership.sync]
+personalizationSupported: false
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks:
+  - campaign member and post webhooks managed through Patreon API v2
+contentRestrictions:
+  - API clients must request only needed OAuth v2 scopes and keep creator and webhook secrets confidential.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents:
+  - optional static creator-page link
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: Patreon API reference
+    url: https://docs.patreon.com/
+    checkedAt: 2026-07-18
+  - title: Creator fees overview
+    url: https://support.patreon.com/hc/en-us/articles/11111747095181-Creator-fees-overview
+    checkedAt: 2026-07-18
+  - title: Identity Verification FAQ
+    url: https://support.patreon.com/hc/en-us/articles/34582075437069-Know-your-customer-KYC-FAQ
+    checkedAt: 2026-07-18
+  - title: Adding your payout details
+    url: https://support.patreon.com/hc/en-us/articles/115004029783-Adding-your-payout-details
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: supportedRegions
+    note: Payout methods and supported countries vary; this compact entry points to provider-controlled payout documentation rather than freezing a country list.
+  - field: cookiesAndStorage after navigation
+    note: Destination-page cookies, storage, third parties, and retention were not inventoried because the safe seed integration is a plain link or server API, not an embed.
+  - field: requiredDomains and cspRequirements
+    note: www.patreon.com covers the documented API and redirect surface, but exact API, OAuth, CDN, and webhook egress requirements require runtime verification before adapter installation.
+knownRisks:
+  - OAuth scopes can expose member email, address, pledge, and profile information; an adapter must default to the smallest scope set and define deletion and retention.
+  - The official API documentation currently describes webhook HMAC signatures using MD5; an adapter must follow current provider verification guidance and isolate webhook trust accordingly.

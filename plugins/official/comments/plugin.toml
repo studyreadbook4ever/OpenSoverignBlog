@@ -1,0 +1,27 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.comments"
+name = "Comments"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+kinds = ["comments", "render-extension"]
+description = "Optional comment submission, moderation, and article rendering."
+permissions = [
+  { capability = "comments.read", scope = "published" },
+  { capability = "comments.write", scope = "public" },
+  { capability = "comments.moderate", scope = "site" },
+  { capability = "render.slot", resources = ["article.after"], reason = "Render approved comments below an article." },
+  { capability = "route.public", resources = ["comments.submit"], reason = "Accept bounded comment submissions." },
+  { capability = "route.admin", resources = ["comments.moderation"], reason = "Moderation queue for authorized principals." },
+  { capability = "state.read", scope = "site" },
+  { capability = "state.write", scope = "site" }
+]
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-feature-comments"
+extension = "comments"

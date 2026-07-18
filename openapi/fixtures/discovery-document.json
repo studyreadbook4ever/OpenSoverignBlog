@@ -1,0 +1,123 @@
+{
+  "specVersion": "1.0",
+  "name": "OpenSoverignBlog",
+  "ai2aiVersion": "1.0",
+  "openapi": "https://blog.example/base/openapi/openapi.yaml",
+  "humanInstructions": "https://blog.example/base/AI2AI.md",
+  "endpoints": {
+    "capabilities": {
+      "href": "https://blog.example/base/api/v1/capabilities",
+      "methods": ["GET"],
+      "auth": "none",
+      "mutating": false,
+      "available": true
+    },
+    "feed": {
+      "href": "https://blog.example/base/api/v1/feed",
+      "methods": ["GET"],
+      "auth": "none",
+      "mutating": false,
+      "available": true
+    },
+    "blogs": {
+      "href": "https://blog.example/base/api/v1/blogs",
+      "methods": ["GET"],
+      "auth": "none",
+      "mutating": false,
+      "available": true
+    },
+    "publishedContent": {
+      "href": "https://blog.example/base/api/v1/posts",
+      "methods": ["GET"],
+      "auth": "none",
+      "mutating": false,
+      "available": true
+    },
+    "comments": {
+      "href": "https://blog.example/base/api/v1/posts/{postId}/comments",
+      "methods": ["GET"],
+      "auth": "none",
+      "mutating": false,
+      "available": true
+    },
+    "commentSubmission": {
+      "href": "https://blog.example/base/api/v1/posts/{postId}/comments",
+      "methods": ["POST"],
+      "auth": "session",
+      "mutating": true,
+      "available": true
+    },
+    "proposeRevision": {
+      "href": "https://blog.example/base/api/v1/ai2ai/proposals",
+      "methods": ["POST"],
+      "auth": "owner",
+      "mutating": true,
+      "available": true
+    },
+    "uploadFirstPartyAsset": {
+      "href": "https://blog.example/base/api/v1/assets",
+      "methods": ["POST"],
+      "auth": "owner",
+      "mutating": true,
+      "available": true
+    },
+    "runnerProfiles": {
+      "href": "https://blog.example/base/api/v1/code-runner/profiles",
+      "methods": ["GET"],
+      "auth": "none",
+      "mutating": false,
+      "available": false
+    }
+  },
+  "schemas": {
+    "content": "https://blog.example/base/schemas/content-envelope.v1.schema.json",
+    "ai2ai": "https://blog.example/base/schemas/ai2ai-envelope.v1.schema.json"
+  },
+  "invariants": {
+    "markdownRequired": true,
+    "directDatabaseWrites": false
+  },
+  "features": ["seo"],
+  "modules": [
+    {
+      "id": "seo",
+      "status": "active",
+      "requested": true,
+      "operational": true,
+      "reason": "canonical discovery is mounted"
+    }
+  ],
+  "operatorIntent": {
+    "localAuth": true,
+    "oauthRequested": false,
+    "comments": true,
+    "collaboration": false,
+    "customCss": true,
+    "agentDiscovery": true,
+    "deliveryOnly": false
+  },
+  "dependencies": {
+    "cache": {
+      "provider": "redis",
+      "role": "discardable_public_derivative_cache",
+      "state": "active",
+      "required": true,
+      "topology": "sentinel",
+      "namespace": "osb",
+      "contentRelease": "release-42",
+      "hits": 12,
+      "misses": 3,
+      "errors": 0,
+      "lastSuccessUnix": 1784390400,
+      "lastError": null
+    },
+    "sourceOfTruth": ["sqlite", "content_addressed_blobs"]
+  },
+  "externalProtocols": {
+    "a2a": {
+      "version": "1.0",
+      "status": "adapter_not_enabled",
+      "documentation": "https://blog.example/base/docs/ai2ai/A2A-ADAPTER.md"
+    }
+  }
+}

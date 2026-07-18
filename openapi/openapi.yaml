@@ -1,0 +1,2495 @@
+openapi: 3.1.0
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: OpenSoverignBlog HTTP API
+  version: 0.1.0
+  description: |
+    Contract for the routes mounted by the reference Rust server. This describes
+    implemented wire behavior, not every capability that a future plugin may add.
+
+    The reference composition supports cacheable public reads, local account
+    sessions with owned blogs and comments, and the optional legacy single-owner
+    bearer token. `OSB_DELIVERY_ONLY=true` fails every community mutation closed
+    while keeping published feeds, blogs, articles, and approved comments public.
+    OAuth/OIDC, advertising, A2A, and a runner broker are not implied by this
+    document.
+  license:
+    name: The Unlicense
+    identifier: Unlicense
+servers:
+  - url: /
+    description: Same-origin reference server
+tags:
+  - name: Discovery
+  - name: Content
+  - name: Identity
+  - name: Blogs
+  - name: Studio
+  - name: Collaboration
+  - name: Comments
+  - name: Administration
+  - name: Assets
+  - name: Runner
+  - name: SEO
+x-osb-contract-scope: reference-server
+x-osb-runtime-configured-routes:
+  publicArticle:
+    default: /blog/{slug}
+    shape: /<configured article_base_path>/{slug}
+    configuration: server.article_base_path or OSB_ARTICLE_BASE_PATH
+    description: |
+      Axum mounts this route after configuration is loaded. Because the base path
+      is a literal that may contain multiple segments, it cannot be represented
+      faithfully as a fixed OpenAPI Path Item. Use `GET /api/v1/posts/{slug}` for
+      a stable machine-facing representation and discovery/canonical links for
+      the human HTML route.
+paths:
+  /healthz:
+    get:
+      tags: [Discovery]
+      operationId: getHealth
+      summary: Process health
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: The HTTP process is serving requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+
+  /.well-known/open-soverign-blog.json:
+    get:
+      tags: [Discovery]
+      operationId: getOpenSoverignBlogDiscovery
+      summary: Discover this server's implemented AI2AI surface
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Discovery document with current runtime module states.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoveryDocument"
+
+  /.well-known/agent-card.json:
+    get:
+      tags: [Discovery]
+      operationId: getA2AAgentCard
+      summary: Check for the optional A2A adapter
+      description: The reference server deliberately returns 404 until an A2A adapter is installed.
+      x-osb-route-source: true
+      responses:
+        "404":
+          description: The optional A2A adapter is not enabled.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/A2AUnavailable"
+
+  /agent.txt:
+    get:
+      tags: [Discovery]
+      operationId: redirectAgentCompatibilityIndex
+      summary: Redirect the singular compatibility path to `/agents.txt`
+      x-osb-route-source: true
+      responses:
+        "308":
+          description: Permanent redirect to the configured public `/agents.txt` URL.
+          headers:
+            Location:
+              required: true
+              schema: { type: string, format: uri, pattern: '^https?://' }
+        "404":
+          description: Agent text discovery is disabled.
+
+  /agents.txt:
+    get:
+      tags: [Discovery]
+      operationId: getAgentCompatibilityIndex
+      summary: Fetch pointers to authoritative machine and human contracts
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Markdown compatibility index; this is not a protocol-conformance claim.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            text/markdown:
+              schema: { type: string }
+        "304": { description: The supplied ETag still matches. }
+        "404": { description: Agent text discovery is disabled. }
+
+  /llms.txt:
+    get:
+      tags: [Discovery]
+      operationId: getLlmReaderIndex
+      summary: Fetch the reader-oriented Markdown site index
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Markdown index following the llms.txt proposal.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            text/markdown:
+              schema: { type: string }
+        "304": { description: The supplied ETag still matches. }
+        "404": { description: Agent text discovery is disabled. }
+
+  /openapi/openapi.yaml:
+    get:
+      tags: [Discovery]
+      operationId: getOpenApiContract
+      summary: Fetch this immutable OpenAPI contract
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: OpenAPI 3.1 YAML embedded in the server binary at build time.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
+  /api/v1/capabilities:
+    get:
+      tags: [Discovery]
+      operationId: getCapabilities
+      summary: Inspect active and available modules
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Runtime capabilities; only operational modules appear in `features`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+
+  /api/v1/session:
+    get:
+      tags: [Identity]
+      operationId: getSession
+      summary: Resolve the current local account session
+      x-osb-route-source: true
+      description: Always returns an anonymous or authenticated session object. Delivery-only mode always resolves anonymously.
+      security:
+        - {}
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Current session. This response is private and never cached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /api/v1/auth/register:
+    post:
+      tags: [Identity]
+      operationId: registerLocalAccount
+      summary: Create a local account and session
+      x-osb-route-source: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+      responses:
+        "201":
+          description: Account created; an HttpOnly session cookie is set.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Unavailable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/auth/login:
+    post:
+      tags: [Identity]
+      operationId: loginLocalAccount
+      summary: Verify a local account and create a session
+      x-osb-route-source: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated session; an HttpOnly session cookie is set.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [Identity]
+      operationId: logoutLocalAccount
+      summary: Revoke the current session
+      x-osb-route-source: true
+      security:
+        - {}
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Anonymous session; the cookie is cleared.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/feed:
+    get:
+      tags: [Content]
+      operationId: getCommunityFeed
+      summary: List the latest published revisions across blogs
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable public feed. Draft changes never alter the published representation.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedResponse"
+        "304": { description: The supplied ETag still matches. }
+
+  /api/v1/blogs:
+    get:
+      tags: [Blogs]
+      operationId: listBlogs
+      summary: List public blogs
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable public blog list.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BlogSummary" }
+        "304": { description: The supplied ETag still matches. }
+    post:
+      tags: [Blogs]
+      operationId: createOwnedBlog
+      summary: Create the authenticated account's blog and first theme revision
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBlogRequest" }
+      responses:
+        "201":
+          description: Blog created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/blogs/{handle}:
+    get:
+      tags: [Blogs]
+      operationId: getBlog
+      summary: Read a public blog profile and selected theme
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+      responses:
+        "200":
+          description: Cacheable public blog profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogSummary" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/custom.css:
+    get:
+      tags: [Blogs]
+      operationId: getBlogCustomCss
+      summary: Fetch one blog's validated same-origin custom stylesheet
+      description: This route is not mounted when custom CSS is disabled. The stylesheet cannot load external resources.
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+      responses:
+        "200":
+          description: Cacheable first-party CSS selected by the current immutable appearance revision and wrapped in a server-owned `@scope (.osb-site-theme[data-site-id="<uuid>"])` rule.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            text/css:
+              schema:
+                type: string
+                description: A server scope wrapper around at most 65536 bytes of validated owner CSS.
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/posts:
+    get:
+      tags: [Blogs, Content]
+      operationId: listBlogPosts
+      summary: List published revisions in one blog
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+      responses:
+        "200":
+          description: Cacheable blog archive, independent of the global feed window.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/posts/{slug}:
+    get:
+      tags: [Content]
+      operationId: getCommunityPost
+      summary: Read one blog's published revision
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: Cacheable post projection. Its ETag is independent of comments and drafts.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPostView" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/studio/documents:
+    get:
+      tags: [Studio]
+      operationId: listOwnedStudioDocuments
+      summary: List documents in the authenticated account's writable blog
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Owner/editor/writer documents, including private drafts.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Studio]
+      operationId: createOwnedStudioDocument
+      summary: Create a draft in the authenticated account's writable blog
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePostRequest" }
+      responses:
+        "201":
+          description: Draft created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/documents/{id}:
+    get:
+      tags: [Studio]
+      operationId: getOwnedStudioDocument
+      summary: Read one document in the authenticated account's writable blog
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Writable document, including its current private revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+  /api/v1/studio/documents/{id}/revisions:
+    post:
+      tags: [Studio]
+      operationId: createOwnedStudioRevision
+      summary: Append an immutable revision as an owner, editor, or writer
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProposeRevisionRequest" }
+      responses:
+        "201":
+          description: Updated document snapshot. A prior published revision stays public.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/studio/documents/{id}/publish:
+    post:
+      tags: [Studio]
+      operationId: publishOwnedStudioRevision
+      summary: Publish one exact revision as the blog owner
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublishRequest" }
+      responses:
+        "200":
+          description: Published document snapshot.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+
+  /api/v1/studio/preview:
+    post:
+      tags: [Studio]
+      operationId: previewOwnedStudioDocument
+      summary: Render a private Studio preview with the publication renderer
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreatePostRequest" }
+      responses:
+        "200":
+          description: Private rendered preview.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudioPreviewResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/studio/assets:
+    post:
+      tags: [Studio, Assets]
+      operationId: uploadOwnedStudioAsset
+      summary: Store a verified first-party image for an authenticated blog owner
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: X-OSB-Filename
+          in: header
+          required: false
+          schema: { type: string, maxLength: 255 }
+      requestBody:
+        required: true
+        content:
+          image/png: { schema: { type: string, format: binary, maxLength: 10485760 } }
+          image/jpeg: { schema: { type: string, format: binary, maxLength: 10485760 } }
+          image/gif: { schema: { type: string, format: binary, maxLength: 10485760 } }
+          image/webp: { schema: { type: string, format: binary, maxLength: 10485760 } }
+          image/avif: { schema: { type: string, format: binary, maxLength: 10485760 } }
+      responses:
+        "201":
+          description: Content-addressed image stored or deduplicated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AssetUploadResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/settings:
+    get:
+      tags: [Studio, Blogs]
+      operationId: getStudioSettings
+      summary: Read owner-managed appearance settings for the active blog
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Private settings. `customCss` is omitted when the feature is disabled.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudioSettings" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    put:
+      tags: [Studio, Blogs]
+      operationId: updateStudioSettings
+      summary: Append and select an immutable owner-managed appearance revision
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateStudioSettingsRequest" }
+      responses:
+        "200":
+          description: The selected appearance revision.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StudioSettings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/collaborators:
+    get:
+      tags: [Studio, Collaboration]
+      operationId: listStudioCollaborators
+      summary: List writer/editor memberships managed by the active blog owner
+      description: This route is not mounted when the collaboration feature is disabled.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Private collaborator list; the owner membership is excluded.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CollaboratorListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Studio, Collaboration]
+      operationId: addStudioCollaborator
+      summary: Add an existing local account as a writer or editor
+      description: This route is not mounted when the collaboration feature is disabled.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddCollaboratorRequest" }
+      responses:
+        "201":
+          description: Collaborator membership created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collaborator" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/collaborators/{userId}:
+    delete:
+      tags: [Studio, Collaboration]
+      operationId: removeStudioCollaborator
+      summary: Remove a writer/editor membership
+      description: The owner membership cannot be removed or demoted. This route is not mounted when collaboration is disabled.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The removed collaborator membership.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collaborator" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/posts/{id}/comments:
+    parameters:
+      - $ref: "#/components/parameters/PostId"
+    get:
+      tags: [Comments]
+      operationId: listApprovedComments
+      summary: List approved comments for a published community post
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable comment list with a validator separate from the article.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommentListResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+    post:
+      tags: [Comments]
+      operationId: createComment
+      summary: Add an authenticated comment to a published community post
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCommentRequest" }
+      responses:
+        "201":
+          description: Approved comment created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CommentView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/posts:
+    get:
+      tags: [Content]
+      operationId: listPublishedPosts
+      summary: List up to 100 published posts
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Published post summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PostSummary"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [Administration]
+      operationId: createPost
+      summary: Create a draft document and its first immutable revision
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePostRequest"
+      responses:
+        "201":
+          description: Draft document created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/JsonDataError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/posts/{slug}:
+    get:
+      tags: [Content]
+      operationId: getPublishedPost
+      summary: Get a published post and a sanitized publish artifact
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: Published content in the selected view.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostView"
+        "400":
+          $ref: "#/components/responses/QueryError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/posts/{slug}/source.md:
+    get:
+      tags: [Content]
+      operationId: getPublishedMarkdownSource
+      summary: Fetch the required portable Markdown source
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Slug"
+      responses:
+        "200":
+          description: Verbatim Markdown for the published revision.
+          content:
+            text/markdown:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/documents:
+    get:
+      tags: [Administration]
+      operationId: listAdminDocuments
+      summary: List up to 500 current document snapshots, including drafts
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      responses:
+        "200":
+          description: Current snapshots for the configured site.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DocumentSnapshot"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/admin/documents/{id}:
+    get:
+      tags: [Administration]
+      operationId: getAdminDocument
+      summary: Get the current snapshot for one document
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Current document snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentSnapshot"
+        "400":
+          $ref: "#/components/responses/PathError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/admin/documents/{id}/revisions:
+    get:
+      tags: [Administration]
+      operationId: listAdminRevisions
+      summary: List up to 1000 immutable revisions, newest first
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Immutable revision history for the document.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RevisionSnapshot"
+        "400":
+          $ref: "#/components/responses/PathError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/documents/{id}/revisions:
+    post:
+      tags: [Administration]
+      operationId: proposeHumanRevision
+      summary: Append an immutable human revision
+      description: The server derives `documentId` from the path and creates the human owner actor.
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProposeRevisionRequest"
+      responses:
+        "201":
+          description: Immutable revision appended but not published.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevisionSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/JsonDataError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/documents/{id}/publish:
+    post:
+      tags: [Administration]
+      operationId: publishRevision
+      summary: Publish one exact immutable revision
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      parameters:
+        - $ref: "#/components/parameters/DocumentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PublishRequest"
+      responses:
+        "200":
+          description: Current document snapshot after publication.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DocumentSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/JsonDataError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/ai2ai/proposals:
+    post:
+      tags: [Administration]
+      operationId: proposeAi2AiRevision
+      summary: Validate and append an AI2AI revision proposal
+      description: Appends a draft revision only. A separate publish call is always required.
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Ai2AiEnvelope"
+      responses:
+        "202":
+          description: Proposal accepted as an immutable, unpublished revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevisionSnapshot"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/JsonDataError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/assets:
+    post:
+      tags: [Assets]
+      operationId: uploadFirstPartyAsset
+      summary: Store one validated, content-addressed raster asset
+      description: |
+        The body is raw bytes, not multipart. Magic bytes determine the format;
+        a supplied Content-Type must agree. SVG, HTML, and unknown formats are
+        rejected. The handler limit is 10 MiB and the global HTTP body limit is
+        12 MiB.
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      parameters:
+        - name: X-OSB-Filename
+          in: header
+          required: false
+          description: Display-only filename; never used as a storage path.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          image/png:
+            schema:
+              type: string
+              format: binary
+          image/jpeg:
+            schema:
+              type: string
+              format: binary
+          image/gif:
+            schema:
+              type: string
+              format: binary
+          image/webp:
+            schema:
+              type: string
+              format: binary
+          image/avif:
+            schema:
+              type: string
+              format: binary
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "201":
+          description: Asset stored or deduplicated by SHA-256 digest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /media/{digest}:
+    get:
+      tags: [Assets]
+      operationId: getFirstPartyAsset
+      summary: Fetch and integrity-check one content-addressed asset
+      x-osb-route-source: true
+      parameters:
+        - name: digest
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: ^[a-f0-9]{64}$
+      responses:
+        "200":
+          description: Asset bytes with immutable caching and a SHA-256 ETag.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: public, max-age=31536000, immutable
+            ETag:
+              schema:
+                type: string
+                pattern: '^"sha256:[a-f0-9]{64}"$'
+          content:
+            image/png:
+              schema: { type: string, format: binary }
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/gif:
+              schema: { type: string, format: binary }
+            image/webp:
+              schema: { type: string, format: binary }
+            image/avif:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/code-runner/profiles:
+    get:
+      tags: [Runner]
+      operationId: listCodeRunnerProfiles
+      summary: List operator-approved immutable runner profiles
+      description: Public metadata only. Returns 503 unless the optional remote broker is configured and ready.
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Profiles configured locally and confirmed by broker readiness.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/RunnerProfile"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/code-runner/runs:
+    post:
+      tags: [Runner]
+      operationId: submitCodeRun
+      summary: Submit source to the separately operated runner broker
+      description: The reference server never executes source locally and v1 always denies network access.
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CodeRunRequest"
+      responses:
+        "200":
+          description: Broker returned a terminal result immediately.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerTerminalResponse"
+        "202":
+          description: Broker queued the job; poll with the returned ID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerQueuedResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/JsonDataError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /api/v1/code-runner/runs/{id}:
+    get:
+      tags: [Runner]
+      operationId: pollCodeRun
+      summary: Poll a runner job held in this process's bounded in-memory tracker
+      description: Jobs are not durable across reference-server restarts.
+      x-osb-route-source: true
+      security:
+        - OwnerBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Current queued state or a terminal result.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/RunnerQueuedResponse"
+                  - $ref: "#/components/schemas/RunnerTerminalResponse"
+                discriminator:
+                  propertyName: state
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /robots.txt:
+    get:
+      tags: [SEO]
+      operationId: getRobotsTxt
+      summary: Fetch the configured robots policy
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Robots policy, including a sitemap link unless no-index is enabled.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: SEO module is disabled.
+
+  /sitemap.xml:
+    get:
+      tags: [SEO]
+      operationId: getSitemap
+      summary: Fetch up to 50,000 published canonical URLs
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Sitemap XML.
+          content:
+            application/xml:
+              schema:
+                type: string
+        "404":
+          description: SEO is disabled or no-index is enabled.
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  securitySchemes:
+    OwnerBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque owner token
+      description: Exact token configured by `server.admin_token` or `OSB_ADMIN_TOKEN`.
+    SessionCookie:
+      type: apiKey
+      in: cookie
+      name: osb_session
+      description: Opaque local account session. Only its SHA-256 digest is persisted.
+
+  parameters:
+    DocumentId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PostId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Handle:
+      name: handle
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+    Slug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 240
+    View:
+      name: view
+      in: query
+      required: false
+      description: "`source` is accepted as an alias for `markdown_source`."
+      schema:
+        type: string
+        enum: [intent, markdown, markdown_source, source]
+        default: intent
+
+  responses:
+    Unauthorized:
+      description: The owner bearer or local account session is missing, malformed, or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Forbidden:
+      description: The authenticated account does not hold the owner role required by this operation.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Unavailable:
+      description: The server is read-only or the optional runtime dependency is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    BadRequest:
+      description: Application validation failed, a path was invalid, or JSON syntax was malformed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+        text/plain:
+          schema:
+            type: string
+    QueryError:
+      description: Query deserialization failed.
+      content:
+        text/plain:
+          schema:
+            type: string
+    PathError:
+      description: Path parameter deserialization failed.
+      content:
+        text/plain:
+          schema:
+            type: string
+    NotFound:
+      description: The requested content or asset was not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    Conflict:
+      description: Slug, base revision, or idempotency state conflicts with stored state.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    PayloadTooLarge:
+      description: The global body limit or asset-specific size limit was exceeded.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+        text/plain:
+          schema:
+            type: string
+    UnsupportedMediaType:
+      description: JSON content type is absent/invalid, or asset bytes/media type are unsupported.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+        text/plain:
+          schema:
+            type: string
+    JsonDataError:
+      description: JSON is syntactically valid but cannot deserialize into the request type.
+      content:
+        text/plain:
+          schema:
+            type: string
+    InternalError:
+      description: Storage, worker, serialization, or integrity operation failed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    BadGateway:
+      description: The optional remote runner returned an invalid or failed upstream response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+
+  schemas:
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status, version]
+      properties:
+        status:
+          type: string
+          const: ok
+        version:
+          type: string
+
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum:
+            - unauthorized
+            - invalid_login
+            - registration_closed
+            - delivery_only
+            - read_only
+            - bad_request
+            - internal
+            - service_unavailable
+            - upstream_failure
+            - asset_too_large
+            - unsupported_asset
+            - invalid_asset_digest
+            - asset_not_found
+            - asset_storage
+            - not_found
+            - duplicate_slug
+            - revision_conflict
+            - duplicate_idempotency_key
+            - conflict
+            - validation
+            - storage
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties:
+            type: string
+
+    A2AUnavailable:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          const: a2a_adapter_not_enabled
+        message:
+          type: string
+
+    ModuleDescriptor:
+      type: object
+      additionalProperties: false
+      required: [id, status, requested, operational, reason]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [active, available, degraded, disabled, misconfigured]
+        requested:
+          type: boolean
+        operational:
+          type: boolean
+        reason:
+          type: string
+
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [version, views, features, modules, unavailableByDefault, mutationMechanisms, mutationMode]
+      properties:
+        version:
+          type: string
+          const: "1.0"
+        views:
+          type: array
+          items:
+            type: string
+            enum: [intent, markdown, markdown_source]
+        features:
+          type: array
+          items:
+            type: string
+        modules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModuleDescriptor"
+        unavailableByDefault:
+          type: array
+          items:
+            type: string
+        mutationMechanisms:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+            enum: [session, owner_token]
+        mutationMode:
+          type: string
+          enum: [authenticated_members, single_owner_token, read_only]
+
+    DiscoveryEndpoint:
+      type: object
+      additionalProperties: false
+      required: [href, methods, auth, mutating, available]
+      properties:
+        href:
+          type: string
+          pattern: '^https?://[^\s]+$'
+        methods:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            enum: [GET, POST, PUT, PATCH, DELETE]
+        auth:
+          type: string
+          enum: [none, session, owner]
+        mutating:
+          type: boolean
+        available:
+          type: boolean
+
+    DiscoveryOperatorIntent:
+      type: object
+      additionalProperties: false
+      required:
+        - localAuth
+        - oauthRequested
+        - comments
+        - collaboration
+        - customCss
+        - agentDiscovery
+        - deliveryOnly
+      properties:
+        localAuth: { type: boolean }
+        oauthRequested: { type: boolean }
+        comments: { type: boolean }
+        collaboration: { type: boolean }
+        customCss: { type: boolean }
+        agentDiscovery: { type: boolean }
+        deliveryOnly: { type: boolean }
+
+    DiscoveryCacheDependency:
+      type: object
+      additionalProperties: false
+      required: [provider, state]
+      properties:
+        provider: { type: string, const: redis }
+        role: { type: string, const: discardable_public_derivative_cache }
+        state:
+          type: string
+          enum: [active, degraded, connecting, misconfigured]
+        required: { type: boolean }
+        topology:
+          type: string
+          enum: [standalone, sentinel]
+        namespace: { type: string }
+        contentRelease: { type: string }
+        hits: { type: integer, minimum: 0 }
+        misses: { type: integer, minimum: 0 }
+        errors: { type: integer, minimum: 0 }
+        lastSuccessUnix:
+          type: [integer, "null"]
+          minimum: 0
+        lastError:
+          type: [string, "null"]
+
+    DiscoveryDependencies:
+      type: object
+      additionalProperties: false
+      required: [cache, sourceOfTruth]
+      properties:
+        cache:
+          $ref: "#/components/schemas/DiscoveryCacheDependency"
+        sourceOfTruth:
+          type: array
+          minItems: 2
+          maxItems: 2
+          prefixItems:
+            - { type: string, const: sqlite }
+            - { type: string, const: content_addressed_blobs }
+          items: false
+
+    A2AProtocolStatus:
+      type: object
+      additionalProperties: false
+      required: [version, status, documentation]
+      properties:
+        version: { type: string, const: "1.0" }
+        status: { type: string, const: adapter_not_enabled }
+        documentation: { type: string, format: uri, pattern: '^https?://' }
+
+    DiscoveryDocument:
+      type: object
+      additionalProperties: false
+      required:
+        - specVersion
+        - name
+        - ai2aiVersion
+        - openapi
+        - humanInstructions
+        - endpoints
+        - schemas
+        - invariants
+        - features
+        - modules
+        - operatorIntent
+        - dependencies
+        - externalProtocols
+      properties:
+        specVersion: { type: string, const: "1.0" }
+        name: { type: string, const: OpenSoverignBlog }
+        ai2aiVersion: { type: string, const: "1.0" }
+        openapi: { type: string, format: uri, pattern: '^https?://' }
+        humanInstructions: { type: string, format: uri, pattern: '^https?://' }
+        endpoints:
+          type: object
+          additionalProperties: false
+          required:
+            - capabilities
+            - feed
+            - blogs
+            - publishedContent
+            - comments
+            - commentSubmission
+            - proposeRevision
+            - uploadFirstPartyAsset
+            - runnerProfiles
+          properties:
+            capabilities: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            feed: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            blogs: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            publishedContent: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            comments: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            commentSubmission: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            proposeRevision: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            uploadFirstPartyAsset: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+            runnerProfiles: { $ref: "#/components/schemas/DiscoveryEndpoint" }
+        schemas:
+          type: object
+          additionalProperties:
+            type: string
+            format: uri
+            pattern: '^https?://'
+        invariants:
+          type: object
+          additionalProperties:
+            type: boolean
+        features:
+          type: array
+          items: { type: string }
+        modules:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModuleDescriptor"
+        operatorIntent:
+          $ref: "#/components/schemas/DiscoveryOperatorIntent"
+        dependencies:
+          $ref: "#/components/schemas/DiscoveryDependencies"
+        externalProtocols:
+          type: object
+          additionalProperties: false
+          required: [a2a]
+          properties:
+            a2a:
+              $ref: "#/components/schemas/A2AProtocolStatus"
+
+    PostSummary:
+      type: object
+      additionalProperties: false
+      required: [id, title, slug, updatedAt, hasIntentView, hasOntology]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        updatedAt: { type: string, format: date-time }
+        hasIntentView: { type: boolean }
+        hasOntology: { type: boolean }
+
+    UserSummary:
+      type: object
+      additionalProperties: false
+      required: [id, handle, displayName]
+      properties:
+        id: { type: string, format: uuid }
+        handle:
+          type: string
+          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+        displayName: { type: string, minLength: 1, maxLength: 80 }
+        avatarUrl: { type: string, format: uri }
+
+    BlogTheme:
+      type: object
+      additionalProperties: false
+      required: [presetId]
+      properties:
+        presetId:
+          type: string
+          enum: [paper, ink, forest, terminal]
+        customCssUrl:
+          type: string
+          format: uri
+          pattern: '^https?://[^\s]+/api/v1/blogs/[a-z0-9-]+/custom\.css$'
+          description: Absolute same-origin stylesheet URL preserving any deployment base path.
+
+    BlogSummary:
+      type: object
+      additionalProperties: false
+      required: [id, handle, title, owner, theme]
+      properties:
+        id: { type: string, format: uuid }
+        handle:
+          type: string
+          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, minLength: 1, maxLength: 240 }
+        owner: { $ref: "#/components/schemas/UserSummary" }
+        theme: { $ref: "#/components/schemas/BlogTheme" }
+        createdAt: { type: string, format: date-time }
+
+    AnonymousSession:
+      type: object
+      additionalProperties: false
+      required: [state, registrationOpen]
+      properties:
+        state: { type: string, const: anonymous }
+        registrationOpen: { type: boolean }
+
+    AuthenticatedSession:
+      type: object
+      additionalProperties: false
+      required: [state, registrationOpen, user]
+      properties:
+        state: { type: string, const: authenticated }
+        registrationOpen: { type: boolean }
+        user: { $ref: "#/components/schemas/UserSummary" }
+        blog: { $ref: "#/components/schemas/BlogSummary" }
+        membershipRole:
+          $ref: "#/components/schemas/SiteMembershipRole"
+
+    Session:
+      oneOf:
+        - $ref: "#/components/schemas/AnonymousSession"
+        - $ref: "#/components/schemas/AuthenticatedSession"
+      discriminator:
+        propertyName: state
+        mapping:
+          anonymous: "#/components/schemas/AnonymousSession"
+          authenticated: "#/components/schemas/AuthenticatedSession"
+
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password, handle, displayName]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, format: password, minLength: 8, maxLength: 1024, writeOnly: true }
+        handle:
+          type: string
+          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+        displayName: { type: string, minLength: 1, maxLength: 80 }
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        password: { type: string, format: password, minLength: 1, maxLength: 4096, writeOnly: true }
+
+    CreateBlogRequest:
+      type: object
+      additionalProperties: false
+      required: [handle, title, themePreset]
+      properties:
+        handle:
+          type: string
+          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+        title: { type: string, minLength: 1, maxLength: 100 }
+        description: { type: string, minLength: 1, maxLength: 240 }
+        themePreset:
+          type: string
+          enum: [paper, ink, forest, terminal]
+
+    SiteMembershipRole:
+      type: string
+      enum: [owner, editor, writer]
+
+    CollaboratorRole:
+      type: string
+      enum: [editor, writer]
+
+    Collaborator:
+      type: object
+      additionalProperties: false
+      required: [userId, email, handle, displayName, role, createdAt]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string, format: email, maxLength: 254 }
+        handle:
+          type: string
+          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+        displayName: { type: string, minLength: 1, maxLength: 100 }
+        role: { $ref: "#/components/schemas/CollaboratorRole" }
+        createdAt: { type: string, format: date-time }
+
+    CollaboratorListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/Collaborator" }
+
+    AddCollaboratorRequest:
+      type: object
+      additionalProperties: false
+      required: [email, role]
+      properties:
+        email: { type: string, format: email, maxLength: 254 }
+        role: { $ref: "#/components/schemas/CollaboratorRole" }
+
+    StudioSettings:
+      type: object
+      additionalProperties: false
+      required: [blogId, themePreset, themeRevision, customCssEnabled]
+      properties:
+        blogId: { type: string, format: uuid }
+        themePreset:
+          type: string
+          enum: [paper, ink, forest, terminal]
+        themeRevision: { type: integer, minimum: 1 }
+        customCssEnabled: { type: boolean }
+        customCss:
+          type: string
+          maxLength: 65536
+          description: Omitted when custom CSS is disabled or unset.
+
+    UpdateStudioSettingsRequest:
+      type: object
+      additionalProperties: false
+      required: [themePreset]
+      properties:
+        themePreset:
+          type: string
+          enum: [paper, ink, forest, terminal]
+        customCss:
+          type: [string, "null"]
+          maxLength: 65536
+          description: Omit to preserve; null or an empty string clears. Rejected when custom CSS is disabled.
+
+    FeedPostSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - slug
+        - excerpt
+        - publishedAt
+        - updatedAt
+        - author
+        - blog
+        - tags
+        - commentCount
+        - hasIntentView
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        excerpt: { type: string }
+        publishedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        author: { $ref: "#/components/schemas/UserSummary" }
+        blog: { $ref: "#/components/schemas/BlogSummary" }
+        tags:
+          type: array
+          items: { type: string }
+        commentCount: { type: integer, minimum: 0 }
+        hasIntentView: { type: boolean }
+        coverImageUrl: { type: string, format: uri-reference }
+
+    FeedResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/FeedPostSummary" }
+
+    BlogPostView:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - canonicalSlug
+        - requestedSlug
+        - revisionId
+        - markdown
+        - embeds
+        - artifact
+        - slug
+        - publishedAt
+        - updatedAt
+        - author
+        - blog
+        - tags
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        canonicalSlug: { type: string }
+        requestedSlug: { type: string }
+        revisionId: { type: string, format: uuid }
+        markdown: { type: string }
+        embeds:
+          type: array
+          items: { $ref: "#/components/schemas/EmbedReference" }
+        artifact: { $ref: "#/components/schemas/PublishArtifact" }
+        ontology: { $ref: "#/components/schemas/OntologySidecar" }
+        slug: { type: string }
+        excerpt: { type: string }
+        publishedAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        author: { $ref: "#/components/schemas/UserSummary" }
+        blog: { $ref: "#/components/schemas/BlogSummary" }
+        tags:
+          type: array
+          items: { type: string }
+        coverImageUrl: { type: string, format: uri-reference }
+
+    StudioPreviewResponse:
+      type: object
+      additionalProperties: false
+      required: [artifact]
+      properties:
+        artifact: { $ref: "#/components/schemas/PublishArtifact" }
+
+    CreateCommentRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceMarkdown]
+      properties:
+        sourceMarkdown:
+          type: string
+          minLength: 1
+          maxLength: 65536
+          description: UTF-8 Markdown, limited by the server to 65,536 encoded bytes.
+
+    CommentView:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - postId
+        - author
+        - sourceMarkdown
+        - artifactHtml
+        - createdAt
+        - updatedAt
+        - canEdit
+        - canDelete
+      properties:
+        id: { type: string, format: uuid }
+        postId: { type: string, format: uuid }
+        author: { $ref: "#/components/schemas/UserSummary" }
+        sourceMarkdown: { type: string }
+        artifactHtml: { type: string, description: Sanitized approved-comment HTML. }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        canEdit: { type: boolean }
+        canDelete: { type: boolean }
+
+    CommentListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/CommentView" }
+
+    RevisionActor:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind:
+          type: string
+          enum: [human, agent, importer, system]
+        id:
+          type: string
+        displayName:
+          type: string
+
+    Provenance:
+      type: object
+      additionalProperties: false
+      required: [origin]
+      properties:
+        origin: { type: string, minLength: 1, maxLength: 100 }
+        sourceUri: { type: string, format: uri, maxLength: 2048 }
+        actorId: { type: string, maxLength: 200 }
+        generatedBy: { type: string, maxLength: 500 }
+
+    IntentLayer:
+      type: object
+      additionalProperties: false
+      required: [format, sourceHtml]
+      properties:
+        format: { type: string, minLength: 1, maxLength: 100 }
+        sourceHtml:
+          type: string
+          maxLength: 10485760
+          description: Untrusted input; the renderer sanitizes it before publication.
+        rendererHints:
+          type: object
+          maxProperties: 64
+          additionalProperties:
+            type: string
+            maxLength: 1000
+        provenance:
+          $ref: "#/components/schemas/Provenance"
+
+    OntologyStatement:
+      type: object
+      additionalProperties: false
+      required: [subject, predicate, object, confirmedByAuthor]
+      properties:
+        subject: { type: string, minLength: 1, maxLength: 2048 }
+        predicate: { type: string, minLength: 1, maxLength: 2048 }
+        object: true
+        evidence: { type: string, maxLength: 4096 }
+        confirmedByAuthor: { type: boolean }
+
+    OntologySidecar:
+      type: object
+      additionalProperties: false
+      required: [schema]
+      properties:
+        schema: { type: string, format: uri, maxLength: 2048 }
+        statements:
+          type: array
+          maxItems: 100000
+          items:
+            $ref: "#/components/schemas/OntologyStatement"
+
+    EmbedReference:
+      type: object
+      additionalProperties: false
+      required: [id, provider, resourceId, canonicalUrl, title]
+      properties:
+        id: { type: string, pattern: '^[A-Za-z0-9._-]{1,200}$' }
+        provider: { type: string, pattern: '^[A-Za-z0-9._-]{1,200}$' }
+        resourceId: { type: string, minLength: 1, maxLength: 2000 }
+        canonicalUrl: { type: string, format: uri, pattern: '^https?://' }
+        title: { type: string, minLength: 1, maxLength: 500 }
+        consentPurposeIds:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[A-Za-z0-9._-]{1,200}$'
+
+    CreatePostRequest:
+      type: object
+      required: [title, slug, sourceMarkdown]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 300 }
+        slug: { type: string, minLength: 1, maxLength: 240 }
+        sourceMarkdown: { type: string, maxLength: 10485760 }
+        embeds:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/EmbedReference"
+        intent:
+          oneOf:
+            - $ref: "#/components/schemas/IntentLayer"
+            - type: "null"
+        ontology:
+          oneOf:
+            - $ref: "#/components/schemas/OntologySidecar"
+            - type: "null"
+      description: Unknown JSON fields are currently ignored by this request type.
+
+    ProposedRevision:
+      type: object
+      required: [documentId, baseRevisionId, title, slug, sourceMarkdown, actor]
+      properties:
+        documentId: { type: string, format: uuid }
+        baseRevisionId: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 300 }
+        slug: { type: string, minLength: 1, maxLength: 240 }
+        sourceMarkdown: { type: string, maxLength: 10485760 }
+        embeds:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/EmbedReference"
+        intent:
+          oneOf:
+            - $ref: "#/components/schemas/IntentLayer"
+            - type: "null"
+        ontology:
+          oneOf:
+            - $ref: "#/components/schemas/OntologySidecar"
+            - type: "null"
+        actor:
+          $ref: "#/components/schemas/RevisionActor"
+        idempotencyKey:
+          type: [string, "null"]
+          maxLength: 200
+      description: Unknown JSON fields are currently ignored by this request type.
+
+    ProposeRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, title, slug, sourceMarkdown]
+      properties:
+        baseRevisionId: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 300 }
+        slug: { type: string, minLength: 1, maxLength: 240 }
+        sourceMarkdown: { type: string, maxLength: 10485760 }
+        embeds:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/EmbedReference"
+        intent:
+          oneOf:
+            - $ref: "#/components/schemas/IntentLayer"
+            - type: "null"
+        ontology:
+          oneOf:
+            - $ref: "#/components/schemas/OntologySidecar"
+            - type: "null"
+        idempotencyKey:
+          type: [string, "null"]
+          maxLength: 200
+
+    RevisionSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - id
+        - documentId
+        - revisionNumber
+        - title
+        - slug
+        - sourceMarkdown
+        - embeds
+        - actor
+        - contentHash
+        - createdAt
+      properties:
+        schemaVersion: { type: string, const: "1.0" }
+        id: { type: string, format: uuid }
+        documentId: { type: string, format: uuid }
+        revisionNumber: { type: integer, minimum: 1 }
+        parentRevisionId: { type: string, format: uuid }
+        title: { type: string }
+        slug: { type: string }
+        sourceMarkdown: { type: string }
+        embeds:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbedReference"
+        intent:
+          $ref: "#/components/schemas/IntentLayer"
+        ontology:
+          $ref: "#/components/schemas/OntologySidecar"
+        actor:
+          $ref: "#/components/schemas/RevisionActor"
+        contentHash:
+          type: string
+          pattern: '^sha256:[a-f0-9]{64}$'
+        createdAt: { type: string, format: date-time }
+
+    DocumentSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - schemaVersion
+        - id
+        - siteId
+        - status
+        - currentRevisionId
+        - revision
+        - createdAt
+        - updatedAt
+      properties:
+        schemaVersion: { type: string, const: "1.0" }
+        id: { type: string, format: uuid }
+        siteId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [draft, published, archived]
+        currentRevisionId: { type: string, format: uuid }
+        publishedRevisionId: { type: string, format: uuid }
+        revision:
+          $ref: "#/components/schemas/RevisionSnapshot"
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    PublishRequest:
+      type: object
+      required: [revisionId]
+      properties:
+        revisionId: { type: string, format: uuid }
+      description: Unknown JSON fields are currently ignored by this request type.
+
+    PublishArtifact:
+      type: object
+      additionalProperties: false
+      required:
+        - view
+        - html
+        - sourceHash
+        - artifactHash
+        - rendererVersion
+        - sanitizerPolicyVersion
+        - requiredStyleAssets
+        - requiredScriptAssets
+      properties:
+        view:
+          type: string
+          enum: [intent, markdown, markdown_source]
+        html:
+          type: string
+          description: Sanitized HTML publish artifact, never raw author-intent HTML.
+        sourceHash: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        artifactHash: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        rendererVersion: { type: string }
+        sanitizerPolicyVersion: { type: string }
+        requiredStyleAssets:
+          type: array
+          items: { type: string }
+        requiredScriptAssets:
+          type: array
+          items: { type: string }
+
+    PostView:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - canonicalSlug
+        - requestedSlug
+        - revisionId
+        - markdown
+        - embeds
+        - artifact
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        canonicalSlug: { type: string }
+        requestedSlug: { type: string }
+        revisionId: { type: string, format: uuid }
+        markdown: { type: string }
+        embeds:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbedReference"
+        artifact:
+          $ref: "#/components/schemas/PublishArtifact"
+        ontology:
+          $ref: "#/components/schemas/OntologySidecar"
+
+    AiActor:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind:
+          type: string
+          enum: [human, agent, tool, service]
+        id: { type: string, minLength: 1, maxLength: 300 }
+        provider: { type: string, maxLength: 300 }
+        model: { type: string, maxLength: 300 }
+
+    AiPolicySnapshot:
+      type: object
+      additionalProperties: false
+      required: [dataBoundary]
+      properties:
+        dataBoundary:
+          type: string
+          enum: [local_only, approved_providers, redact_before_send, external_allowed]
+        allowedProviderIds:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 300 }
+        allowedCapabilities:
+          type: array
+          maxItems: 128
+          uniqueItems: true
+          items: { type: string, minLength: 1, maxLength: 300 }
+        maxCost: { type: [number, "null"], minimum: 0 }
+        maxTokens: { type: [integer, "null"], minimum: 0 }
+
+    ContextReceipt:
+      type: object
+      additionalProperties: false
+      required: [reference, contentHash, scope, included]
+      properties:
+        reference: { type: string, minLength: 1, maxLength: 2048 }
+        contentHash: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        scope: { type: string, minLength: 1, maxLength: 100 }
+        included: { type: boolean }
+        exclusionReason: { type: string, minLength: 1, maxLength: 1000 }
+
+    AiProvenanceEntry:
+      type: object
+      additionalProperties: false
+      required: [kind, reference]
+      properties:
+        kind: { type: string, minLength: 1, maxLength: 100 }
+        reference: { type: string, minLength: 1, maxLength: 2048 }
+        contentHash: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+
+    Ai2AiEnvelope:
+      type: object
+      additionalProperties: false
+      required:
+        - specVersion
+        - messageId
+        - idempotencyKey
+        - occurredAt
+        - actor
+        - intent
+        - proposal
+        - policy
+      properties:
+        specVersion: { type: string, const: "1.0" }
+        messageId: { type: string, format: uuid }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        occurredAt: { type: string, format: date-time }
+        actor:
+          $ref: "#/components/schemas/AiActor"
+        intent: { type: string, minLength: 1, maxLength: 2000 }
+        proposal:
+          $ref: "#/components/schemas/ProposedRevision"
+        policy:
+          $ref: "#/components/schemas/AiPolicySnapshot"
+        contextReceipts:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/ContextReceipt"
+        provenance:
+          type: array
+          maxItems: 10000
+          items:
+            $ref: "#/components/schemas/AiProvenanceEntry"
+
+    AssetRecord:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, digest, mediaType, size, originalFilename, createdAt]
+      properties:
+        schemaVersion: { type: string }
+        digest: { type: string, pattern: '^[a-f0-9]{64}$' }
+        mediaType:
+          type: string
+          enum: [image/png, image/jpeg, image/gif, image/webp, image/avif]
+        size: { type: integer, minimum: 0, maximum: 10485760 }
+        originalFilename: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    AssetUploadResponse:
+      type: object
+      additionalProperties: false
+      required: [record, url]
+      properties:
+        record:
+          $ref: "#/components/schemas/AssetRecord"
+        url:
+          type: string
+          format: uri
+          pattern: '^https?://[^\s]+/media/[a-f0-9]{64}$'
+
+    RunLimits:
+      type: object
+      additionalProperties: false
+      required: [wallTimeMs, cpuTimeMs, memoryBytes, outputBytes, processLimit, network]
+      properties:
+        wallTimeMs: { type: integer, minimum: 100, maximum: 60000 }
+        cpuTimeMs: { type: integer, minimum: 10, maximum: 60000 }
+        memoryBytes: { type: integer, minimum: 16777216, maximum: 2147483648 }
+        outputBytes: { type: integer, minimum: 1024, maximum: 4194304 }
+        processLimit: { type: integer, minimum: 1, maximum: 256 }
+        network: { type: string, const: denied }
+
+    RunnerProfile:
+      type: object
+      additionalProperties: false
+      required: [id, digest, fenceAliases, outputMode, maximumLimits, maximumSourceBytes]
+      properties:
+        id: { type: string }
+        digest: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        fenceAliases:
+          type: array
+          uniqueItems: true
+          items: { type: string }
+        outputMode:
+          type: string
+          enum: [console, web_preview]
+        maximumLimits:
+          $ref: "#/components/schemas/RunLimits"
+        maximumSourceBytes: { type: integer, minimum: 1, maximum: 1048576 }
+
+    CodeRunRequest:
+      type: object
+      additionalProperties: false
+      required: [profileId, source]
+      properties:
+        profileId: { type: string }
+        source: { type: string, maxLength: 1048576 }
+
+    RunnerQueuedResponse:
+      type: object
+      additionalProperties: false
+      required: [state, jobId, requestId, pollAfterMs]
+      properties:
+        state: { type: string, const: queued }
+        jobId: { type: string, format: uuid }
+        requestId: { type: string, format: uuid }
+        pollAfterMs: { type: integer, minimum: 1 }
+
+    TerminalRun:
+      type: object
+      additionalProperties: false
+      required:
+        - jobId
+        - requestId
+        - attemptId
+        - profileId
+        - profileDigest
+        - completedAt
+        - outcome
+        - exitCode
+        - stdout
+        - stderr
+        - truncated
+      properties:
+        jobId: { type: string, format: uuid }
+        requestId: { type: string, format: uuid }
+        attemptId: { type: string, format: uuid }
+        profileId: { type: string }
+        profileDigest: { type: string, pattern: '^sha256:[a-f0-9]{64}$' }
+        completedAt: { type: string, format: date-time }
+        outcome:
+          type: string
+          enum: [succeeded, failed, timed_out, resource_limit_exceeded, cancelled, policy_rejected, runner_lost]
+        exitCode: { type: [integer, "null"] }
+        stdout: { type: string }
+        stderr: { type: string }
+        truncated: { type: boolean }
+
+    RunnerTerminalResponse:
+      type: object
+      additionalProperties: false
+      required: [state, result]
+      properties:
+        state: { type: string, const: terminal }
+        result:
+          $ref: "#/components/schemas/TerminalRun"

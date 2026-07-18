@@ -1,0 +1,21 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.seo"
+name = "SEO and URL policy"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+kinds = ["seo", "render-extension"]
+description = "Canonical URLs, redirect history, metadata, robots, and sitemap projections."
+permissions = [
+  { capability = "content.read", scope = "published" },
+  { capability = "route.public", resources = ["robots.txt", "sitemap.xml"], reason = "Publish operator-controlled discovery documents." }
+]
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-feature-seo"
+extension = "seo"

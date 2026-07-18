@@ -1,0 +1,68 @@
+schemaVersion: "1.0"
+id: ko-fi.creator
+displayName: Ko-fi
+homepage: https://ko-fi.com/
+categories: [sponsorship, donation]
+integrationModes: [static, redirect, iframe, third-party-script, server]
+supportedRegions:
+  - PayPal- or Stripe-supported creator countries
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: null
+  kycRequired: unknown
+  notes: A creator needs a supported PayPal or Stripe account to receive payments. Provider, processor, content, tax, and country conditions still apply.
+payoutSummary: Ko-fi documents 0-5% service fees depending on creator mode and product, plus normal PayPal or Stripe processing fees; payments go directly to the connected processor.
+authFields: []
+requiredDomains: [ko-fi.com]
+cookiesAndStorage:
+  - kind: unknown
+    purpose: Widget or Ko-fi checkout operation, functionality, analytics, and advertising where applicable.
+    retention: The official privacy policy describes session and longer-lived cookies but does not provide one complete widget-specific retention inventory.
+    firstParty: false
+dataAccessed:
+  - IP address and device or browser data on Ko-fi surfaces
+  - supporter display name and email associated with a payment
+  - payment amount, type, currency, status, and message identifier in webhooks
+  - shop or membership information associated with payment events
+consentPurposeIds: [sponsorship.widget, sponsorship.checkout]
+personalizationSupported: unknown
+adsTxtRequirements: null
+cspRequirements: {}
+webhooks:
+  - payment-event HTTP POST webhook for tips, memberships, and other payments
+contentRestrictions:
+  - Creator content and use must comply with Ko-fi content guidelines and payment-processor policies.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents:
+  - optional operator-hosted static link or button image
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: Does Ko-fi have an API or webhook?
+    url: https://help.ko-fi.com/hc/en-us/articles/360004162298-Does-Ko-fi-have-an-API-or-webhook
+    checkedAt: 2026-07-18
+  - title: Ko-fi tip widget
+    url: https://help.ko-fi.com/hc/en-us/articles/360018381678-Ko-fi-tip-widget
+    checkedAt: 2026-07-18
+  - title: Does Ko-fi take a fee?
+    url: https://help.ko-fi.com/hc/en-us/articles/360002506494-Does-Ko-fi-take-a-fee
+    checkedAt: 2026-07-18
+  - title: Can I use Stripe in my country?
+    url: https://help.ko-fi.com/hc/en-us/articles/360009265834-Can-I-use-Stripe-in-my-country
+    checkedAt: 2026-07-18
+  - title: Ko-fi Privacy Policy and Cookie Policy
+    url: https://more.ko-fi.com/privacy
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: eligibility.kycRequired
+    note: Ko-fi and its payment processors may have separate verification duties, but a single provider-wide KYC rule was not established from the cited pages.
+  - field: authFields
+    note: The official webhook overview does not fully specify the current authentication and secret lifecycle; no adapter should accept payment events until those details are verified.
+  - field: requiredDomains and cspRequirements
+    note: The exact floating-widget, iframe, asset, payment-processor, and redirect domains must be extracted from current generated widget code and a clean-browser trace.
+  - field: personalizationSupported
+    note: The privacy policy allows functional personalization and advertising cookies where applicable but does not establish widget-specific behavior.
+knownRisks:
+  - Embedded widgets can add third-party scripts, cookies, processors, and controller relationships that a plain static link avoids.
+  - Webhook payloads contain supporter and transaction data; message deduplication, authentication, minimization, and retention are required before use.

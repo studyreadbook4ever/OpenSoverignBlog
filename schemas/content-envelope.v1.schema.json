@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://open-soverign-blog.invalid/schemas/content-envelope.v1.schema.json",
+  "title": "OpenSoverignBlog content envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "documentId",
+    "siteId",
+    "revisionId",
+    "title",
+    "slug",
+    "sourceMarkdown",
+    "contentHash"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "documentId": { "$ref": "#/$defs/uuid" },
+    "siteId": { "$ref": "#/$defs/uuid" },
+    "revisionId": { "$ref": "#/$defs/uuid" },
+    "parentRevisionId": {
+      "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }]
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "^[^/\\\\\\u0000-\\u001f\\u007f]+$"
+    },
+    "sourceMarkdown": {
+      "type": "string",
+      "maxLength": 10485760,
+      "description": "Required portable source. Optional layers never replace this value."
+    },
+    "embeds": {
+      "type": "array",
+      "maxItems": 10000,
+      "items": { "$ref": "#/$defs/embed" }
+    },
+    "intent": {
+      "oneOf": [{ "$ref": "#/$defs/intent" }, { "type": "null" }]
+    },
+    "ontology": {
+      "oneOf": [{ "$ref": "#/$defs/ontology" }, { "type": "null" }]
+    },
+    "contentHash": { "$ref": "#/$defs/digest" },
+    "createdAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "sourceHtml"],
+      "properties": {
+        "format": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "examples": ["enhanced-html-v1"]
+        },
+        "sourceHtml": {
+          "type": "string",
+          "maxLength": 10485760,
+          "description": "Untrusted author-intent input; never a publish artifact."
+        },
+        "rendererHints": {
+          "type": "object",
+          "maxProperties": 64,
+          "additionalProperties": { "type": "string", "maxLength": 1000 }
+        },
+        "provenance": { "$ref": "#/$defs/provenance" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin"],
+      "properties": {
+        "origin": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "sourceUri": { "type": "string", "format": "uri", "maxLength": 2048 },
+        "actorId": { "type": "string", "maxLength": 200 },
+        "generatedBy": { "type": "string", "maxLength": 500 }
+      }
+    },
+    "ontology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "statements"],
+      "properties": {
+        "schema": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "statements": {
+          "type": "array",
+          "maxItems": 100000,
+          "items": { "$ref": "#/$defs/statement" }
+        }
+      }
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["subject", "predicate", "object", "confirmedByAuthor"],
+      "properties": {
+        "subject": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "predicate": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "object": true,
+        "evidence": { "type": "string", "maxLength": 4096 },
+        "confirmedByAuthor": { "type": "boolean" }
+      }
+    },
+    "embed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider", "resourceId", "canonicalUrl", "title"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$" },
+        "provider": { "type": "string", "pattern": "^[A-Za-z0-9._-]{1,200}$" },
+        "resourceId": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "canonicalUrl": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "consentPurposeIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        }
+      }
+    }
+  }
+}

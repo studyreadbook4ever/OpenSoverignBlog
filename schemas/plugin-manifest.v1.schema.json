@@ -1,0 +1,950 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ai-native-publishing:schemas:plugin-manifest:v1",
+  "title": "AI-native publishing plugin manifest v1",
+  "description": "Manifest for built-in, WASI component, and isolated JSON-RPC extensions. Requested permissions are not grants; the host approves and enforces capabilities independently.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "id",
+    "name",
+    "version",
+    "license",
+    "provenance",
+    "pluginApi",
+    "kinds",
+    "runtime",
+    "permissions"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri-reference",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "manifestVersion": {
+      "const": 1,
+      "description": "Version of this manifest document shape."
+    },
+    "id": {
+      "$ref": "#/$defs/pluginId"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "version": {
+      "$ref": "#/$defs/semver"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "SPDX expression where possible. Official clean-room plugins use Unlicense."
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "pluginApi": {
+      "const": "1",
+      "description": "Major host/plugin protocol version."
+    },
+    "coreCompatibility": {
+      "$ref": "#/$defs/versionRange"
+    },
+    "kinds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "auth-provider",
+          "authorization-policy",
+          "comments",
+          "seo",
+          "ad-provider",
+          "render-extension",
+          "macro",
+          "ai-provider",
+          "ai-agent",
+          "ai-tool",
+          "code-runner-client",
+          "importer",
+          "exporter",
+          "search-provider",
+          "storage-provider",
+          "automation"
+        ]
+      }
+    },
+    "runtime": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/builtInRuntime"
+        },
+        {
+          "$ref": "#/$defs/wasiRuntime"
+        },
+        {
+          "$ref": "#/$defs/jsonRpcRuntime"
+        }
+      ]
+    },
+    "permissions": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/permission"
+      },
+      "description": "Capabilities requested by the package. Installation does not grant them automatically."
+    },
+    "authors": {
+      "type": "array",
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/author"
+      }
+    },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "repository": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 2048
+    },
+    "config": {
+      "$ref": "#/$defs/config"
+    },
+    "hooks": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/hook"
+      }
+    },
+    "routes": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/route"
+      }
+    },
+    "renderSlots": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/renderSlot"
+      }
+    },
+    "macros": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/macro"
+      }
+    },
+    "ui": {
+      "$ref": "#/$defs/ui"
+    },
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "migrations": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/migration"
+      },
+      "description": "Host-mediated state migrations. External plugins cannot declare or execute raw database SQL."
+    },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/dependency"
+      }
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    },
+    "metadata": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string" },
+          { "type": "number" },
+          { "type": "boolean" },
+          { "type": "null" }
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "pluginId": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 190,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){2,}$",
+      "description": "Reverse-domain identifier with at least three labels, for example org.example.comments."
+    },
+    "qualifiedName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "versionRange": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "A host-defined semantic-version range. It is parsed without invoking a shell."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "safeRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*$",
+      "description": "Package-relative path without traversal, an absolute prefix, backslashes, whitespace, or shell syntax."
+    },
+    "handlerName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+    },
+    "schemaReference": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/safeRelativePath"
+        },
+        {
+          "type": "object",
+          "description": "Inline JSON Schema document."
+        }
+      ]
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin"
+      ],
+      "properties": {
+        "origin": {
+          "enum": [
+            "original",
+            "clean-room",
+            "third-party"
+          ]
+        },
+        "generated": {
+          "type": "boolean",
+          "default": false
+        },
+        "generator": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "sourceMaterials": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "format": "uri",
+            "maxLength": 2048
+          }
+        },
+        "noticeFiles": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/safeRelativePath"
+          }
+        },
+        "attestation": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      }
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 320
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "maxLength": 2048
+        }
+      }
+    },
+    "builtInRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "crate",
+        "extension"
+      ],
+      "properties": {
+        "kind": {
+          "const": "built-in"
+        },
+        "crate": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_-]{0,127}$"
+        },
+        "extension": {
+          "$ref": "#/$defs/qualifiedName"
+        }
+      },
+      "description": "Trusted first-party Rust extension linked into the server. This is not a stable Rust binary ABI."
+    },
+    "wasiRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "abi",
+        "component",
+        "world",
+        "sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "wasi-component"
+        },
+        "abi": {
+          "const": "wasi-component@1"
+        },
+        "component": {
+          "$ref": "#/$defs/safeRelativePath"
+        },
+        "world": {
+          "$ref": "#/$defs/qualifiedName"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "jsonRpcRuntime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "abi",
+        "executable",
+        "sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "jsonrpc-stdio"
+        },
+        "abi": {
+          "const": "jsonrpc-stdio@1"
+        },
+        "executable": {
+          "$ref": "#/$defs/safeRelativePath"
+        },
+        "arguments": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "maxLength": 1024,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "description": "Literal argv entries. The host launches without a shell and performs no interpolation."
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "description": "Out-of-process JSON-RPC plugin. Untrusted implementations require an OS sandbox or rootless container."
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability"
+      ],
+      "properties": {
+        "capability": {
+          "enum": [
+            "content.read",
+            "content.write",
+            "content.publish",
+            "assets.read",
+            "assets.write",
+            "ontology.read",
+            "ontology.write",
+            "comments.read",
+            "comments.write",
+            "comments.moderate",
+            "ai.invoke",
+            "ai.tool",
+            "render.slot",
+            "route.public",
+            "route.admin",
+            "jobs.schedule",
+            "network.connect",
+            "secret.use",
+            "state.read",
+            "state.write",
+            "code.execute"
+          ]
+        },
+        "scope": {
+          "enum": [
+            "public",
+            "published",
+            "drafts",
+            "own",
+            "site",
+            "all"
+          ]
+        },
+        "resources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^[^\\s\\u0000*]+$"
+          },
+          "description": "Capability-specific names such as domains, secret bindings, routes, render slots, or execution profiles."
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "capability": {
+                "enum": [
+                  "render.slot",
+                  "route.public",
+                  "route.admin",
+                  "network.connect",
+                  "secret.use",
+                  "code.execute"
+                ]
+              }
+            },
+            "required": [
+              "capability"
+            ]
+          },
+          "then": {
+            "properties": {
+              "resources": true
+            },
+            "required": [
+              "resources"
+            ]
+          }
+        }
+      ]
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema"
+      ],
+      "properties": {
+        "schema": {
+          "$ref": "#/$defs/schemaReference"
+        },
+        "defaults": {
+          "type": "object"
+        },
+        "secretBindings": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/qualifiedName"
+          },
+          "description": "Logical secret references. Secret values are never stored in the manifest or exported config."
+        }
+      }
+    },
+    "hook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event",
+        "handler"
+      ],
+      "properties": {
+        "event": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 160,
+          "pattern": "^[a-z][a-z0-9_.-]*\\.v[1-9][0-9]*$",
+          "examples": [
+            "content.published.v1"
+          ]
+        },
+        "handler": {
+          "$ref": "#/$defs/handlerName"
+        },
+        "delivery": {
+          "enum": [
+            "sync",
+            "async"
+          ],
+          "default": "async"
+        },
+        "failurePolicy": {
+          "enum": [
+            "continue",
+            "retry",
+            "block"
+          ],
+          "default": "retry"
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": -1000,
+          "maximum": 1000,
+          "default": 0
+        }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "methods",
+        "audience",
+        "handler"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^/(?!.*//)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9_./{}:-]*$",
+          "description": "Path below the host-assigned plugin prefix."
+        },
+        "methods": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE"
+            ]
+          }
+        },
+        "audience": {
+          "enum": [
+            "public",
+            "authenticated",
+            "admin"
+          ]
+        },
+        "handler": {
+          "$ref": "#/$defs/handlerName"
+        },
+        "requestSchema": {
+          "$ref": "#/$defs/schemaReference"
+        },
+        "responseSchema": {
+          "$ref": "#/$defs/schemaReference"
+        }
+      }
+    },
+    "renderSlot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot",
+        "handler",
+        "output"
+      ],
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/qualifiedName"
+        },
+        "handler": {
+          "$ref": "#/$defs/handlerName"
+        },
+        "output": {
+          "enum": [
+            "model",
+            "sanitized-html",
+            "sandboxed-frame"
+          ]
+        },
+        "cache": {
+          "enum": [
+            "none",
+            "revision",
+            "site"
+          ],
+          "default": "revision"
+        }
+      }
+    },
+    "macro": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "handler",
+        "inputSchema",
+        "outputSchema",
+        "phases"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/qualifiedName"
+        },
+        "handler": {
+          "$ref": "#/$defs/handlerName"
+        },
+        "inputSchema": {
+          "$ref": "#/$defs/schemaReference"
+        },
+        "outputSchema": {
+          "$ref": "#/$defs/schemaReference"
+        },
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "draft",
+              "publish",
+              "request"
+            ]
+          }
+        },
+        "deterministic": {
+          "type": "boolean",
+          "default": false
+        },
+        "cache": {
+          "enum": [
+            "none",
+            "inputs",
+            "revision"
+          ],
+          "default": "inputs"
+        },
+        "requiresReview": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "ui": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sandbox",
+        "entrypoint",
+        "sha256"
+      ],
+      "properties": {
+        "sandbox": {
+          "const": "iframe"
+        },
+        "entrypoint": {
+          "$ref": "#/$defs/safeRelativePath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "panels": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "location"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/qualifiedName"
+              },
+              "location": {
+                "enum": [
+                  "settings",
+                  "editor-sidebar",
+                  "editor-block",
+                  "dashboard"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "description": "Untrusted admin UI executes only in a sandboxed iframe and communicates through the host message API."
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "collections": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "schema"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/qualifiedName"
+              },
+              "schema": {
+                "$ref": "#/$defs/schemaReference"
+              },
+              "indexes": {
+                "type": "array",
+                "maxItems": 16,
+                "uniqueItems": true,
+                "items": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 8,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "from",
+        "to",
+        "handler"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/qualifiedName"
+        },
+        "from": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "to": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "handler": {
+          "$ref": "#/$defs/handlerName"
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/pluginId"
+        },
+        "version": {
+          "$ref": "#/$defs/versionRange"
+        },
+        "optional": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600000
+        },
+        "memoryMiB": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536
+        },
+        "pids": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "outputKiB": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        }
+      },
+      "description": "Requested upper bounds. The host may only reduce these values."
+    }
+  },
+  "examples": [
+    {
+      "$schema": "./plugin-manifest.v1.schema.json",
+      "manifestVersion": 1,
+      "id": "org.example.clean-seo",
+      "name": "Clean SEO",
+      "version": "0.1.0",
+      "license": "Unlicense",
+      "provenance": {
+        "origin": "clean-room",
+        "generated": false,
+        "attestation": "Implemented from project-owned requirements without copied third-party source."
+      },
+      "pluginApi": "1",
+      "coreCompatibility": ">=0.1.0 <0.2.0",
+      "kinds": [
+        "seo",
+        "render-extension"
+      ],
+      "runtime": {
+        "kind": "wasi-component",
+        "abi": "wasi-component@1",
+        "component": "dist/clean-seo.wasm",
+        "world": "publishing.extension",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "permissions": [
+        {
+          "capability": "content.read",
+          "scope": "published",
+          "reason": "Build canonical metadata from the published revision."
+        },
+        {
+          "capability": "render.slot",
+          "resources": [
+            "document.head"
+          ],
+          "reason": "Emit sanitized metadata into the document head."
+        }
+      ],
+      "hooks": [
+        {
+          "event": "content.published.v1",
+          "handler": "seo.on-published",
+          "delivery": "async",
+          "failurePolicy": "retry"
+        }
+      ],
+      "renderSlots": [
+        {
+          "slot": "document.head",
+          "handler": "seo.render-head",
+          "output": "model",
+          "cache": "revision"
+        }
+      ],
+      "limits": {
+        "timeoutMs": 2000,
+        "memoryMiB": 64,
+        "outputKiB": 128,
+        "concurrency": 2
+      }
+    }
+  ]
+}

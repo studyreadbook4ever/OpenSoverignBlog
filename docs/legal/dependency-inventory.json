@@ -1,0 +1,4027 @@
+{
+  "schemaVersion": "open-soverign-blog-dependency-inventory/1",
+  "project": {
+    "name": "OpenSoverignBlog",
+    "version": "0.1.0",
+    "licenseExpression": "Unlicense"
+  },
+  "scope": {
+    "cargo": "Complete resolved third-party Cargo graph from cargo metadata --locked --all-features.",
+    "npm": "Every non-workspace third-party package entry in package-lock.json.",
+    "container": "Application dependencies only; Debian/base-image packages require an image SBOM."
+  },
+  "rust": [
+    {
+      "name": "aho-corasick",
+      "version": "1.1.4",
+      "licenseExpression": "Unlicense OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ammonia",
+      "version": "4.1.3",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "68b9d3370580a12f4b7a10fdcc18b28942c083ba570e3d954fe59d10951b85a2",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "android_system_properties",
+      "version": "0.1.5",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "anstream",
+      "version": "1.0.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "anstyle",
+      "version": "1.0.14",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "anstyle-parse",
+      "version": "1.0.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "anstyle-query",
+      "version": "1.1.5",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "anstyle-wincon",
+      "version": "3.0.11",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "anyhow",
+      "version": "1.0.103",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "arc-swap",
+      "version": "1.9.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "arcstr",
+      "version": "1.2.0",
+      "licenseExpression": "Apache-2.0 OR MIT OR Zlib",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "03918c3dbd7701a85c6b9887732e2921175f26c350b4563841d0958c21d57e6d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "argon2",
+      "version": "0.5.3",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "async-lock",
+      "version": "3.4.2",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "async-trait",
+      "version": "0.1.89",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "atomic-waker",
+      "version": "1.1.2",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "autocfg",
+      "version": "1.5.1",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "axum",
+      "version": "0.8.9",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "31b698c5f9a010f6573133b09e0de5408834d0c82f8d7475a89fc1867a71cd90",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "axum-core",
+      "version": "0.5.6",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "08c78f31d7b1291f7ee735c1c6780ccde7785daae9a9206026862dab7d8792d1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "backon",
+      "version": "1.6.0",
+      "licenseExpression": "Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cffb0e931875b666fc4fcb20fee52e9bbd1ef836fd9e9e04ec21555f9f85f7ef",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "base64",
+      "version": "0.22.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "base64ct",
+      "version": "1.8.3",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "bitflags",
+      "version": "2.13.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "blake2",
+      "version": "0.10.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "block-buffer",
+      "version": "0.10.4",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "bumpalo",
+      "version": "3.20.3",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "bytes",
+      "version": "1.12.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "cc",
+      "version": "1.2.67",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "cfg_aliases",
+      "version": "0.2.2",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "chacha20",
+      "version": "0.10.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "chrono",
+      "version": "0.4.45",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "clap",
+      "version": "4.6.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "dd059f9da4f5c36b3787f65d38ccaab1cc315f07b01f89abc8359ee6a8205011",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "clap_builder",
+      "version": "4.6.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f09628afdcc538b57f3c6341e9c8e9970f18e4a481690a64974d7023bd33548b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "clap_derive",
+      "version": "4.6.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f2ce8604710f6733aa641a2b3731eaa1e8b3d9973d5e3565da11800813f997a9",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "clap_lex",
+      "version": "1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "colorchoice",
+      "version": "1.0.5",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "combine",
+      "version": "4.6.7",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "concurrent-queue",
+      "version": "2.5.0",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "core-foundation",
+      "version": "0.10.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "core-foundation-sys",
+      "version": "0.8.7",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "cpufeatures",
+      "version": "0.2.17",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "cpufeatures",
+      "version": "0.3.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "crossbeam-utils",
+      "version": "0.8.22",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "crypto-common",
+      "version": "0.1.7",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "cssparser",
+      "version": "0.37.0",
+      "licenseExpression": "MPL-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8c9cdaae01d5ed7882b04d795e7f752f46ff52d2fa3b50a20d28c464510bba98",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "digest",
+      "version": "0.10.7",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "displaydoc",
+      "version": "0.2.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "dtoa",
+      "version": "1.0.11",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "dtoa-short",
+      "version": "0.3.5",
+      "licenseExpression": "MPL-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "equivalent",
+      "version": "1.0.2",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "errno",
+      "version": "0.3.14",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "event-listener",
+      "version": "5.4.1",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "event-listener-strategy",
+      "version": "0.5.4",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fastrand",
+      "version": "2.4.1",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "find-msvc-tools",
+      "version": "0.1.9",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "foldhash",
+      "version": "0.1.5",
+      "licenseExpression": "Zlib",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "form_urlencoded",
+      "version": "1.2.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-channel",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-core",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-io",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-macro",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-sink",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-task",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "futures-util",
+      "version": "0.3.32",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "generic-array",
+      "version": "0.14.7",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "getopts",
+      "version": "0.2.24",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cfe4fbac503b8d1f88e6676011885f34b7174f46e59956bba534ba83abded4df",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "getrandom",
+      "version": "0.2.17",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "getrandom",
+      "version": "0.4.3",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.15.5",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "hashlink",
+      "version": "0.10.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "heck",
+      "version": "0.5.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "html5ever",
+      "version": "0.39.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "46a1761807faccc9a19e86944bbf40610014066306f96edcdedc2fb714bcb7b8",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "http",
+      "version": "1.4.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "http-body",
+      "version": "1.1.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ca2a8f2913ee65f60facd6a5905613afaa448497a0230cc41ce022d93290bc2c",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "http-body-util",
+      "version": "0.1.4",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e9f41fd6a08e4d4ec69df65976da761afd5ad5e58a9d4acb46bd1c953a9e3ff2",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "http-range-header",
+      "version": "0.4.2",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "httparse",
+      "version": "1.10.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "httpdate",
+      "version": "1.0.3",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "hyper",
+      "version": "1.10.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "55281c53a1894c864990125767da440a4e630446785086f52523b20033b74498",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "hyper-rustls",
+      "version": "0.27.9",
+      "licenseExpression": "Apache-2.0 OR ISC OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "hyper-util",
+      "version": "0.1.20",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "iana-time-zone",
+      "version": "0.1.65",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "iana-time-zone-haiku",
+      "version": "0.1.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_collections",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2984d1cd16c883d7935b9e07e44071dca8d917fd52ecc02c04d5fa0b5a3f191c",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_locale_core",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_normalizer",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c56e5ee99d6e3d33bd91c5d85458b6005a22140021cc324cea84dd0e72cff3b4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_normalizer_data",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "da3be0ae77ea334f4da67c12f149704f19f81d1adf7c51cf482943e84a2bad38",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_properties",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bee3b67d0ea5c2cca5003417989af8996f8604e34fb9ddf96208a033901e70de",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_properties_data",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8e2bbb201e0c04f7b4b3e14382af113e17ba4f63e2c9d2ee626b720cbce54a14",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "icu_provider",
+      "version": "2.2.0",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "idna",
+      "version": "1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "idna_adapter",
+      "version": "1.2.2",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "indexmap",
+      "version": "2.14.0",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ipnet",
+      "version": "2.12.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "is_terminal_polyfill",
+      "version": "1.70.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "itoa",
+      "version": "1.0.18",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "js-sys",
+      "version": "0.3.103",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "lazy_static",
+      "version": "1.5.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "libc",
+      "version": "0.2.186",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "libsqlite3-sys",
+      "version": "0.35.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "133c182a6a2c87864fe97778797e46c7e999672690dc9fa3ee8e241aa4a9c13f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "linux-raw-sys",
+      "version": "0.12.1",
+      "licenseExpression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "litemap",
+      "version": "0.8.2",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "lock_api",
+      "version": "0.4.14",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "log",
+      "version": "0.4.33",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "lru-slab",
+      "version": "0.1.2",
+      "licenseExpression": "MIT OR Apache-2.0 OR Zlib",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "maplit",
+      "version": "1.0.2",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "3e2e65a1a2e43cfcb47a895c4c8b10d1f4a61097f9f254f183aee60cad9c651d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "markup5ever",
+      "version": "0.39.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7122d987ec5f704ee56f6e5b41a7d93722e9aae27ae07cafa4036c4d3f9757de",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "matchers",
+      "version": "0.2.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "matchit",
+      "version": "0.8.4",
+      "licenseExpression": "MIT AND BSD-3-Clause",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "memchr",
+      "version": "2.8.3",
+      "licenseExpression": "Unlicense OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "mime",
+      "version": "0.3.17",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "mime_guess",
+      "version": "2.0.5",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f7c44f8e672c00fe5308fa235f821cb4198414e1c77935c1ab6948d3fd78550e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "mio",
+      "version": "1.2.2",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "30d65c71f1ce40ab09135ce117d742b9f8a19ff91a41a8b57ed50bc2de59c427",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "new_debug_unreachable",
+      "version": "1.0.6",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "nu-ansi-term",
+      "version": "0.50.3",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "num-bigint",
+      "version": "0.4.8",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "num-integer",
+      "version": "0.1.46",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7969661fd2958a5cb096e56c8e1ad0444ac2bbcd0061bd28660485a44879858f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "num-traits",
+      "version": "0.2.19",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "once_cell",
+      "version": "1.21.4",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "once_cell_polyfill",
+      "version": "1.70.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "openssl-probe",
+      "version": "0.2.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "parking",
+      "version": "2.2.1",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "parking_lot",
+      "version": "0.12.5",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "password-hash",
+      "version": "0.5.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "phf",
+      "version": "0.13.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "phf_codegen",
+      "version": "0.13.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "49aa7f9d80421bca176ca8dbfebe668cc7a2684708594ec9f3c0db0805d5d6e1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "phf_generator",
+      "version": "0.13.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "phf_shared",
+      "version": "0.13.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "pin-project-lite",
+      "version": "0.2.17",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "pkg-config",
+      "version": "0.3.33",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "potential_utf",
+      "version": "0.1.5",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "precomputed-hash",
+      "version": "0.1.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "proc-macro2",
+      "version": "1.0.106",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "pulldown-cmark",
+      "version": "0.13.4",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "pulldown-cmark-escape",
+      "version": "0.11.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "quinn",
+      "version": "0.11.11",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "quinn-proto",
+      "version": "0.11.16",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "quinn-udp",
+      "version": "0.5.15",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "quote",
+      "version": "1.0.46",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "r-efi",
+      "version": "6.0.0",
+      "licenseExpression": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rand",
+      "version": "0.10.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rand_core",
+      "version": "0.10.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rand_core",
+      "version": "0.6.4",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rand_pcg",
+      "version": "0.10.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "redis",
+      "version": "1.4.1",
+      "licenseExpression": "BSD-3-Clause",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b0b9503711b03773e43b31668c7b5bd279ee7cd9b7d18cff7c23a42cc1d08e5a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "redox_syscall",
+      "version": "0.5.18",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "regex-automata",
+      "version": "0.4.16",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "regex-syntax",
+      "version": "0.8.11",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "reqwest",
+      "version": "0.12.28",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ring",
+      "version": "0.17.14",
+      "licenseExpression": "Apache-2.0 AND ISC",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rusqlite",
+      "version": "0.37.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "165ca6e57b20e1351573e3729b958bc62f0e48025386970b6e4d29e7a7e71f3f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustc-hash",
+      "version": "2.1.3",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustix",
+      "version": "1.1.4",
+      "licenseExpression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustls",
+      "version": "0.23.42",
+      "licenseExpression": "Apache-2.0 OR ISC OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustls-native-certs",
+      "version": "0.8.4",
+      "licenseExpression": "Apache-2.0 OR ISC OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustls-pki-types",
+      "version": "1.15.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "764899a24af3980067ee14bc143654f297b22eaebfe3c7b6b211920a5a59b046",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustls-webpki",
+      "version": "0.103.13",
+      "licenseExpression": "ISC",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rustversion",
+      "version": "1.0.23",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ryu",
+      "version": "1.0.23",
+      "licenseExpression": "Apache-2.0 OR BSL-1.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "schannel",
+      "version": "0.1.28",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "891d81b926048e76efe18581bf793546b4c0eaf8448d72be8de2bbee5fd166e1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "security-framework",
+      "version": "3.6.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d17b898a6d6948c3a8ee4372c17cb384f90d2e6e912ef00895b14fd7ab54ec38",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "security-framework-sys",
+      "version": "2.16.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "321c8673b092a9a42605034a9879d73cb79101ed5fd117bc9a597b89b4e9e61a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde",
+      "version": "1.0.228",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde_core",
+      "version": "1.0.228",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde_derive",
+      "version": "1.0.228",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde_json",
+      "version": "1.0.150",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde_path_to_error",
+      "version": "0.1.20",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde_spanned",
+      "version": "1.1.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "serde_urlencoded",
+      "version": "0.7.1",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "sha1_smol",
+      "version": "1.0.1",
+      "licenseExpression": "BSD-3-Clause",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bbfa15b3dddfee50a0fff136974b3e1bde555604ba463834a7eb7deb6417705d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "sha2",
+      "version": "0.10.9",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "sharded-slab",
+      "version": "0.1.7",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "shlex",
+      "version": "2.0.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "signal-hook-registry",
+      "version": "1.4.8",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "siphasher",
+      "version": "1.0.3",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "slab",
+      "version": "0.4.12",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "smallvec",
+      "version": "1.15.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "socket2",
+      "version": "0.6.5",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "stable_deref_trait",
+      "version": "1.2.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "string_cache",
+      "version": "0.9.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "string_cache_codegen",
+      "version": "0.6.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "585635e46db231059f76c5849798146164652513eb9e8ab2685939dd90f29b69",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "strsim",
+      "version": "0.11.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "subtle",
+      "version": "2.6.1",
+      "licenseExpression": "BSD-3-Clause",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "syn",
+      "version": "2.0.119",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "sync_wrapper",
+      "version": "1.0.2",
+      "licenseExpression": "Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "synstructure",
+      "version": "0.13.2",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tempfile",
+      "version": "3.27.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tendril",
+      "version": "0.5.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "5fed54709c5b3a53d09bb1c113ea4f5ceafd1e772ddcb0030a82e1d56c087b08",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "thiserror",
+      "version": "2.0.18",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "thiserror-impl",
+      "version": "2.0.18",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "thread_local",
+      "version": "1.1.10",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tinystr",
+      "version": "0.8.3",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tinyvec",
+      "version": "1.12.0",
+      "licenseExpression": "Zlib OR Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bb4ebadaa0af04fab11ae01eb5f9fdb5f9c5b875506e210e71c07873528baa7f",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tinyvec_macros",
+      "version": "0.1.1",
+      "licenseExpression": "MIT OR Apache-2.0 OR Zlib",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tokio",
+      "version": "1.53.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "d988bcd52dbe076d3d46903332f58c912b87a2c49b1428419a5845154762ffee",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tokio-macros",
+      "version": "2.7.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tokio-rustls",
+      "version": "0.26.4",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tokio-util",
+      "version": "0.7.18",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "toml",
+      "version": "0.9.12+spec-1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "toml_datetime",
+      "version": "0.7.5+spec-1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "toml_parser",
+      "version": "1.1.2+spec-1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "toml_writer",
+      "version": "1.1.2+spec-1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tower",
+      "version": "0.5.3",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tower-http",
+      "version": "0.6.11",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tower-layer",
+      "version": "0.3.3",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tower-service",
+      "version": "0.3.3",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tracing",
+      "version": "0.1.44",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tracing-attributes",
+      "version": "0.1.31",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tracing-core",
+      "version": "0.1.36",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tracing-log",
+      "version": "0.2.0",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ee855f1f400bd0e5c02d150ae5de3840039a3f54b025156404e34c23c03f47c3",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tracing-subscriber",
+      "version": "0.3.23",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "try-lock",
+      "version": "0.2.5",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "typenum",
+      "version": "1.20.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "unicase",
+      "version": "2.9.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "unicode-ident",
+      "version": "1.0.24",
+      "licenseExpression": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "unicode-width",
+      "version": "0.2.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "untrusted",
+      "version": "0.9.0",
+      "licenseExpression": "ISC",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "url",
+      "version": "2.5.8",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "utf8_iter",
+      "version": "1.0.4",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "utf8parse",
+      "version": "0.2.2",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "uuid",
+      "version": "1.24.0",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "valuable",
+      "version": "0.1.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65",
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "version_check",
+      "version": "0.9.5",
+      "licenseExpression": "MIT/Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "want",
+      "version": "0.3.1",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasi",
+      "version": "0.11.1+wasi-snapshot-preview1",
+      "licenseExpression": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasm-bindgen",
+      "version": "0.2.126",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasm-bindgen-futures",
+      "version": "0.4.76",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasm-bindgen-macro",
+      "version": "0.2.126",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasm-bindgen-macro-support",
+      "version": "0.2.126",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasm-bindgen-shared",
+      "version": "0.2.126",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "wasm-streams",
+      "version": "0.4.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "web_atoms",
+      "version": "0.2.5",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "075474b12bcb3d2e3d4546580e9de478eeeead668a1761e2a8860c836b7ef297",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "web-sys",
+      "version": "0.3.103",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "web-time",
+      "version": "1.1.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "webpki-roots",
+      "version": "1.0.8",
+      "licenseExpression": "CDLA-Permissive-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_aarch64_gnullvm",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_aarch64_msvc",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_i686_gnu",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_i686_gnullvm",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_i686_msvc",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_x86_64_gnu",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_x86_64_gnullvm",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows_x86_64_msvc",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-core",
+      "version": "0.62.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-implement",
+      "version": "0.60.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-interface",
+      "version": "0.59.3",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-link",
+      "version": "0.2.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-result",
+      "version": "0.4.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-strings",
+      "version": "0.5.1",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-sys",
+      "version": "0.52.0",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-sys",
+      "version": "0.61.2",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "windows-targets",
+      "version": "0.52.6",
+      "licenseExpression": "MIT OR Apache-2.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "winnow",
+      "version": "0.7.15",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "winnow",
+      "version": "1.0.4",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "writeable",
+      "version": "0.6.3",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "xxhash-rust",
+      "version": "0.8.17",
+      "licenseExpression": "BSL-1.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "985eec839aaf2a1270af8f4ebcf63cf9401cfd90f0902f97c28d9f104ffbde72",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "yoke",
+      "version": "0.8.3",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "yoke-derive",
+      "version": "0.8.2",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zerofrom",
+      "version": "0.1.8",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zerofrom-derive",
+      "version": "0.1.7",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zeroize",
+      "version": "1.9.0",
+      "licenseExpression": "Apache-2.0 OR MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zerotrie",
+      "version": "0.2.4",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "0f9152d31db0792fa83f70fb2f83148effb5c1f5b8c7686c3459e361d9bc20bf",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zerovec",
+      "version": "0.11.6",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "90f911cbc359ab6af17377d242225f4d75119aec87ea711a880987b18cd7b239",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zerovec-derive",
+      "version": "0.11.3",
+      "licenseExpression": "Unicode-3.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555",
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "zmij",
+      "version": "1.0.23",
+      "licenseExpression": "MIT",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
+      "hasPackagedLicenseText": true
+    }
+  ],
+  "npm": [
+    {
+      "name": "@babel/code-frame",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/code-frame/-/code-frame-7.29.7.tgz",
+      "integrity": "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/code-frame"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/compat-data",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/compat-data/-/compat-data-7.29.7.tgz",
+      "integrity": "sha512-locTkQyKvwIEgBzVrn8693ebc97F2U8ZHjbXwDXJ5Fn2TCpNwTlKcaKLkdHop5c/icOFE7qt7Q9JC5hnKNa6Gg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/compat-data"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/core",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/core/-/core-7.29.7.tgz",
+      "integrity": "sha512-RgHBCvtjbOK2gXSNBNIkNoEc9qoVEtau3hj8gEqKQuL3HZAibKarWFEI3Lfm6EYKkLalOh8eSrj9b+ch9H/VBA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/core"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/generator",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/generator/-/generator-7.29.7.tgz",
+      "integrity": "sha512-DkXD5OJQaAQIdZ1bt3UZdEnHAn9Imd3IVBdX03UFe+ony9Ojw5pzr9YVKGDY1jt+Gcn/FnGkNf8r+Vj5NOJWtQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/generator"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-compilation-targets",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-compilation-targets/-/helper-compilation-targets-7.29.7.tgz",
+      "integrity": "sha512-wem6WaBj4NaVYVdNhLPPVacES6ZJ+KBBfSkTMD3YZxbP3rm3Di85tJU5ljaUNhaOynt+Aj0xruhYuzQBt8n71g==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-compilation-targets"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-globals",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-globals/-/helper-globals-7.29.7.tgz",
+      "integrity": "sha512-3nQVUAtvkKH9zahfWgw96Jc/uFOmjACE1kQz82E2lqWmHBgjzbNlsC22nuQTfahmWeQtTq5nQ/4Nnd2A1wj4zA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-globals"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-module-imports",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-module-imports/-/helper-module-imports-7.29.7.tgz",
+      "integrity": "sha512-ejHwrQQYcm9xnTivShn2IDOlIzInN34AXskvq9QicvCtEzq1Vzclu/tKF8Jq1Cg8JG2GL6/EmjgsCT7lXepE3g==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-module-imports"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-module-transforms",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-module-transforms/-/helper-module-transforms-7.29.7.tgz",
+      "integrity": "sha512-UPUVSyXbOh627KiCIGQSgwWzGeBKLkaJ9PJEdrngIwMSzxLR4jS4+f1f1jb7VzBbg8nFLaYotvVPFCTqdrmTAg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-module-transforms"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-plugin-utils",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-plugin-utils/-/helper-plugin-utils-7.29.7.tgz",
+      "integrity": "sha512-G7sHYigPY17oO5SYWnfD/0MTBwVR781S/JI643e/JhUYgVgWE/61SoW3NH9KWUKyKq5LVh3npif99Wkt6j86Jw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-plugin-utils"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-string-parser",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-string-parser/-/helper-string-parser-7.29.7.tgz",
+      "integrity": "sha512-Pb5ijPrZ89GDH8223L4UP8i6QApWxs04RbPQJTeWDV0/keR2E36MeKnyr6LYmUUvqRRI+Iv87SuF1W6ErINzYw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-string-parser"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-validator-identifier",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-validator-identifier/-/helper-validator-identifier-7.29.7.tgz",
+      "integrity": "sha512-qehxGkRj55h/ff8EMaJ+cYhyaKlHIxqYDn682wQD7RNp9UujOQsHog2uS0r2vzr4pW+sXf90NeeayjcNaX3fFg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-validator-identifier"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helper-validator-option",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helper-validator-option/-/helper-validator-option-7.29.7.tgz",
+      "integrity": "sha512-N9ZErrD+yW5geCDtBqnOoxmR8+tNKiGuxKlDpuJxfsqpa2dFcexaziGAE/qoHLiDDreVNMupxGmSoNlyvsA3gw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helper-validator-option"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/helpers",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/helpers/-/helpers-7.29.7.tgz",
+      "integrity": "sha512-1k2lAGRMfHTcwuNYcCNUmaUffmQv8KWMfh2iJUUeRlwlwH4FdNG7mfPI10NPfLHJFThE4Tyr4mv7kTNZOiPuBg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/helpers"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/parser",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/parser/-/parser-7.29.7.tgz",
+      "integrity": "sha512-hnORnjP/1P/zFEndoeX+n+t1RwWRJiJpM/jO7FW32Kn9r5+sJB2JWOdYo4L6k78j15eCwY3Gm/7364B1EMwtNg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/parser"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/plugin-transform-react-jsx-self",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/plugin-transform-react-jsx-self/-/plugin-transform-react-jsx-self-7.29.7.tgz",
+      "integrity": "sha512-TL0hMc9xzy86VD31nUiwzd5otRAcyEPcsegCxolO0PvcXuH1v0kECe/UIznYFihpkvU5wg/jk4v0TTEFfm53fw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/plugin-transform-react-jsx-self"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/plugin-transform-react-jsx-source",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/plugin-transform-react-jsx-source/-/plugin-transform-react-jsx-source-7.29.7.tgz",
+      "integrity": "sha512-06IyK09H3wi4cGbhDBwp5gUGo0IKtnYa8tyTiephirPCK6fbobVGiXMMI5zLQ4aKEYP3wZ3ArU44o+8KMrSG/Q==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/plugin-transform-react-jsx-source"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/template",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/template/-/template-7.29.7.tgz",
+      "integrity": "sha512-puq+Gf35oI24FeN11LkoUQFqv9uwNeWpxXZi/Ji3rRIoKAzKnxRaZ+Gkj0vKS9ZCiTESfng1N9LyOyXvo+m+Gg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/template"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/traverse",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/traverse/-/traverse-7.29.7.tgz",
+      "integrity": "sha512-EhlfNQtZ+NK22w5BM61ciuiq1m58ed33Wr1Xan//ZRTy6hgjnwyCffRYwzsGXdASJSUJ1guZILsErh1eQcl+zw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/traverse"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@babel/types",
+      "version": "7.29.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@babel/types/-/types-7.29.7.tgz",
+      "integrity": "sha512-4zBIxpPzowiZpusoFkyGVwakdRJUyuH5PxQ/PrqghfdFWWasvnCdPfQXHrenDai+gyLARulZjZowCOj6fjT4pA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@babel/types"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@esbuild/aix-ppc64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.28.1.tgz",
+      "integrity": "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/aix-ppc64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/android-arm",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/android-arm/-/android-arm-0.28.1.tgz",
+      "integrity": "sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/android-arm"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/android-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/android-arm64/-/android-arm64-0.28.1.tgz",
+      "integrity": "sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/android-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/android-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/android-x64/-/android-x64-0.28.1.tgz",
+      "integrity": "sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/android-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/darwin-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/darwin-arm64/-/darwin-arm64-0.28.1.tgz",
+      "integrity": "sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/darwin-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/darwin-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/darwin-x64/-/darwin-x64-0.28.1.tgz",
+      "integrity": "sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/darwin-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/freebsd-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-arm64/-/freebsd-arm64-0.28.1.tgz",
+      "integrity": "sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/freebsd-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/freebsd-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/freebsd-x64/-/freebsd-x64-0.28.1.tgz",
+      "integrity": "sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/freebsd-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-arm",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm/-/linux-arm-0.28.1.tgz",
+      "integrity": "sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-arm"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-arm64/-/linux-arm64-0.28.1.tgz",
+      "integrity": "sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-ia32",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-ia32/-/linux-ia32-0.28.1.tgz",
+      "integrity": "sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-ia32"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-loong64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-loong64/-/linux-loong64-0.28.1.tgz",
+      "integrity": "sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-loong64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-mips64el",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-mips64el/-/linux-mips64el-0.28.1.tgz",
+      "integrity": "sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-mips64el"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-ppc64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-ppc64/-/linux-ppc64-0.28.1.tgz",
+      "integrity": "sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-ppc64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-riscv64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-riscv64/-/linux-riscv64-0.28.1.tgz",
+      "integrity": "sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-riscv64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-s390x",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-s390x/-/linux-s390x-0.28.1.tgz",
+      "integrity": "sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-s390x"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/linux-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/linux-x64/-/linux-x64-0.28.1.tgz",
+      "integrity": "sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/linux-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/netbsd-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-arm64/-/netbsd-arm64-0.28.1.tgz",
+      "integrity": "sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/netbsd-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/netbsd-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.28.1.tgz",
+      "integrity": "sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/netbsd-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/openbsd-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-arm64/-/openbsd-arm64-0.28.1.tgz",
+      "integrity": "sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/openbsd-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/openbsd-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.28.1.tgz",
+      "integrity": "sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/openbsd-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/openharmony-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/openharmony-arm64/-/openharmony-arm64-0.28.1.tgz",
+      "integrity": "sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/openharmony-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/sunos-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.28.1.tgz",
+      "integrity": "sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/sunos-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/win32-arm64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-arm64/-/win32-arm64-0.28.1.tgz",
+      "integrity": "sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/win32-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/win32-ia32",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-ia32/-/win32-ia32-0.28.1.tgz",
+      "integrity": "sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/win32-ia32"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@esbuild/win32-x64",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@esbuild/win32-x64/-/win32-x64-0.28.1.tgz",
+      "integrity": "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@esbuild/win32-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@jridgewell/gen-mapping",
+      "version": "0.3.13",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@jridgewell/gen-mapping/-/gen-mapping-0.3.13.tgz",
+      "integrity": "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@jridgewell/gen-mapping"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@jridgewell/remapping",
+      "version": "2.3.5",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@jridgewell/remapping/-/remapping-2.3.5.tgz",
+      "integrity": "sha512-LI9u/+laYG4Ds1TDKSJW2YPrIlcVYOwi2fUC6xB43lueCjgxV4lffOCZCtYFiH6TNOX+tQKXx97T4IKHbhyHEQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@jridgewell/remapping"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@jridgewell/resolve-uri",
+      "version": "3.1.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@jridgewell/resolve-uri/-/resolve-uri-3.1.2.tgz",
+      "integrity": "sha512-bRISgCIjP20/tbWSPWMEi54QVPRZExkuD9lJL+UIxUKtwVJA8wW1Trb1jMs1RFXo1CBTNZ/5hpC9QvmKWdopKw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@jridgewell/resolve-uri"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@jridgewell/sourcemap-codec",
+      "version": "1.5.5",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.5.5.tgz",
+      "integrity": "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@jridgewell/sourcemap-codec"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@jridgewell/trace-mapping",
+      "version": "0.3.31",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@jridgewell/trace-mapping/-/trace-mapping-0.3.31.tgz",
+      "integrity": "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@jridgewell/trace-mapping"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@rolldown/pluginutils",
+      "version": "1.0.0-beta.27",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rolldown/pluginutils/-/pluginutils-1.0.0-beta.27.tgz",
+      "integrity": "sha512-+d0F4MKMCbeVUJwG96uQ4SgAznZNSq93I3V+9NHA4OpvqG8mRCpGdKmK8l/dl02h2CCDHwW2FqilnTyDcAnqjA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@rolldown/pluginutils"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@rollup/rollup-android-arm-eabi",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm-eabi/-/rollup-android-arm-eabi-4.62.2.tgz",
+      "integrity": "sha512-6o7ZLZK+BeenkZCFNDXqpbjw9bD6nuWonvS/lwQJp7NoVVxm6p3qE7qQ5jGuBjiFsgvqjD8mZAU5oWxTmbOeOg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-android-arm-eabi"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-android-arm64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-android-arm64/-/rollup-android-arm64-4.62.2.tgz",
+      "integrity": "sha512-BaH7BllCACHoH1LguOU56UItGfUWjujlO65kS9LAodViaN4bwIKd7oeW/ZHJ/4ljr/7MIiENnNy3HJ0zXv8Zkw==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-android-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-darwin-arm64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-arm64/-/rollup-darwin-arm64-4.62.2.tgz",
+      "integrity": "sha512-v39RCCvj4He82I9sFmk+M1VZ0PLM9sfsLVikjfx2hYBNALhrrOR2D3JjQA6AhlaSOgcR+RzrKY7e1+bT6SUO/A==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-darwin-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-darwin-x64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-darwin-x64/-/rollup-darwin-x64-4.62.2.tgz",
+      "integrity": "sha512-yl0y2vq3S3lHeuXhEdss6TWfKW8vkujImO12tn4ZkG/4oghr09LvdYm2RElVjokTQiUvDUGXLGsYeLqUMCKpGA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-darwin-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-freebsd-arm64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-arm64/-/rollup-freebsd-arm64-4.62.2.tgz",
+      "integrity": "sha512-tT4pvt4qXD+vEoezupCWi+a1F0vvDiksiHc+PxRlYTOH1I6/X4id9jPxTP+Fg+545euaFT1jJVs4CEdHZAU1vw==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-freebsd-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-freebsd-x64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-freebsd-x64/-/rollup-freebsd-x64-4.62.2.tgz",
+      "integrity": "sha512-6nU5F2wCW+qvCBhTn1pdIU3bzsIoF7EUwsCDRxilWGprQR6yd508YnH9+OKFCwpfS8pjZqDUmnCAr7exax0XCg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-freebsd-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-arm-gnueabihf",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-gnueabihf/-/rollup-linux-arm-gnueabihf-4.62.2.tgz",
+      "integrity": "sha512-n1GJHPOvpIfhi3TmrCeh6S6URt9BFCt0KQE3qvexyGCTAKpR4Lg+eWvNZEqu7epxwus/8ElT3hacYEucm49SZg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-arm-gnueabihf"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-arm-musleabihf",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm-musleabihf/-/rollup-linux-arm-musleabihf-4.62.2.tgz",
+      "integrity": "sha512-JqgflS8wEB+UXV/vS1RpRbifGBeN4D5lz8D8oOFbFZw4vedvdOgCFAjfBmIMdW3yL10XpQQ0Ambepw6MXrhOnA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-arm-musleabihf"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-arm64-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-gnu/-/rollup-linux-arm64-gnu-4.62.2.tgz",
+      "integrity": "sha512-wnFJkogWvN4jm/hQRF2UBaeUmk20j5+DmHvoyWii2b8HJDyvz1MF2OU/6ynXt2KR63rbZLWkFpoytpdc/yBuSA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-arm64-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-arm64-musl",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-arm64-musl/-/rollup-linux-arm64-musl-4.62.2.tgz",
+      "integrity": "sha512-HVu2bp0zhvJ8xHEV9+UUs7S90VadmBSY3LcIMvozbPo4AuMGDWlz3ymHLHZPX4hR67TKTt8Qp5PJ5RBg/i+RMQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-arm64-musl"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-loong64-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-gnu/-/rollup-linux-loong64-gnu-4.62.2.tgz",
+      "integrity": "sha512-mQqqAV8QaoSgr9I2fKDLY2BAVvmKjWoGiu/cSYQonsLvtqwEn1E4QYfnCOcp5zoEqNhsDYin1s6jx/VJmrxlZg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-loong64-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-loong64-musl",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-loong64-musl/-/rollup-linux-loong64-musl-4.62.2.tgz",
+      "integrity": "sha512-IxKLoxCQ2IWi6bT2akyDUBGsOImDKB+sPp4EsTmwFQ/fMwpCKm8uLSSgP/Kx/QYUgKis6SEZ5/Nlhup0DIA0PQ==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-loong64-musl"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-ppc64-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-gnu/-/rollup-linux-ppc64-gnu-4.62.2.tgz",
+      "integrity": "sha512-Mk5ha2RQSgyFfmYYLkBpPnUk8D8FriBxesO1u9O75X0mHgXL1UQcH5Itl2lurWL2tj0RxV9b9tJgipac0hRY9A==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-ppc64-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-ppc64-musl",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-ppc64-musl/-/rollup-linux-ppc64-musl-4.62.2.tgz",
+      "integrity": "sha512-CjvEnqJL/0/TQ3TXX3OPIJ/kmBellrWd4heXUmHeJlTnmwjKpSJzoehLaL6Xk0ZnMHBu9dZuFADNOrtjF4v+2w==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-ppc64-musl"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-riscv64-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-gnu/-/rollup-linux-riscv64-gnu-4.62.2.tgz",
+      "integrity": "sha512-1SiZbzwdkaDURsew/tSOrooKiYy7EQGT6m8ufavAi9NEyQb/6VuIxFXAL1fqa4iZe3g4NbNk4P7J32z2tw5Mgg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-riscv64-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-riscv64-musl",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-riscv64-musl/-/rollup-linux-riscv64-musl-4.62.2.tgz",
+      "integrity": "sha512-nQts12zJ3NQRoE6uYljOH89v7szzLDvG2JD/vsX+vGXU8w/At1GowTZ5/7qeFQ8m7L55rpR8Okugnuo5bgjy2Q==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-riscv64-musl"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-s390x-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-s390x-gnu/-/rollup-linux-s390x-gnu-4.62.2.tgz",
+      "integrity": "sha512-E9/ll019jhPIJgpzfZoIkBGhcz+kKNgVWYRY0zr9srBdPPFVpvOKW8VaJKUbeK+eZXyQF9ltME+Kk6affeaPgg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-s390x-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-x64-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-gnu/-/rollup-linux-x64-gnu-4.62.2.tgz",
+      "integrity": "sha512-5BqxR/pshjey51iliyzTD5Xi3EN0aLmQ2lZ3lvefVV9c82BvrLo2/6OT55iifpWBufs6kdwWbuOKS841DrmK9A==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-x64-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-linux-x64-musl",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-linux-x64-musl/-/rollup-linux-x64-musl-4.62.2.tgz",
+      "integrity": "sha512-uNN83XxQrRAh/w0/pmAfibcwyb6YWt4gP+dpnQKPVJshAloQ785ii8CT8ZCIxkGg9opVsvAlGhFitSm6D1Jjpg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-linux-x64-musl"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-openbsd-x64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-openbsd-x64/-/rollup-openbsd-x64-4.62.2.tgz",
+      "integrity": "sha512-srjEIxSH3LRnJN6THczDHWQplqEMFiAJrTab0msUryh9kwNpkICf3Ea6q6MN/2cZwRFUNx5w+h6Hpi4QuHS6Zg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-openbsd-x64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-openharmony-arm64",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-openharmony-arm64/-/rollup-openharmony-arm64-4.62.2.tgz",
+      "integrity": "sha512-8hOJnxgbyObnCm5AlRA3A931xX19xq80RjVTKgJOvEKWqJruP/Uf12IbAOaDjjEXYRewwHLfmF0YRIdK3OwKWA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-openharmony-arm64"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-win32-arm64-msvc",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-arm64-msvc/-/rollup-win32-arm64-msvc-4.62.2.tgz",
+      "integrity": "sha512-mmF4AY1i0hG/bLWUctUq59gtmgaSIRa3cu/A3JFRp/sCNEme2bgDEiDS22P9FbnJB8NJNF4jPJiSP5RHQpUTDg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-win32-arm64-msvc"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-win32-ia32-msvc",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-ia32-msvc/-/rollup-win32-ia32-msvc-4.62.2.tgz",
+      "integrity": "sha512-DZgkknc6jhHrk46V25vbAM0zZkyP0nSDkJB8/dRkLTxv470dOmWDqGoEJl/9A0dFfS7yE3REOwNDxpHwSLSt0Q==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-win32-ia32-msvc"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-win32-x64-gnu",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-gnu/-/rollup-win32-x64-gnu-4.62.2.tgz",
+      "integrity": "sha512-T6xr6ucWSFto+VGajA8YH26LdpHRuP4YLHEKAtCWvJDOlnmWcDZVCI2Jmjr+IFHDlt2zRaTAKE4tfjTaWLgJBg==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-win32-x64-gnu"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@rollup/rollup-win32-x64-msvc",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.62.2.tgz",
+      "integrity": "sha512-BfzEnDJOt9T8M989/lA37EcJgat01wLRnoi5dQf3QzOH7jzpqTAzdDbVfRljVr5r+jzKqpbHeyOfAaXxAd0PAA==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@rollup/rollup-win32-x64-msvc"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "@types/babel__core",
+      "version": "7.20.5",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/babel__core/-/babel__core-7.20.5.tgz",
+      "integrity": "sha512-qoQprZvz5wQFJwMDqeseRXWv3rqMvhgpbXFfVyWhbx9X47POIA6i/+dXefEmZKoAgOaTdaIgNSMqMIU61yRyzA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/babel__core"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/babel__generator",
+      "version": "7.27.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/babel__generator/-/babel__generator-7.27.0.tgz",
+      "integrity": "sha512-ufFd2Xi92OAVPYsy+P4n7/U7e68fex0+Ee8gSG9KX7eo084CWiQ4sdxktvdl0bOPupXtVJPY19zk6EwWqUQ8lg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/babel__generator"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/babel__template",
+      "version": "7.4.4",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/babel__template/-/babel__template-7.4.4.tgz",
+      "integrity": "sha512-h/NUaSyG5EyxBIp8YRxo4RMe2/qQgvyowRwVMzhYhBCONbW8PUsg4lkFMrhgZhUe5z3L3MiLDuvyJ/CaPa2A8A==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/babel__template"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/babel__traverse",
+      "version": "7.28.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/babel__traverse/-/babel__traverse-7.28.0.tgz",
+      "integrity": "sha512-8PvcXf70gTDZBgt9ptxJ8elBeBjcLOAcOtoO/mPJjtji1+CdGbHgm77om1GrsPxsiE+uXIpNSK64UYaIwQXd4Q==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/babel__traverse"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/estree",
+      "version": "1.0.9",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/estree/-/estree-1.0.9.tgz",
+      "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/estree"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/katex",
+      "version": "0.16.8",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/katex/-/katex-0.16.8.tgz",
+      "integrity": "sha512-trgaNyfU+Xh2Tc+ABIb44a5AYUpicB3uwirOioeOkNPPbmgRNtcWyDeeFRzjPZENO9Vq8gvVqfhaaXWLlevVwg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/katex"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/react",
+      "version": "19.2.17",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/react/-/react-19.2.17.tgz",
+      "integrity": "sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/react"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/react-dom",
+      "version": "19.2.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/react-dom/-/react-dom-19.2.3.tgz",
+      "integrity": "sha512-jp2L/eY6fn+KgVVQAOqYItbF0VY/YApe5Mz2F0aykSO8gx31bYCZyvSeYxCHKvzHG5eZjc+zyaS5BrBWya2+kQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@types/react-dom"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@types/trusted-types",
+      "version": "2.0.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@types/trusted-types/-/trusted-types-2.0.7.tgz",
+      "integrity": "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==",
+      "development": false,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/@types/trusted-types"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "@vitejs/plugin-react",
+      "version": "4.7.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-4.7.0.tgz",
+      "integrity": "sha512-gUu9hwfWvvEDBBmgtAowQCojwZmJ5mcLn3aufeCsitijs3+f2NsrPtlAWIR6OPiqljl96GVCUbLe0HyqIpVaoA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/@vitejs/plugin-react"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ajv",
+      "version": "8.20.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz",
+      "integrity": "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/ajv"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ajv-formats",
+      "version": "3.0.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/ajv-formats/-/ajv-formats-3.0.1.tgz",
+      "integrity": "sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/ajv-formats"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "baseline-browser-mapping",
+      "version": "2.10.43",
+      "licenseExpression": "Apache-2.0",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/baseline-browser-mapping/-/baseline-browser-mapping-2.10.43.tgz",
+      "integrity": "sha512-AjYpR78kDWAY3Efj+cDTFH9t9SCoL7OoTp1BOb0mQV7S+6CiLwnWM3FyxhJtdPufDFKzmCSFoUncKjWgJEZTCQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/baseline-browser-mapping"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "browserslist",
+      "version": "4.28.6",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/browserslist/-/browserslist-4.28.6.tgz",
+      "integrity": "sha512-FQBYNK15VMslhLHpA7+n+n1GOlF1kId2xcCg7/j95f24AOF6VDYMNH4mFxF7KuaTdv627faazpOAjFzMrfJOUw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/browserslist"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "caniuse-lite",
+      "version": "1.0.30001806",
+      "licenseExpression": "CC-BY-4.0",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001806.tgz",
+      "integrity": "sha512-72Cuvd95zbSYPKq6Fhg8eDJRlzgWDf7/mtoZv6Qe/DYNCEBdNxoA3+rZAU2ZhGCpZlns3EssFavaZomckT5Uuw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/caniuse-lite"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "commander",
+      "version": "8.3.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/commander/-/commander-8.3.0.tgz",
+      "integrity": "sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww==",
+      "development": false,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/commander"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "convert-source-map",
+      "version": "2.0.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/convert-source-map/-/convert-source-map-2.0.0.tgz",
+      "integrity": "sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/convert-source-map"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "csstype",
+      "version": "3.2.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+      "integrity": "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/csstype"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "debug",
+      "version": "4.4.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/debug"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "dompurify",
+      "version": "3.4.12",
+      "licenseExpression": "(MPL-2.0 OR Apache-2.0)",
+      "selectedLicense": "Apache-2.0",
+      "resolved": "https://registry.npmjs.org/dompurify/-/dompurify-3.4.12.tgz",
+      "integrity": "sha512-zQvGet8Z2sWbQhCmfFz/T5QWH2oBmjnqK3qvOjaqaNLrLEF912WamU+ohnTp0TCep/MFVHpdJuCZEdFOdTnEFg==",
+      "development": false,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/dompurify"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "electron-to-chromium",
+      "version": "1.5.393",
+      "licenseExpression": "ISC",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/electron-to-chromium/-/electron-to-chromium-1.5.393.tgz",
+      "integrity": "sha512-kiDJdIUawuEIcp9XoICKp1iTYDEbgguIPq526N1Q7jIQDeQ3CqoMx71025PI/7E48Ddtw2HuWsVjY7afEgNxmg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/electron-to-chromium"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "esbuild",
+      "version": "0.28.1",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/esbuild/-/esbuild-0.28.1.tgz",
+      "integrity": "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/esbuild"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "escalade",
+      "version": "3.2.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/escalade/-/escalade-3.2.0.tgz",
+      "integrity": "sha512-WUj2qlxaQtO4g6Pq5c29GTcWGDyd8itL8zTlipgECz3JesAiiOKotd8JU6otB3PACgG6xkJUyVhboMS+bje/jA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/escalade"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fast-deep-equal",
+      "version": "3.1.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/fast-deep-equal/-/fast-deep-equal-3.1.3.tgz",
+      "integrity": "sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/fast-deep-equal"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fast-uri",
+      "version": "3.1.3",
+      "licenseExpression": "BSD-3-Clause",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.3.tgz",
+      "integrity": "sha512-i70LwGWUduXqzicKXWshooq+sWL1K3WUU5rKZNG/0i3a1OSoX3HqhH5WbWwTmqWfor4urUakGPiRQcleRZTwOg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/fast-uri"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fdir",
+      "version": "6.5.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/fdir/-/fdir-6.5.0.tgz",
+      "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/fdir"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "fsevents",
+      "version": "2.3.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/fsevents/-/fsevents-2.3.3.tgz",
+      "integrity": "sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==",
+      "development": true,
+      "optional": true,
+      "lockPaths": [
+        "node_modules/fsevents"
+      ],
+      "hasPackagedLicenseText": false
+    },
+    {
+      "name": "gensync",
+      "version": "1.0.0-beta.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/gensync/-/gensync-1.0.0-beta.2.tgz",
+      "integrity": "sha512-3hN7NaskYvMDLQY55gnW3NQ+mesEAepTqlg+VEbj7zzqEMBVNhzcGYYeqFo/TlYz6eQiFcp1HcsCZO+nGgS8zg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/gensync"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "js-tokens",
+      "version": "4.0.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/js-tokens/-/js-tokens-4.0.0.tgz",
+      "integrity": "sha512-RdJUflcE3cUzKiMqQgsCu06FPu9UdIJO0beYbPhHN4k6apgJtifcoCtT9bcxOpYBtpD2kCM6Sbzg4CausW/PKQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/js-tokens"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "jsesc",
+      "version": "3.1.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/jsesc/-/jsesc-3.1.0.tgz",
+      "integrity": "sha512-/sM3dO2FOzXjKQhJuo0Q173wf2KOo8t4I8vHy6lF9poUp7bKT0/NHE8fPX23PwfhnykfqnC2xRxOnVw5XuGIaA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/jsesc"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "json-schema-traverse",
+      "version": "1.0.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-1.0.0.tgz",
+      "integrity": "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/json-schema-traverse"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "json5",
+      "version": "2.2.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/json5/-/json5-2.2.3.tgz",
+      "integrity": "sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/json5"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "katex",
+      "version": "0.16.47",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/katex/-/katex-0.16.47.tgz",
+      "integrity": "sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg==",
+      "development": false,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/katex"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "lru-cache",
+      "version": "5.1.1",
+      "licenseExpression": "ISC",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-5.1.1.tgz",
+      "integrity": "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/lru-cache"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "ms",
+      "version": "2.1.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/ms"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "nanoid",
+      "version": "3.3.16",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/nanoid/-/nanoid-3.3.16.tgz",
+      "integrity": "sha512-bzlKTyNJ7+LdGIIwy8ijFpIqEQIvafahV7eYykJ8Cvh42EdJeODoJ6gUJXpQJvej1BddH8OqTXZNE/KfbWAu8Q==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/nanoid"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "node-releases",
+      "version": "2.0.51",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/node-releases/-/node-releases-2.0.51.tgz",
+      "integrity": "sha512-wRNIrw4DmVLKQlbgOMdkMx27Wrpzes2hh5Jtbi2bjPd+4wJstWIqP5A+lscnqbm0xxmT5Bpg8Lec5ItEBwx6BQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/node-releases"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "picocolors",
+      "version": "1.1.1",
+      "licenseExpression": "ISC",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/picocolors/-/picocolors-1.1.1.tgz",
+      "integrity": "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/picocolors"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "picomatch",
+      "version": "4.0.5",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/picomatch/-/picomatch-4.0.5.tgz",
+      "integrity": "sha512-RvwwcruNjI1ncT5xRakeyS9Lf8lcItv34KD+aif+VH9kduAyfYBipGh12274xtenIPZ119/R9BdTBa8gAwSh0A==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/picomatch"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "postcss",
+      "version": "8.5.19",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/postcss/-/postcss-8.5.19.tgz",
+      "integrity": "sha512-Mz8SaolMd8nB+G13WkORcxQKHZ/NE4xXevtkJHVuG+guo9/wYKlIMTKAqGdEmYOXR2ijPjTYNHssizdaVSUNdQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/postcss"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "react",
+      "version": "19.2.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/react/-/react-19.2.7.tgz",
+      "integrity": "sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==",
+      "development": false,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/react"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "react-dom",
+      "version": "19.2.7",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.2.7.tgz",
+      "integrity": "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ==",
+      "development": false,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/react-dom"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "react-refresh",
+      "version": "0.17.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/react-refresh/-/react-refresh-0.17.0.tgz",
+      "integrity": "sha512-z6F7K9bV85EfseRCp2bzrpyQ0Gkw1uLoCel9XBVWPg/TjRj94SkJzUTGfOa4bs7iJvBWtQG0Wq7wnI0syw3EBQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/react-refresh"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "require-from-string",
+      "version": "2.0.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/require-from-string/-/require-from-string-2.0.2.tgz",
+      "integrity": "sha512-Xf0nWe6RseziFMu+Ap9biiUbmplq6S9/p+7w7YXP/JBHhrUDDUhwa+vANyubuqfZWTveU//DYVGsDG7RKL/vEw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/require-from-string"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "rollup",
+      "version": "4.62.2",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/rollup/-/rollup-4.62.2.tgz",
+      "integrity": "sha512-RFnrW4lhXA3s3eqHDZvN654g8OTjzRfqpIRJYczCGB6HzphckVAi/Qh4tbPUbRuDi7s1Llv8g/NspLkttY3gTA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/rollup"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "scheduler",
+      "version": "0.27.0",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/scheduler/-/scheduler-0.27.0.tgz",
+      "integrity": "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==",
+      "development": false,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/scheduler"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "semver",
+      "version": "6.3.1",
+      "licenseExpression": "ISC",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/semver/-/semver-6.3.1.tgz",
+      "integrity": "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/semver"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "smol-toml",
+      "version": "1.7.0",
+      "licenseExpression": "BSD-3-Clause",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/smol-toml/-/smol-toml-1.7.0.tgz",
+      "integrity": "sha512-aqVvWoyO21L23mb+drl4RmMXbf6N7FdHjAhTRA9ZBL7apWBgfWC16KjrASI+1p9GAroljyMHj6fK67i0UiTNvQ==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/smol-toml"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "source-map-js",
+      "version": "1.2.1",
+      "licenseExpression": "BSD-3-Clause",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/source-map-js/-/source-map-js-1.2.1.tgz",
+      "integrity": "sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/source-map-js"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "tinyglobby",
+      "version": "0.2.17",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/tinyglobby/-/tinyglobby-0.2.17.tgz",
+      "integrity": "sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/tinyglobby"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "typescript",
+      "version": "5.9.3",
+      "licenseExpression": "Apache-2.0",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/typescript"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "update-browserslist-db",
+      "version": "1.2.3",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/update-browserslist-db/-/update-browserslist-db-1.2.3.tgz",
+      "integrity": "sha512-Js0m9cx+qOgDxo0eMiFGEueWztz+d4+M3rGlmKPT+T4IS/jP4ylw3Nwpu6cpTTP8R1MAC1kF4VbdLt3ARf209w==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/update-browserslist-db"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "vite",
+      "version": "7.3.6",
+      "licenseExpression": "MIT",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/vite/-/vite-7.3.6.tgz",
+      "integrity": "sha512-4XP60spRGjSZFf1qYH+dJIkK2znL3zQfl9KkOV9MkkRR/3Dls0dxaBsQPTloEc5BLXWPL9vsOxopxyKoMmDueg==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/vite"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "yallist",
+      "version": "3.1.1",
+      "licenseExpression": "ISC",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/yallist/-/yallist-3.1.1.tgz",
+      "integrity": "sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/yallist"
+      ],
+      "hasPackagedLicenseText": true
+    },
+    {
+      "name": "yaml",
+      "version": "2.9.0",
+      "licenseExpression": "ISC",
+      "selectedLicense": null,
+      "resolved": "https://registry.npmjs.org/yaml/-/yaml-2.9.0.tgz",
+      "integrity": "sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==",
+      "development": true,
+      "optional": false,
+      "lockPaths": [
+        "node_modules/yaml"
+      ],
+      "hasPackagedLicenseText": true
+    }
+  ]
+}

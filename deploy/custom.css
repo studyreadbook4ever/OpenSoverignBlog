@@ -1,0 +1,13 @@
+/*
+ * OpenSoverignBlog owner CSS
+ *
+ * This file is served only when appearance.custom_css=true. Keep selectors
+ * under .blog-page or .article-page so Studio and server controls remain
+ * predictable. External url(...) values may disclose reader IP addresses;
+ * prefer first-party assets uploaded to /media/.
+ */
+
+.blog-page,
+.article-page {
+  /* Example: --theme-accent: #b45309; */
+}

@@ -1,0 +1,65 @@
+schemaVersion: "1.0"
+id: google.adsense
+displayName: Google AdSense
+homepage: https://adsense.google.com/
+categories: [network]
+integrationModes: [third-party-script]
+supportedRegions:
+  - provider countries and territories; sanctions exclusions apply
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: null
+  kycRequired: unknown
+  notes: Applicants must be at least 18, control a site with original content, and pass site and policy review. The official eligibility page does not state a numeric traffic minimum.
+payoutSummary: Provider-calculated advertising revenue; payout thresholds, methods, tax handling, and rates vary by account and country and were not normalized in this entry.
+authFields: [publisherId]
+requiredDomains: []
+cookiesAndStorage:
+  - kind: unknown
+    purpose: Ad delivery, measurement, fraud prevention, and possible personalization; exact technologies depend on account configuration and advertising partners.
+    retention: Not established by the cited provider pages.
+    firstParty: false
+dataAccessed:
+  - IP addresses or other identifiers disclosed by Google as possible ad-serving technologies
+  - page and ad interaction data
+  - consent signals when a CMP integration is used
+consentPurposeIds: [ads.delivery, ads.measurement, ads.personalization]
+personalizationSupported: true
+adsTxtRequirements: "Recommended, not mandatory. Google documents the line google.com, pub-<publisher-id>, DIRECT, f08c47fec0942fa0 and requires the operator's actual publisher ID."
+cspRequirements: {}
+webhooks: []
+contentRestrictions:
+  - The site and content must comply with Google Publisher Policies and ongoing program-policy changes.
+adapterStatus: catalog-only
+adapterPackage: null
+selfHostedComponents: []
+lastVerified: 2026-07-18
+maintainers: []
+sources:
+  - title: Eligibility requirements for AdSense
+    url: https://support.google.com/adsense/answer/9724?hl=en
+    checkedAt: 2026-07-18
+  - title: Connect your site to AdSense
+    url: https://support.google.com/adsense/answer/7584263?hl=en
+    checkedAt: 2026-07-18
+  - title: Google consent management requirements for serving ads in the EEA, the UK, and Switzerland
+    url: https://support.google.com/adsense/answer/13554020?hl=en
+    checkedAt: 2026-07-18
+  - title: Ads.txt guide
+    url: https://support.google.com/adsense/answer/12171612?hl=en
+    checkedAt: 2026-07-18
+  - title: Google Publisher Policies
+    url: https://support.google.com/adsense/answer/10502938?hl=en-GB
+    checkedAt: 2026-07-18
+evidenceGaps:
+  - field: requiredDomains and cspRequirements
+    note: The complete runtime domain and CSP set depends on generated account code, ad products, partners, and CMP configuration; it must be captured from the operator's actual setup before an adapter can advance beyond catalog-only.
+  - field: cookiesAndStorage.retention
+    note: The cited pages disclose possible cookies, web beacons, IP addresses, and identifiers but do not provide one complete configuration-specific storage inventory and retention schedule.
+  - field: eligibility.kycRequired
+    note: Payment and identity verification requirements were not established from the cited pages.
+  - field: supportedRegions
+    note: The source confirms sanctions exclusions, but this compact entry does not duplicate Google's complete country-specific account availability and payment conditions.
+knownRisks:
+  - Third-party ad code must remain blocked until the deployment's applicable consent and legal-basis checks pass; Google's own CMP requirements do not certify the operator's compliance.
+  - Personalized ads, partner selection, domains, policies, and storage behavior can change after account configuration.
