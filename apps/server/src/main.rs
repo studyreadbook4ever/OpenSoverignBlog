@@ -55,6 +55,8 @@ use feature_registry::{FeatureRegistry, ModuleDescriptor, ModuleStatus};
 
 #[cfg(test)]
 const DEFAULT_SITE_ID: &str = "00000000-0000-7000-8000-000000000001";
+#[cfg(test)]
+const TEST_SOURCE_WEB_INDEX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/index.html");
 
 const SECURITY_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'";
 const BUILD_WEB_DIST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/dist");
@@ -1862,8 +1864,14 @@ fn web_dist_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(BUILD_WEB_DIST))
 }
 
+#[cfg(not(test))]
 fn web_index_path() -> PathBuf {
     web_dist_path().join("index.html")
+}
+
+#[cfg(test)]
+fn web_index_path() -> PathBuf {
+    PathBuf::from(TEST_SOURCE_WEB_INDEX)
 }
 
 fn public_cached_response(

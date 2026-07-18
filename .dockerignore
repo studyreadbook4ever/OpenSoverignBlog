@@ -9,6 +9,7 @@ backups
 restore-drill
 config.toml
 custom.css
+!deploy/custom.css
 osb.intent.json
 target
 node_modules

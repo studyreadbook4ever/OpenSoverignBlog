@@ -20,6 +20,7 @@ COPY crates crates
 COPY features features
 COPY plugins plugins
 COPY openapi openapi
+COPY deploy/custom.css deploy/custom.css
 RUN cargo build --locked --release -p osb-server -p osb-cli
 
 FROM debian:bookworm-slim AS runtime
