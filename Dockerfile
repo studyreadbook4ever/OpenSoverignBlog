@@ -6,6 +6,7 @@ COPY package.json package-lock.json tsconfig.base.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
 RUN npm ci
+COPY scripts/prepare-web-assets.mjs scripts/prepare-web-assets.mjs
 COPY apps/web apps/web
 COPY packages/sdk packages/sdk
 RUN npm run build
