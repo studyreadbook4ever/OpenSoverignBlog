@@ -69,12 +69,137 @@ pub type CommunityUser = UserRecord;
 pub struct SessionRecord {
     pub id: Uuid,
     pub user_id: Uuid,
+    pub auth_epoch: u64,
+    pub auth_method: SessionAuthMethod,
     pub expires_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
 
 pub type CommunitySession = SessionRecord;
+
+/// The one human administration mechanism selected for this installation.
+///
+/// This value is persisted with the primary owner binding so two replicas with
+/// contradictory configuration cannot silently take turns issuing sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminAuthMode {
+    AccessKey,
+    External,
+    Disabled,
+}
+
+impl AdminAuthMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessKey => "access_key",
+            Self::External => "external",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    const fn session_method(self) -> Option<SessionAuthMethod> {
+        match self {
+            Self::AccessKey => Some(SessionAuthMethod::AccessKey),
+            Self::External => Some(SessionAuthMethod::External),
+            Self::Disabled => None,
+        }
+    }
+}
+
+impl FromStr for AdminAuthMode {
+    type Err = RepositoryError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "access_key" => Ok(Self::AccessKey),
+            "external" => Ok(Self::External),
+            "disabled" => Ok(Self::Disabled),
+            other => Err(RepositoryError::Storage(format!(
+                "unknown admin authentication mode {other}"
+            ))),
+        }
+    }
+}
+
+/// Provenance attached to a revocable browser session. `Legacy` is retained so
+/// the pre-v6 local-account API remains source-compatible while new owner
+/// authentication converges on the same session table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAuthMethod {
+    Legacy,
+    AccessKey,
+    External,
+}
+
+impl SessionAuthMethod {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::AccessKey => "access_key",
+            Self::External => "external",
+        }
+    }
+}
+
+impl FromStr for SessionAuthMethod {
+    type Err = RepositoryError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "legacy" => Ok(Self::Legacy),
+            "access_key" => Ok(Self::AccessKey),
+            "external" => Ok(Self::External),
+            other => Err(RepositoryError::Storage(format!(
+                "unknown session authentication method {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdminControlPlaneRecord {
+    pub primary_site_id: Uuid,
+    pub owner_user_id: Uuid,
+    pub auth_mode: AdminAuthMode,
+    pub auth_epoch: u64,
+    pub setup_complete: bool,
+    pub binding_fingerprint: [u8; 32],
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Human-readable values used only when a fresh database has no primary site.
+/// The persistent owner identity is generated internally and deliberately has
+/// no usable local password.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrimaryOwnerBootstrap {
+    pub site_id: Uuid,
+    pub site_handle: String,
+    pub site_title: String,
+    pub site_description: Option<String>,
+    pub owner_display_name: String,
+    pub theme_profile: ThemeProfile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalIdentityRecord {
+    pub adapter: String,
+    pub issuer: String,
+    pub subject_hash: [u8; 32],
+    pub user_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrimaryOwnerSession {
+    pub session: SessionRecord,
+    pub user: UserRecord,
+    pub site: SiteRecord,
+}
 
 /// Operator intent for SQLite's local WAL durability/latency trade-off.
 /// Even `Fast` keeps `synchronous=NORMAL`; unsafe `OFF` is never exposed.
@@ -323,7 +448,7 @@ impl SqliteRepository {
         // it must never self-migrate a read-only deployment artifact.
         let migrated = connection
             .query_row(
-                "SELECT 1 FROM schema_migrations WHERE version = 5",
+                "SELECT 1 FROM schema_migrations WHERE version = 6",
                 [],
                 |_| Ok(()),
             )
@@ -332,7 +457,7 @@ impl SqliteRepository {
             .is_some();
         if !migrated {
             return Err(RepositoryError::Storage(
-                "delivery-only database must be migrated through schema version 5".into(),
+                "delivery-only database must be migrated through schema version 6".into(),
             ));
         }
         Ok(Self {
@@ -367,6 +492,20 @@ impl SqliteRepository {
         if !has_migration_5 {
             transaction
                 .execute_batch(MIGRATION_5)
+                .map_err(storage_error)?;
+        }
+        let has_migration_6 = transaction
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version = 6",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .is_some();
+        if !has_migration_6 {
+            transaction
+                .execute_batch(MIGRATION_6)
                 .map_err(storage_error)?;
         }
         transaction.commit().map_err(storage_error)
@@ -531,6 +670,475 @@ impl SqliteRepository {
         load_user_by_column(&connection, "email", &email)
     }
 
+    /// Atomically provisions the primary owner and site on an empty database,
+    /// then persists the immutable authentication binding for this deployment.
+    /// Existing sites are never guessed or re-parented by this operation.
+    pub fn provision_primary_owner_site(
+        &self,
+        bootstrap: &PrimaryOwnerBootstrap,
+        auth_mode: AdminAuthMode,
+        binding_fingerprint: &[u8],
+    ) -> Result<AdminControlPlaneRecord, RepositoryError> {
+        validate_fingerprint(binding_fingerprint)?;
+        let site_handle = normalize_handle(&bootstrap.site_handle, "site handle")?;
+        let site_title = validate_required_text(&bootstrap.site_title, "site title", 200)?;
+        let site_description = validate_optional_text(
+            bootstrap.site_description.as_deref(),
+            "site description",
+            2_000,
+        )?;
+        let owner_display_name =
+            validate_required_text(&bootstrap.owner_display_name, "owner display name", 100)?;
+
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        if let Some(existing) = load_admin_control_plane_optional(&transaction)? {
+            validate_control_plane_binding(
+                &existing,
+                bootstrap.site_id,
+                auth_mode,
+                binding_fingerprint,
+            )?;
+            ensure_site_owner(
+                &transaction,
+                existing.owner_user_id,
+                existing.primary_site_id,
+            )?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok(existing);
+        }
+
+        let (site, setup_complete) = match load_site_by_id(&transaction, bootstrap.site_id, None) {
+            Ok(site) => (site, true),
+            Err(RepositoryError::NotFound) => {
+                let site_count: i64 = transaction
+                    .query_row("SELECT COUNT(*) FROM sites", [], |row| row.get(0))
+                    .map_err(storage_error)?;
+                if site_count != 0 {
+                    return Err(RepositoryError::Validation(
+                        "refusing to guess a primary owner because another site already exists"
+                            .into(),
+                    ));
+                }
+
+                let compact = bootstrap.site_id.simple().to_string();
+                let owner_handle = format!("owner-{compact}");
+                let owner_email = format!("{owner_handle}@localhost");
+                let now = Utc::now();
+                transaction
+                    .execute(
+                        "INSERT INTO users (
+                            id, email, handle, display_name, password_phc, created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, ?4,
+                                   '$argon2id$disabled-for-primary-owner', ?5, ?5)",
+                        params![
+                            bootstrap.site_id.to_string(),
+                            owner_email,
+                            owner_handle,
+                            owner_display_name,
+                            now.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(map_community_constraint_error)?;
+                transaction
+                    .execute(
+                        "INSERT INTO sites (
+                            id, handle, title, description, current_theme_revision,
+                            created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, ?4, 1, ?5, ?5)",
+                        params![
+                            bootstrap.site_id.to_string(),
+                            site_handle,
+                            site_title,
+                            site_description,
+                            now.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(map_community_constraint_error)?;
+                transaction
+                    .execute(
+                        "INSERT INTO site_memberships (site_id, user_id, role, created_at)
+                         VALUES (?1, ?1, 'owner', ?2)",
+                        params![bootstrap.site_id.to_string(), now.to_rfc3339()],
+                    )
+                    .map_err(map_community_constraint_error)?;
+                transaction
+                    .execute(
+                        "INSERT INTO site_theme_revisions (
+                            site_id, revision, profile, custom_css, created_by_user_id, created_at
+                         ) VALUES (?1, 1, ?2, NULL, ?1, ?3)",
+                        params![
+                            bootstrap.site_id.to_string(),
+                            bootstrap.theme_profile.as_str(),
+                            now.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(map_community_constraint_error)?;
+                (
+                    load_site_by_id(&transaction, bootstrap.site_id, None)?,
+                    false,
+                )
+            }
+            Err(error) => return Err(error),
+        };
+        let record = insert_admin_control_plane(
+            &transaction,
+            site.id,
+            site.owner_user_id,
+            auth_mode,
+            binding_fingerprint,
+            setup_complete,
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(record)
+    }
+
+    /// Reconciles an already-provisioned primary site with this replica's
+    /// configuration. A differing mode or fingerprint is a hard error rather
+    /// than an implicit credential rotation.
+    pub fn reconcile_admin_control_plane(
+        &self,
+        primary_site_id: Uuid,
+        auth_mode: AdminAuthMode,
+        binding_fingerprint: &[u8],
+    ) -> Result<AdminControlPlaneRecord, RepositoryError> {
+        validate_fingerprint(binding_fingerprint)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        if let Some(existing) = load_admin_control_plane_optional(&transaction)? {
+            validate_control_plane_binding(
+                &existing,
+                primary_site_id,
+                auth_mode,
+                binding_fingerprint,
+            )?;
+            ensure_site_owner(
+                &transaction,
+                existing.owner_user_id,
+                existing.primary_site_id,
+            )?;
+            transaction.commit().map_err(storage_error)?;
+            return Ok(existing);
+        }
+        let site = load_site_by_id(&transaction, primary_site_id, None)?;
+        let record = insert_admin_control_plane(
+            &transaction,
+            site.id,
+            site.owner_user_id,
+            auth_mode,
+            binding_fingerprint,
+            true,
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(record)
+    }
+
+    /// Explicitly rotates the configured administrator authentication binding.
+    ///
+    /// A matching target is a no-op so multiple replicas may safely start with
+    /// the same one-shot rotation flag. A real change advances the epoch,
+    /// revokes every non-member session, and removes external identity bindings
+    /// in the same immediate transaction. The primary site and owner are never
+    /// changed by credential rotation.
+    pub fn rotate_admin_control_plane(
+        &self,
+        primary_site_id: Uuid,
+        auth_mode: AdminAuthMode,
+        binding_fingerprint: &[u8],
+    ) -> Result<AdminControlPlaneRecord, RepositoryError> {
+        validate_fingerprint(binding_fingerprint)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let existing = load_admin_control_plane(&transaction)?;
+        if existing.primary_site_id != primary_site_id {
+            return Err(RepositoryError::Validation(
+                "administrator authentication rotation cannot change the primary site".into(),
+            ));
+        }
+        ensure_site_owner(
+            &transaction,
+            existing.owner_user_id,
+            existing.primary_site_id,
+        )?;
+        if existing.auth_mode == auth_mode
+            && existing.binding_fingerprint.as_slice() == binding_fingerprint
+        {
+            transaction.commit().map_err(storage_error)?;
+            return Ok(existing);
+        }
+
+        let next_epoch = existing.auth_epoch.checked_add(1).ok_or_else(|| {
+            RepositoryError::Validation("administrator authentication epoch is exhausted".into())
+        })?;
+        let next_epoch = i64::try_from(next_epoch).map_err(|_| {
+            RepositoryError::Validation("administrator authentication epoch is too large".into())
+        })?;
+        let now = Utc::now().to_rfc3339();
+        let updated = transaction
+            .execute(
+                "UPDATE admin_control_plane
+                 SET auth_mode = ?1, auth_epoch = ?2, binding_fingerprint = ?3,
+                     updated_at = ?4
+                 WHERE singleton = 1 AND auth_epoch = ?5",
+                params![
+                    auth_mode.as_str(),
+                    next_epoch,
+                    binding_fingerprint,
+                    now,
+                    i64::try_from(existing.auth_epoch).map_err(|_| {
+                        RepositoryError::Storage(
+                            "stored administrator authentication epoch is too large".into(),
+                        )
+                    })?,
+                ],
+            )
+            .map_err(storage_error)?;
+        if updated != 1 {
+            return Err(RepositoryError::Storage(
+                "administrator authentication binding changed concurrently".into(),
+            ));
+        }
+        transaction
+            .execute(
+                "UPDATE sessions
+                 SET revoked_at = COALESCE(revoked_at, ?1)
+                 WHERE auth_method != 'legacy'",
+                params![now],
+            )
+            .map_err(storage_error)?;
+        transaction
+            .execute("DELETE FROM external_identities", [])
+            .map_err(storage_error)?;
+        let rotated = load_admin_control_plane(&transaction)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(rotated)
+    }
+
+    pub fn get_admin_control_plane(&self) -> Result<AdminControlPlaneRecord, RepositoryError> {
+        let connection = self.lock()?;
+        load_admin_control_plane(&connection)
+    }
+
+    /// Completes the one-time metadata and theme selection for a freshly
+    /// provisioned primary owner site.
+    pub fn complete_primary_owner_setup(
+        &self,
+        owner_user_id: Uuid,
+        handle: &str,
+        title: &str,
+        description: Option<&str>,
+        theme_profile: ThemeProfile,
+    ) -> Result<SiteRecord, RepositoryError> {
+        let handle = normalize_handle(handle, "site handle")?;
+        let title = validate_required_text(title, "site title", 200)?;
+        let description = validate_optional_text(description, "site description", 2_000)?;
+
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let control = load_admin_control_plane(&transaction)?;
+        if control.owner_user_id != owner_user_id {
+            return Err(RepositoryError::NotFound);
+        }
+        if control.setup_complete {
+            return Err(RepositoryError::Validation(
+                "primary owner setup is already complete".into(),
+            ));
+        }
+        ensure_site_owner(&transaction, control.owner_user_id, control.primary_site_id)?;
+
+        let now = Utc::now();
+        transaction
+            .execute(
+                "UPDATE sites
+                 SET handle = ?1, title = ?2, description = ?3, updated_at = ?4
+                 WHERE id = ?5",
+                params![
+                    handle,
+                    title,
+                    description,
+                    now.to_rfc3339(),
+                    control.primary_site_id.to_string(),
+                ],
+            )
+            .map_err(map_community_constraint_error)?;
+        append_site_appearance_revision(
+            &transaction,
+            control.owner_user_id,
+            control.primary_site_id,
+            theme_profile,
+            None,
+        )?;
+        let updated = transaction
+            .execute(
+                "UPDATE admin_control_plane
+                 SET setup_complete = 1, updated_at = ?1
+                 WHERE singleton = 1 AND setup_complete = 0",
+                params![Utc::now().to_rfc3339()],
+            )
+            .map_err(storage_error)?;
+        if updated != 1 {
+            return Err(RepositoryError::Validation(
+                "primary owner setup is already complete".into(),
+            ));
+        }
+        let site = load_site_by_id(
+            &transaction,
+            control.primary_site_id,
+            Some(control.owner_user_id),
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(site)
+    }
+
+    /// Idempotently binds a cryptographically verified external subject to the
+    /// already-selected primary owner. Authorization remains in memberships.
+    pub fn bind_external_identity(
+        &self,
+        adapter: &str,
+        issuer: &str,
+        subject_hash: &[u8],
+        binding_fingerprint: &[u8],
+    ) -> Result<ExternalIdentityRecord, RepositoryError> {
+        let adapter = validate_external_adapter(adapter)?;
+        let issuer = validate_external_issuer(issuer)?;
+        validate_subject_hash(subject_hash)?;
+        validate_fingerprint(binding_fingerprint)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let control = load_admin_control_plane(&transaction)?;
+        if control.auth_mode != AdminAuthMode::External
+            || control.binding_fingerprint.as_slice() != binding_fingerprint
+        {
+            return Err(RepositoryError::Validation(
+                "external identity binding does not match the active administrator authentication binding"
+                    .into(),
+            ));
+        }
+        ensure_site_owner(&transaction, control.owner_user_id, control.primary_site_id)?;
+        let now = Utc::now();
+        if let Some(existing) =
+            load_external_identity_optional(&transaction, &adapter, &issuer, subject_hash)?
+        {
+            if existing.user_id != control.owner_user_id {
+                return Err(RepositoryError::Validation(
+                    "external identity is already bound to a different user".into(),
+                ));
+            }
+            transaction
+                .execute(
+                    "UPDATE external_identities SET last_seen_at = ?1
+                     WHERE adapter = ?2 AND issuer = ?3 AND subject_hash = ?4",
+                    params![now.to_rfc3339(), adapter, issuer, subject_hash],
+                )
+                .map_err(storage_error)?;
+        } else {
+            transaction
+                .execute(
+                    "INSERT INTO external_identities (
+                        adapter, issuer, subject_hash, user_id, created_at, last_seen_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+                    params![
+                        adapter,
+                        issuer,
+                        subject_hash,
+                        control.owner_user_id.to_string(),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .map_err(map_community_constraint_error)?;
+        }
+        let record = load_external_identity(&transaction, &adapter, &issuer, subject_hash)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(record)
+    }
+
+    pub fn get_external_identity(
+        &self,
+        adapter: &str,
+        issuer: &str,
+        subject_hash: &[u8],
+    ) -> Result<ExternalIdentityRecord, RepositoryError> {
+        let adapter = validate_external_adapter(adapter)?;
+        let issuer = validate_external_issuer(issuer)?;
+        validate_subject_hash(subject_hash)?;
+        let connection = self.lock()?;
+        load_external_identity(&connection, &adapter, &issuer, subject_hash)
+    }
+
+    /// Issues an opaque browser session for the configured primary owner after
+    /// the caller has completed access-key or external verification.
+    pub fn create_primary_owner_session(
+        &self,
+        token_hash: &[u8],
+        expires_at: DateTime<Utc>,
+        auth_method: SessionAuthMethod,
+        binding_fingerprint: &[u8],
+    ) -> Result<SessionRecord, RepositoryError> {
+        validate_token_hash(token_hash)?;
+        validate_session_expiry(expires_at)?;
+        validate_fingerprint(binding_fingerprint)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let control = load_admin_control_plane(&transaction)?;
+        if control.auth_mode.session_method() != Some(auth_method)
+            || control.binding_fingerprint.as_slice() != binding_fingerprint
+        {
+            return Err(RepositoryError::Validation(
+                "session issuance does not match the active administrator authentication binding"
+                    .into(),
+            ));
+        }
+        ensure_site_owner(&transaction, control.owner_user_id, control.primary_site_id)?;
+        let session = insert_session(
+            &transaction,
+            control.owner_user_id,
+            token_hash,
+            expires_at,
+            control.auth_epoch,
+            auth_method,
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(session)
+    }
+
+    pub fn get_primary_owner_session(
+        &self,
+        token_hash: &[u8],
+    ) -> Result<PrimaryOwnerSession, RepositoryError> {
+        validate_token_hash(token_hash)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
+            .map_err(storage_error)?;
+        let session = load_active_session_by_hash(&transaction, token_hash)?;
+        let control = load_admin_control_plane(&transaction)?;
+        if session.user_id != control.owner_user_id
+            || session.auth_epoch != control.auth_epoch
+            || control.auth_mode.session_method() != Some(session.auth_method)
+        {
+            return Err(RepositoryError::NotFound);
+        }
+        let owner_session = PrimaryOwnerSession {
+            user: load_user_by_id(&transaction, control.owner_user_id)?,
+            site: load_site_by_id(&transaction, control.primary_site_id, None)?,
+            session,
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok(owner_session)
+    }
+
     /// Stores only a 32-byte SHA-256 digest of the opaque browser credential.
     pub fn create_session(
         &self,
@@ -539,55 +1147,38 @@ impl SqliteRepository {
         expires_at: DateTime<Utc>,
     ) -> Result<SessionRecord, RepositoryError> {
         validate_token_hash(token_hash)?;
-        let now = Utc::now();
-        if expires_at <= now {
-            return Err(RepositoryError::Validation(
-                "session expiry must be in the future".into(),
-            ));
-        }
+        validate_session_expiry(expires_at)?;
         let connection = self.lock()?;
-        let id = Uuid::now_v7();
-        connection
-            .execute(
-                "INSERT INTO sessions (
-                    id, token_hash, user_id, expires_at, created_at, revoked_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-                params![
-                    id.to_string(),
-                    token_hash,
-                    user_id.to_string(),
-                    expires_at.to_rfc3339(),
-                    now.to_rfc3339(),
-                ],
-            )
-            .map_err(map_community_constraint_error)?;
-        load_session_by_id(&connection, id)
+        insert_session(
+            &connection,
+            user_id,
+            token_hash,
+            expires_at,
+            0,
+            SessionAuthMethod::Legacy,
+        )
     }
 
     /// Returns only a currently valid session. Expired and revoked credentials
     /// are indistinguishable from unknown credentials.
     pub fn get_session(&self, token_hash: &[u8]) -> Result<SessionRecord, RepositoryError> {
         validate_token_hash(token_hash)?;
-        let connection = self.lock()?;
-        let raw: Option<StoredSessionRow> = connection
-            .query_row(
-                "SELECT id, user_id, expires_at, created_at, revoked_at
-                 FROM sessions
-                 WHERE token_hash = ?1 AND revoked_at IS NULL",
-                params![token_hash],
-                stored_session_row,
-            )
-            .optional()
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(storage_error)?;
-        let session = raw
-            .map(parse_session_row)
-            .transpose()?
-            .ok_or(RepositoryError::NotFound)?;
-        if session.expires_at <= Utc::now() {
-            Err(RepositoryError::NotFound)
-        } else {
-            Ok(session)
+        let session = load_active_session_by_hash(&transaction, token_hash)?;
+        if session.auth_method != SessionAuthMethod::Legacy {
+            let control = load_admin_control_plane(&transaction)?;
+            if session.user_id != control.owner_user_id
+                || session.auth_epoch != control.auth_epoch
+                || control.auth_mode.session_method() != Some(session.auth_method)
+            {
+                return Err(RepositoryError::NotFound);
+            }
         }
+        transaction.commit().map_err(storage_error)?;
+        Ok(session)
     }
 
     pub fn revoke_session(&self, token_hash: &[u8]) -> Result<bool, RepositoryError> {
@@ -1957,7 +2548,7 @@ fn load_user_by_column(
     parse_user_row(raw)
 }
 
-type StoredSessionRow = (String, String, String, String, Option<String>);
+type StoredSessionRow = (String, String, i64, String, String, String, Option<String>);
 
 fn stored_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSessionRow> {
     Ok((
@@ -1966,14 +2557,19 @@ fn stored_session_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSession
         row.get(2)?,
         row.get(3)?,
         row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
     ))
 }
 
 fn parse_session_row(raw: StoredSessionRow) -> Result<SessionRecord, RepositoryError> {
-    let (id, user_id, expires_at, created_at, revoked_at) = raw;
+    let (id, user_id, auth_epoch, auth_method, expires_at, created_at, revoked_at) = raw;
     Ok(SessionRecord {
         id: parse_uuid(&id)?,
         user_id: parse_uuid(&user_id)?,
+        auth_epoch: u64::try_from(auth_epoch)
+            .map_err(|_| RepositoryError::Storage("session auth epoch is invalid".into()))?,
+        auth_method: SessionAuthMethod::from_str(&auth_method)?,
         expires_at: parse_datetime(&expires_at)?,
         created_at: parse_datetime(&created_at)?,
         revoked_at: revoked_at.as_deref().map(parse_datetime).transpose()?,
@@ -1983,7 +2579,7 @@ fn parse_session_row(raw: StoredSessionRow) -> Result<SessionRecord, RepositoryE
 fn load_session_by_id(connection: &Connection, id: Uuid) -> Result<SessionRecord, RepositoryError> {
     let raw = connection
         .query_row(
-            "SELECT id, user_id, expires_at, created_at, revoked_at
+            "SELECT id, user_id, auth_epoch, auth_method, expires_at, created_at, revoked_at
              FROM sessions WHERE id = ?1",
             params![id.to_string()],
             stored_session_row,
@@ -1992,6 +2588,239 @@ fn load_session_by_id(connection: &Connection, id: Uuid) -> Result<SessionRecord
         .map_err(storage_error)?
         .ok_or(RepositoryError::NotFound)?;
     parse_session_row(raw)
+}
+
+fn insert_session(
+    connection: &Connection,
+    user_id: Uuid,
+    token_hash: &[u8],
+    expires_at: DateTime<Utc>,
+    auth_epoch: u64,
+    auth_method: SessionAuthMethod,
+) -> Result<SessionRecord, RepositoryError> {
+    validate_token_hash(token_hash)?;
+    validate_session_expiry(expires_at)?;
+    let auth_epoch = i64::try_from(auth_epoch)
+        .map_err(|_| RepositoryError::Validation("session auth epoch is too large".into()))?;
+    let id = Uuid::now_v7();
+    let now = Utc::now();
+    connection
+        .execute(
+            "INSERT INTO sessions (
+                id, token_hash, user_id, auth_epoch, auth_method,
+                expires_at, created_at, revoked_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+            params![
+                id.to_string(),
+                token_hash,
+                user_id.to_string(),
+                auth_epoch,
+                auth_method.as_str(),
+                expires_at.to_rfc3339(),
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(map_community_constraint_error)?;
+    load_session_by_id(connection, id)
+}
+
+fn load_active_session_by_hash(
+    connection: &Connection,
+    token_hash: &[u8],
+) -> Result<SessionRecord, RepositoryError> {
+    let raw: Option<StoredSessionRow> = connection
+        .query_row(
+            "SELECT id, user_id, auth_epoch, auth_method, expires_at, created_at, revoked_at
+             FROM sessions
+             WHERE token_hash = ?1 AND revoked_at IS NULL",
+            params![token_hash],
+            stored_session_row,
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let session = raw
+        .map(parse_session_row)
+        .transpose()?
+        .ok_or(RepositoryError::NotFound)?;
+    if session.expires_at <= Utc::now() {
+        Err(RepositoryError::NotFound)
+    } else {
+        Ok(session)
+    }
+}
+
+type StoredAdminControlPlaneRow = (String, String, String, i64, bool, Vec<u8>, String, String);
+
+fn stored_admin_control_plane_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredAdminControlPlaneRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+    ))
+}
+
+fn parse_admin_control_plane_row(
+    raw: StoredAdminControlPlaneRow,
+) -> Result<AdminControlPlaneRecord, RepositoryError> {
+    let (
+        primary_site_id,
+        owner_user_id,
+        auth_mode,
+        auth_epoch,
+        setup_complete,
+        binding_fingerprint,
+        created_at,
+        updated_at,
+    ) = raw;
+    Ok(AdminControlPlaneRecord {
+        primary_site_id: parse_uuid(&primary_site_id)?,
+        owner_user_id: parse_uuid(&owner_user_id)?,
+        auth_mode: AdminAuthMode::from_str(&auth_mode)?,
+        auth_epoch: u64::try_from(auth_epoch)
+            .map_err(|_| RepositoryError::Storage("admin auth epoch is invalid".into()))?,
+        setup_complete,
+        binding_fingerprint: fixed_hash(&binding_fingerprint, "admin binding fingerprint")?,
+        created_at: parse_datetime(&created_at)?,
+        updated_at: parse_datetime(&updated_at)?,
+    })
+}
+
+fn load_admin_control_plane_optional(
+    connection: &Connection,
+) -> Result<Option<AdminControlPlaneRecord>, RepositoryError> {
+    connection
+        .query_row(
+            "SELECT primary_site_id, owner_user_id, auth_mode, auth_epoch,
+                    setup_complete, binding_fingerprint, created_at, updated_at
+             FROM admin_control_plane WHERE singleton = 1",
+            [],
+            stored_admin_control_plane_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(parse_admin_control_plane_row)
+        .transpose()
+}
+
+fn load_admin_control_plane(
+    connection: &Connection,
+) -> Result<AdminControlPlaneRecord, RepositoryError> {
+    load_admin_control_plane_optional(connection)?.ok_or(RepositoryError::NotFound)
+}
+
+fn insert_admin_control_plane(
+    connection: &Connection,
+    primary_site_id: Uuid,
+    owner_user_id: Uuid,
+    auth_mode: AdminAuthMode,
+    binding_fingerprint: &[u8],
+    setup_complete: bool,
+) -> Result<AdminControlPlaneRecord, RepositoryError> {
+    validate_fingerprint(binding_fingerprint)?;
+    ensure_site_owner(connection, owner_user_id, primary_site_id)?;
+    let now = Utc::now();
+    connection
+        .execute(
+            "INSERT INTO admin_control_plane (
+                singleton, primary_site_id, owner_user_id, auth_mode, auth_epoch,
+                setup_complete, binding_fingerprint, created_at, updated_at
+             ) VALUES (1, ?1, ?2, ?3, 1, ?4, ?5, ?6, ?6)",
+            params![
+                primary_site_id.to_string(),
+                owner_user_id.to_string(),
+                auth_mode.as_str(),
+                setup_complete,
+                binding_fingerprint,
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(map_community_constraint_error)?;
+    load_admin_control_plane(connection)
+}
+
+fn validate_control_plane_binding(
+    existing: &AdminControlPlaneRecord,
+    primary_site_id: Uuid,
+    auth_mode: AdminAuthMode,
+    binding_fingerprint: &[u8],
+) -> Result<(), RepositoryError> {
+    if existing.primary_site_id == primary_site_id
+        && existing.auth_mode == auth_mode
+        && existing.binding_fingerprint.as_slice() == binding_fingerprint
+    {
+        Ok(())
+    } else {
+        Err(RepositoryError::Validation(
+            "admin control-plane binding differs from persisted state; use an explicit authentication migration or rotation"
+                .into(),
+        ))
+    }
+}
+
+type StoredExternalIdentityRow = (String, String, Vec<u8>, String, String, String);
+
+fn stored_external_identity_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<StoredExternalIdentityRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn parse_external_identity_row(
+    raw: StoredExternalIdentityRow,
+) -> Result<ExternalIdentityRecord, RepositoryError> {
+    let (adapter, issuer, subject_hash, user_id, created_at, last_seen_at) = raw;
+    Ok(ExternalIdentityRecord {
+        adapter,
+        issuer,
+        subject_hash: fixed_hash(&subject_hash, "external subject hash")?,
+        user_id: parse_uuid(&user_id)?,
+        created_at: parse_datetime(&created_at)?,
+        last_seen_at: parse_datetime(&last_seen_at)?,
+    })
+}
+
+fn load_external_identity_optional(
+    connection: &Connection,
+    adapter: &str,
+    issuer: &str,
+    subject_hash: &[u8],
+) -> Result<Option<ExternalIdentityRecord>, RepositoryError> {
+    connection
+        .query_row(
+            "SELECT adapter, issuer, subject_hash, user_id, created_at, last_seen_at
+             FROM external_identities
+             WHERE adapter = ?1 AND issuer = ?2 AND subject_hash = ?3",
+            params![adapter, issuer, subject_hash],
+            stored_external_identity_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(parse_external_identity_row)
+        .transpose()
+}
+
+fn load_external_identity(
+    connection: &Connection,
+    adapter: &str,
+    issuer: &str,
+    subject_hash: &[u8],
+) -> Result<ExternalIdentityRecord, RepositoryError> {
+    load_external_identity_optional(connection, adapter, issuer, subject_hash)?
+        .ok_or(RepositoryError::NotFound)
 }
 
 type StoredSiteRow = (
@@ -2451,6 +3280,71 @@ fn validate_token_hash(value: &[u8]) -> Result<(), RepositoryError> {
         ));
     }
     Ok(())
+}
+
+fn validate_session_expiry(expires_at: DateTime<Utc>) -> Result<(), RepositoryError> {
+    if expires_at <= Utc::now() {
+        Err(RepositoryError::Validation(
+            "session expiry must be in the future".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_fingerprint(value: &[u8]) -> Result<(), RepositoryError> {
+    if value.len() != 32 {
+        Err(RepositoryError::Validation(
+            "admin binding fingerprint must be exactly 32 bytes".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_subject_hash(value: &[u8]) -> Result<(), RepositoryError> {
+    if value.len() != 32 {
+        Err(RepositoryError::Validation(
+            "external subject hash must be exactly 32 bytes".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn fixed_hash(value: &[u8], label: &str) -> Result<[u8; 32], RepositoryError> {
+    value
+        .try_into()
+        .map_err(|_| RepositoryError::Storage(format!("{label} is not 32 bytes")))
+}
+
+fn validate_external_adapter(value: &str) -> Result<String, RepositoryError> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty()
+        || normalized.len() > 64
+        || !normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte))
+    {
+        return Err(RepositoryError::Validation(
+            "external adapter must contain 1-64 lowercase ASCII letters, digits, _, or -".into(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn validate_external_issuer(value: &str) -> Result<String, RepositoryError> {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 2_048
+        || value.contains('\0')
+        || value.contains(['\r', '\n'])
+    {
+        return Err(RepositoryError::Validation(
+            "external issuer must contain 1-2048 bounded characters".into(),
+        ));
+    }
+    Ok(value.to_owned())
 }
 
 fn validate_comment_markdown(value: &str) -> Result<String, RepositoryError> {
@@ -2969,9 +3863,66 @@ INSERT INTO schema_migrations(version, applied_at)
 VALUES (5, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#;
 
+const MIGRATION_6: &str = r#"
+ALTER TABLE sessions
+  ADD COLUMN auth_epoch INTEGER NOT NULL DEFAULT 0 CHECK (auth_epoch >= 0);
+ALTER TABLE sessions
+  ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'legacy'
+  CHECK (auth_method IN ('legacy', 'access_key', 'external'));
+
+-- Sessions created before this migration predate the persisted authentication
+-- binding. Fail closed instead of allowing an old local or bearer credential to
+-- inherit the primary owner's new administration authority.
+UPDATE sessions
+SET revoked_at = COALESCE(revoked_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+CREATE INDEX sessions_admin_epoch_idx
+  ON sessions(user_id, auth_epoch, auth_method, expires_at DESC)
+  WHERE revoked_at IS NULL;
+
+CREATE TABLE admin_control_plane (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  primary_site_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  auth_mode TEXT NOT NULL
+    CHECK (auth_mode IN ('access_key', 'external', 'disabled')),
+  auth_epoch INTEGER NOT NULL CHECK (auth_epoch > 0),
+  setup_complete INTEGER NOT NULL DEFAULT 1
+    CHECK (setup_complete IN (0, 1)),
+  binding_fingerprint BLOB NOT NULL CHECK (length(binding_fingerprint) = 32),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (primary_site_id) REFERENCES sites(id) ON DELETE RESTRICT,
+  FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE external_identities (
+  adapter TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  subject_hash BLOB NOT NULL CHECK (length(subject_hash) = 32),
+  user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  PRIMARY KEY (adapter, issuer, subject_hash),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CHECK (length(adapter) BETWEEN 1 AND 64),
+  CHECK (length(issuer) BETWEEN 1 AND 2048)
+);
+
+CREATE INDEX external_identities_user_idx
+  ON external_identities(user_id, adapter, issuer);
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"#;
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::mpsc, thread};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Barrier, mpsc},
+        thread,
+    };
 
     use osb_kernel::{
         AI2AI_SPEC_VERSION, AiActor, AiActorKind, AiPolicySnapshot, AiProvenanceEntry,
@@ -3069,6 +4020,17 @@ mod tests {
                 ThemeProfile::Paper,
             )
             .unwrap()
+    }
+
+    fn primary_owner_bootstrap(site_id: Uuid) -> PrimaryOwnerBootstrap {
+        PrimaryOwnerBootstrap {
+            site_id,
+            site_handle: "primary-blog".into(),
+            site_title: "Primary Blog".into(),
+            site_description: Some("Owned on this server".into()),
+            owner_display_name: "Primary Owner".into(),
+            theme_profile: ThemeProfile::Forest,
+        }
     }
 
     fn new_document(site_id: Uuid, title: &str, slug: &str) -> NewDocument {
@@ -3278,6 +4240,517 @@ mod tests {
             repository.create_session(user.id, &[1, 2, 3], Utc::now() + chrono::Duration::hours(1)),
             Err(RepositoryError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn migration_six_is_additive_revokes_pre_binding_sessions_and_gates_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("schema-v5.db");
+        let connection = Connection::open(&database).unwrap();
+        connection.execute_batch(MIGRATION_1).unwrap();
+        connection.execute_batch(MIGRATION_2).unwrap();
+        connection.execute_batch(MIGRATION_3).unwrap();
+        connection.execute_batch(MIGRATION_4).unwrap();
+        connection.execute_batch(MIGRATION_5).unwrap();
+        let user_id = Uuid::now_v7();
+        let session_id = Uuid::now_v7();
+        let old_hash = [0x31_u8; 32];
+        let now = Utc::now();
+        connection
+            .execute(
+                "INSERT INTO users (
+                    id, email, handle, display_name, password_phc, created_at, updated_at
+                 ) VALUES (?1, 'v5@example.test', 'v5-user', 'V5 User',
+                           '$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA', ?2, ?2)",
+                params![user_id.to_string(), now.to_rfc3339()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO sessions (
+                    id, token_hash, user_id, expires_at, created_at, revoked_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                params![
+                    session_id.to_string(),
+                    old_hash,
+                    user_id.to_string(),
+                    (now + chrono::Duration::hours(1)).to_rfc3339(),
+                    now.to_rfc3339(),
+                ],
+            )
+            .unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            SqliteRepository::open_read_only(&database),
+            Err(RepositoryError::Storage(_))
+        ));
+        let repository = SqliteRepository::open(&database).unwrap();
+        repository.migrate().unwrap();
+        assert!(matches!(
+            repository.get_session(&old_hash),
+            Err(RepositoryError::NotFound)
+        ));
+        let connection = repository.lock().unwrap();
+        let migration_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 6",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(migration_count, 1);
+        let columns = connection
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "auth_epoch"));
+        assert!(columns.iter().any(|column| column == "auth_method"));
+        let admin_columns = connection
+            .prepare("PRAGMA table_info(admin_control_plane)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            admin_columns
+                .iter()
+                .any(|column| column == "setup_complete")
+        );
+        drop(connection);
+        drop(repository);
+
+        let read_only = SqliteRepository::open_read_only(&database).unwrap();
+        assert!(matches!(
+            read_only.get_admin_control_plane(),
+            Err(RepositoryError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn fresh_primary_owner_provision_is_atomic_idempotent_and_split_brain_safe() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let bootstrap = primary_owner_bootstrap(site_id);
+        let fingerprint = [0x41_u8; 32];
+        let control = repository
+            .provision_primary_owner_site(&bootstrap, AdminAuthMode::AccessKey, &fingerprint)
+            .unwrap();
+        assert_eq!(control.primary_site_id, site_id);
+        assert_eq!(control.owner_user_id, site_id);
+        assert_eq!(control.auth_mode, AdminAuthMode::AccessKey);
+        assert_eq!(control.auth_epoch, 1);
+        assert!(!control.setup_complete);
+        assert_eq!(control.binding_fingerprint, fingerprint);
+        let site = repository.get_site_by_id(site_id).unwrap();
+        assert_eq!(site.owner_user_id, control.owner_user_id);
+        assert_eq!(site.handle, "primary-blog");
+        assert_eq!(site.theme_profile, ThemeProfile::Forest);
+
+        assert_eq!(
+            repository
+                .provision_primary_owner_site(&bootstrap, AdminAuthMode::AccessKey, &fingerprint,)
+                .unwrap(),
+            control
+        );
+        assert!(matches!(
+            repository.provision_primary_owner_site(
+                &bootstrap,
+                AdminAuthMode::External,
+                &fingerprint,
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert!(matches!(
+            repository.reconcile_admin_control_plane(
+                site_id,
+                AdminAuthMode::AccessKey,
+                &[0x42_u8; 32],
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        let connection = repository.lock().unwrap();
+        let counts: (i64, i64, i64, i64) = connection
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM admin_control_plane),
+                    (SELECT COUNT(*) FROM sites),
+                    (SELECT COUNT(*) FROM users),
+                    (SELECT COUNT(*) FROM site_memberships WHERE role = 'owner')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (1, 1, 1, 1));
+    }
+
+    #[test]
+    fn primary_owner_setup_is_owner_scoped_atomic_and_one_time() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[0x49_u8; 32],
+            )
+            .unwrap();
+        assert!(!control.setup_complete);
+
+        let stranger = community_user(&repository, "setup-stranger");
+        assert!(matches!(
+            repository.complete_primary_owner_setup(
+                stranger.id,
+                "finished-blog",
+                "Finished Blog",
+                Some("Ready for readers"),
+                ThemeProfile::Terminal,
+            ),
+            Err(RepositoryError::NotFound)
+        ));
+        assert!(!repository.get_admin_control_plane().unwrap().setup_complete);
+
+        let site = repository
+            .complete_primary_owner_setup(
+                control.owner_user_id,
+                "finished-blog",
+                "Finished Blog",
+                Some("Ready for readers"),
+                ThemeProfile::Terminal,
+            )
+            .unwrap();
+        assert_eq!(site.id, site_id);
+        assert_eq!(site.handle, "finished-blog");
+        assert_eq!(site.title, "Finished Blog");
+        assert_eq!(site.description.as_deref(), Some("Ready for readers"));
+        assert_eq!(site.theme_profile, ThemeProfile::Terminal);
+        assert_eq!(site.theme_revision, 2);
+        assert!(repository.get_admin_control_plane().unwrap().setup_complete);
+
+        assert!(matches!(
+            repository.complete_primary_owner_setup(
+                control.owner_user_id,
+                "another-blog",
+                "Another Blog",
+                None,
+                ThemeProfile::Ink,
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        let connection = repository.lock().unwrap();
+        let theme_revision_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM site_theme_revisions WHERE site_id = ?1",
+                params![site_id.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(theme_revision_count, 2);
+        assert_eq!(
+            load_site_by_id(&connection, site_id, None).unwrap().handle,
+            "finished-blog"
+        );
+    }
+
+    #[test]
+    fn access_key_and_external_auth_issue_the_same_scoped_owner_session_shape() {
+        let access_repository = SqliteRepository::open_in_memory().unwrap();
+        let access_site_id = Uuid::now_v7();
+        access_repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(access_site_id),
+                AdminAuthMode::AccessKey,
+                &[0x51_u8; 32],
+            )
+            .unwrap();
+        let access_hash = [0x52_u8; 32];
+        let access_session = access_repository
+            .create_primary_owner_session(
+                &access_hash,
+                Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::AccessKey,
+                &[0x51_u8; 32],
+            )
+            .unwrap();
+        assert_eq!(access_session.auth_epoch, 1);
+        assert_eq!(access_session.auth_method, SessionAuthMethod::AccessKey);
+        let access = access_repository
+            .get_primary_owner_session(&access_hash)
+            .unwrap();
+        assert_eq!(access.user.id, access.site.owner_user_id);
+        assert_eq!(access.site.id, access_site_id);
+        assert_eq!(
+            access_repository.get_session(&access_hash).unwrap(),
+            access_session
+        );
+        assert!(matches!(
+            access_repository.create_primary_owner_session(
+                &[0x53_u8; 32],
+                Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::External,
+                &[0x51_u8; 32],
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+
+        access_repository
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE admin_control_plane SET auth_epoch = auth_epoch + 1, updated_at = ?1
+                 WHERE singleton = 1",
+                params![Utc::now().to_rfc3339()],
+            )
+            .unwrap();
+        assert!(matches!(
+            access_repository.get_session(&access_hash),
+            Err(RepositoryError::NotFound)
+        ));
+        assert!(matches!(
+            access_repository.get_primary_owner_session(&access_hash),
+            Err(RepositoryError::NotFound)
+        ));
+
+        let external_repository = SqliteRepository::open_in_memory().unwrap();
+        let external_site_id = Uuid::now_v7();
+        let external_control = external_repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(external_site_id),
+                AdminAuthMode::External,
+                &[0x61_u8; 32],
+            )
+            .unwrap();
+        let subject_hash = [0x62_u8; 32];
+        let identity = external_repository
+            .bind_external_identity(
+                "Firebase",
+                "https://securetoken.google.com/example",
+                &subject_hash,
+                &[0x61_u8; 32],
+            )
+            .unwrap();
+        assert_eq!(identity.adapter, "firebase");
+        assert_eq!(identity.user_id, external_control.owner_user_id);
+        assert_eq!(
+            external_repository
+                .bind_external_identity(
+                    "firebase",
+                    "https://securetoken.google.com/example",
+                    &subject_hash,
+                    &[0x61_u8; 32],
+                )
+                .unwrap()
+                .user_id,
+            identity.user_id
+        );
+        let external_hash = [0x63_u8; 32];
+        let external_session = external_repository
+            .create_primary_owner_session(
+                &external_hash,
+                Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::External,
+                &[0x61_u8; 32],
+            )
+            .unwrap();
+        let external = external_repository
+            .get_primary_owner_session(&external_hash)
+            .unwrap();
+        assert_eq!(external.user.id, external_control.owner_user_id);
+        assert_eq!(external.site.id, external_site_id);
+        assert_eq!(external.session, external_session);
+        assert_eq!(external.session.auth_epoch, access.session.auth_epoch);
+    }
+
+    #[test]
+    fn explicit_admin_rotation_is_atomic_idempotent_and_binding_scoped() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let old_fingerprint = [0x64_u8; 32];
+        let new_fingerprint = [0x65_u8; 32];
+        let disabled_fingerprint = [0x66_u8; 32];
+        let subject_hash = [0x67_u8; 32];
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::External,
+                &old_fingerprint,
+            )
+            .unwrap();
+        repository
+            .bind_external_identity(
+                "oidc",
+                "https://identity.example",
+                &subject_hash,
+                &old_fingerprint,
+            )
+            .unwrap();
+
+        let old_admin_hash = [0x68_u8; 32];
+        repository
+            .create_primary_owner_session(
+                &old_admin_hash,
+                Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::External,
+                &old_fingerprint,
+            )
+            .unwrap();
+        let member_hash = [0x69_u8; 32];
+        repository
+            .create_session(
+                control.owner_user_id,
+                &member_hash,
+                Utc::now() + chrono::Duration::hours(1),
+            )
+            .unwrap();
+
+        let rotated = repository
+            .rotate_admin_control_plane(site_id, AdminAuthMode::External, &new_fingerprint)
+            .unwrap();
+        assert_eq!(rotated.auth_epoch, control.auth_epoch + 1);
+        assert_eq!(rotated.binding_fingerprint, new_fingerprint);
+        assert!(matches!(
+            repository.get_primary_owner_session(&old_admin_hash),
+            Err(RepositoryError::NotFound)
+        ));
+        assert!(repository.get_session(&member_hash).is_ok());
+        assert!(matches!(
+            repository.get_external_identity("oidc", "https://identity.example", &subject_hash,),
+            Err(RepositoryError::NotFound)
+        ));
+        assert!(matches!(
+            repository.bind_external_identity(
+                "oidc",
+                "https://identity.example",
+                &subject_hash,
+                &old_fingerprint,
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert!(matches!(
+            repository.create_primary_owner_session(
+                &[0x6a_u8; 32],
+                Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::External,
+                &old_fingerprint,
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+
+        repository
+            .bind_external_identity(
+                "oidc",
+                "https://identity.example",
+                &subject_hash,
+                &new_fingerprint,
+            )
+            .unwrap();
+        let new_admin_hash = [0x6b_u8; 32];
+        repository
+            .create_primary_owner_session(
+                &new_admin_hash,
+                Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::External,
+                &new_fingerprint,
+            )
+            .unwrap();
+        let repeated = repository
+            .rotate_admin_control_plane(site_id, AdminAuthMode::External, &new_fingerprint)
+            .unwrap();
+        assert_eq!(repeated, rotated);
+        assert!(
+            repository
+                .get_primary_owner_session(&new_admin_hash)
+                .is_ok()
+        );
+
+        let disabled = repository
+            .rotate_admin_control_plane(site_id, AdminAuthMode::Disabled, &disabled_fingerprint)
+            .unwrap();
+        assert_eq!(disabled.auth_epoch, rotated.auth_epoch + 1);
+        assert_eq!(disabled.auth_mode, AdminAuthMode::Disabled);
+        assert!(matches!(
+            repository.get_primary_owner_session(&new_admin_hash),
+            Err(RepositoryError::NotFound)
+        ));
+        assert!(repository.get_session(&member_hash).is_ok());
+    }
+
+    #[test]
+    fn existing_site_reconciliation_preserves_membership_owned_authority() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "reconciled-owner");
+        let site = community_site(&repository, owner.id, "reconciled-site");
+        let control = repository
+            .reconcile_admin_control_plane(site.id, AdminAuthMode::External, &[0x71_u8; 32])
+            .unwrap();
+        assert_eq!(control.owner_user_id, owner.id);
+        assert_eq!(control.primary_site_id, site.id);
+        assert!(control.setup_complete);
+        assert_eq!(repository.get_admin_control_plane().unwrap(), control);
+    }
+
+    #[test]
+    fn concurrent_conflicting_owner_bootstraps_do_not_overwrite_the_winner() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("owner-race.db");
+        drop(SqliteRepository::open(&database).unwrap());
+        let first = SqliteRepository::open(&database).unwrap();
+        let second = SqliteRepository::open(&database).unwrap();
+        let site_id = Uuid::now_v7();
+        let bootstrap = primary_owner_bootstrap(site_id);
+        let barrier = Arc::new(Barrier::new(2));
+        let first_barrier = Arc::clone(&barrier);
+        let first_bootstrap = bootstrap.clone();
+        let first_thread = thread::spawn(move || {
+            first_barrier.wait();
+            first.provision_primary_owner_site(
+                &first_bootstrap,
+                AdminAuthMode::AccessKey,
+                &[0x81_u8; 32],
+            )
+        });
+        let second_barrier = Arc::clone(&barrier);
+        let second_thread = thread::spawn(move || {
+            second_barrier.wait();
+            second.provision_primary_owner_site(
+                &bootstrap,
+                AdminAuthMode::AccessKey,
+                &[0x82_u8; 32],
+            )
+        });
+        let results = [first_thread.join().unwrap(), second_thread.join().unwrap()];
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(RepositoryError::Validation(_))))
+                .count(),
+            1
+        );
+
+        let repository = SqliteRepository::open(&database).unwrap();
+        let control = repository.get_admin_control_plane().unwrap();
+        assert!(
+            control.binding_fingerprint == [0x81_u8; 32]
+                || control.binding_fingerprint == [0x82_u8; 32]
+        );
+        let counts: (i64, i64, i64) = repository
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM admin_control_plane),
+                    (SELECT COUNT(*) FROM sites),
+                    (SELECT COUNT(*) FROM site_memberships WHERE role = 'owner')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(counts, (1, 1, 1));
     }
 
     #[test]

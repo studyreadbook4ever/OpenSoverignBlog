@@ -20,6 +20,8 @@ osb-storage-sqlite = { version = "=0.1.0", path = "../../crates/storage-sqlite" 
 osb-feature-seo = { version = "=0.1.0", path = "../../features/seo" }
 osb-feature-code-runner-client = { version = "=0.1.0", path = "../../features/code-runner-client" }
 osb-feature-comments = { version = "=0.1.0", path = "../../features/comments" }
+osb-feature-external-auth = { version = "=0.1.0", path = "../../features/external-auth" }
+openidconnect.workspace = true
 rand_core.workspace = true
 redis.workspace = true
 serde.workspace = true

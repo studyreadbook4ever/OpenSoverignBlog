@@ -26,7 +26,10 @@ use osb_kernel::{
     OntologySidecar, ProposedRevision, RepositoryError, RevisionActor, RevisionActorKind,
 };
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
-use osb_storage_sqlite::{SqliteDurabilityProfile, SqliteRepository};
+use osb_storage_sqlite::{
+    AdminAuthMode as StoredAdminAuthMode, PrimaryOwnerBootstrap, SqliteDurabilityProfile,
+    SqliteRepository, ThemeProfile,
+};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -42,15 +45,17 @@ use tracing_subscriber::EnvFilter;
 use url::Url;
 use uuid::Uuid;
 
+mod admin_auth;
 mod backup;
 mod cache;
 mod community;
 mod config;
 mod feature_registry;
 
+use admin_auth::AdminAuthRuntime;
 use backup::BackupService;
 use cache::SemanticCache;
-use config::{AuthMode, DatabaseProfile, RuntimeConfig};
+use config::{AdminAuthMode, AuthMode, DatabaseProfile, RuntimeConfig};
 use feature_registry::{FeatureRegistry, ModuleDescriptor, ModuleStatus};
 
 #[cfg(test)]
@@ -71,6 +76,8 @@ struct AppState {
     site_id: Uuid,
     seo_policy: Arc<SeoPolicy>,
     admin_token_hash: Option<[u8; 32]>,
+    mcp_token_hash: Option<[u8; 32]>,
+    admin_auth: AdminAuthRuntime,
     features: Arc<FeatureRegistry>,
     runner: Option<Arc<RemoteRunnerClient>>,
     runner_jobs: Arc<tokio::sync::Mutex<HashMap<Uuid, QueuedRun>>>,
@@ -122,12 +129,14 @@ async fn main() -> Result<()> {
         .context("failed to initialize the required semantic Redis cache")?;
     let site_id = config.site_id;
     let delivery_only = config.delivery_only;
+    let admin_auth_rotate = config.admin_auth_rotate;
     let operations = config.operations.clone();
     let local_auth_enabled = matches!(config.auth_mode, AuthMode::Local | AuthMode::LocalAndOauth);
     let oauth_requested = matches!(config.auth_mode, AuthMode::Oauth | AuthMode::LocalAndOauth);
     info!(
         intent = ?config.deployment_intent,
-        auth = ?config.auth_mode,
+        member_auth = ?config.auth_mode,
+        admin_auth = ?config.admin_auth.mode,
         redis_topology = ?config.redis.topology,
         database_profile = ?config.operations.database_profile,
         managed_backups = config.operations.managed_backups,
@@ -149,6 +158,8 @@ async fn main() -> Result<()> {
         .map_err(anyhow::Error::msg)
         .context("failed to open SQLite")?,
     );
+    let admin_auth = AdminAuthRuntime::from_settings(&config.admin_auth)
+        .context("administrator authentication configuration is invalid")?;
     if !delivery_only {
         repository
             .apply_durability_profile(match config.operations.database_profile {
@@ -158,6 +169,109 @@ async fn main() -> Result<()> {
             })
             .map_err(anyhow::Error::msg)
             .context("failed to apply the semantic SQLite durability profile")?;
+    }
+    if !delivery_only {
+        match admin_auth.mode() {
+            AdminAuthMode::AccessKey | AdminAuthMode::External => {
+                let compact = site_id.simple().to_string();
+                let stored_mode = match admin_auth.mode() {
+                    AdminAuthMode::AccessKey => StoredAdminAuthMode::AccessKey,
+                    AdminAuthMode::External => StoredAdminAuthMode::External,
+                    AdminAuthMode::Disabled => unreachable!("matched active mode"),
+                };
+                let binding_fingerprint = admin_auth.binding_fingerprint();
+                let bootstrap = PrimaryOwnerBootstrap {
+                    site_id,
+                    site_handle: format!("blog-{}", &compact[..12]),
+                    site_title: "My blog".into(),
+                    site_description: Some(
+                        "This blog is owned by this OpenSoverignBlog instance.".into(),
+                    ),
+                    owner_display_name: "Owner".into(),
+                    theme_profile: ThemeProfile::Paper,
+                };
+                if admin_auth_rotate {
+                    match repository.get_admin_control_plane() {
+                        Ok(control) => {
+                            let previous_epoch = control.auth_epoch;
+                            let rotated = repository
+                                .rotate_admin_control_plane(
+                                    site_id,
+                                    stored_mode,
+                                    &binding_fingerprint,
+                                )
+                                .map_err(anyhow::Error::msg)
+                                .context("failed to rotate administrator authentication")?;
+                            if rotated.auth_epoch != previous_epoch {
+                                tracing::warn!(
+                                    previous_epoch,
+                                    auth_epoch = rotated.auth_epoch,
+                                    mode = rotated.auth_mode.as_str(),
+                                    "rotated administrator authentication and revoked prior administrator sessions"
+                                );
+                            }
+                        }
+                        Err(RepositoryError::NotFound) => {
+                            repository
+                                .provision_primary_owner_site(
+                                    &bootstrap,
+                                    stored_mode,
+                                    &binding_fingerprint,
+                                )
+                                .map_err(anyhow::Error::msg)
+                                .context("failed to provision the primary owner")?;
+                        }
+                        Err(error) => return Err(anyhow::Error::msg(error.to_string())),
+                    }
+                } else {
+                    repository
+                        .provision_primary_owner_site(
+                            &bootstrap,
+                            stored_mode,
+                            &binding_fingerprint,
+                        )
+                        .map_err(anyhow::Error::msg)
+                        .context(
+                            "failed to provision/reconcile the primary owner; another replica may have contradictory admin authentication configuration",
+                        )?;
+                }
+            }
+            AdminAuthMode::Disabled => match repository.get_admin_control_plane() {
+                Ok(control) => {
+                    if admin_auth_rotate {
+                        let rotated = repository
+                            .rotate_admin_control_plane(
+                                control.primary_site_id,
+                                StoredAdminAuthMode::Disabled,
+                                &admin_auth.binding_fingerprint(),
+                            )
+                            .map_err(anyhow::Error::msg)
+                            .context("failed to disable administrator authentication")?;
+                        if rotated.auth_epoch != control.auth_epoch {
+                            tracing::warn!(
+                                previous_epoch = control.auth_epoch,
+                                auth_epoch = rotated.auth_epoch,
+                                "disabled administrator authentication and revoked prior administrator sessions"
+                            );
+                        }
+                    } else {
+                        repository
+                            .reconcile_admin_control_plane(
+                                control.primary_site_id,
+                                StoredAdminAuthMode::Disabled,
+                                &admin_auth.binding_fingerprint(),
+                            )
+                            .map(|_| ())
+                            .map_err(anyhow::Error::msg)
+                            .context(
+                                "refusing to start with disabled admin auth while persisted owner sessions use another mode; set OSB_ADMIN_AUTH_ROTATE=true for one explicit rotation",
+                            )?;
+                    }
+                }
+                Err(RepositoryError::NotFound) => {}
+                Err(error) => return Err(anyhow::Error::msg(error.to_string())),
+            },
+        }
     }
     if delivery_only && !config.blob_directory.join("sha256").is_dir() {
         anyhow::bail!(
@@ -183,6 +297,9 @@ async fn main() -> Result<()> {
     let admin_token_hash = config
         .admin_token
         .map(|value| Sha256::digest(value.as_bytes()).into());
+    let mcp_token_hash = config
+        .mcp_token
+        .map(|value| Sha256::digest(value.as_bytes()).into());
     if admin_token_hash.is_none() {
         tracing::warn!(
             "OSB_ADMIN_TOKEN is absent; legacy owner-token mutations are disabled while community mutations follow the account policy"
@@ -204,6 +321,14 @@ async fn main() -> Result<()> {
             .activate_composed(
                 "comments",
                 "authenticated comments use persistent publication scoping, bounded validation, and sanitized rendering",
+            )
+            .map_err(anyhow::Error::msg)?;
+    }
+    if config.admin_auth.mode == AdminAuthMode::External {
+        features
+            .activate_composed(
+                "external_auth",
+                "OIDC authorization code flow uses discovery, PKCE S256, state, nonce, issuer/audience verification, and an exact owner subject binding",
             )
             .map_err(anyhow::Error::msg)?;
     }
@@ -261,6 +386,8 @@ async fn main() -> Result<()> {
         site_id,
         seo_policy: Arc::new(seo_policy),
         admin_token_hash,
+        mcp_token_hash,
+        admin_auth,
         features: Arc::new(features),
         runner,
         runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -358,6 +485,7 @@ fn app(state: AppState) -> Router {
         .route("/api/v1/posts/{slug}", get(get_post))
         .route("/api/v1/posts/{slug}/source.md", get(get_markdown_source))
         .route("/media/{digest}", get(get_asset))
+        .merge(admin_auth::routes(state.clone()))
         .merge(community::routes(state.clone()))
         .merge(mutation_routes)
         .route("/@{handle}", get(public_community_blog))
@@ -404,7 +532,18 @@ fn app(state: AppState) -> Router {
         ))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-        .layer(TraceLayer::new_for_http())
+        // Never put URI queries in spans: OIDC callbacks carry short-lived
+        // authorization codes and state in the query string.
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
+                tracing::debug_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                    version = ?request.version(),
+                )
+            }),
+        )
         .with_state(state)
 }
 
@@ -771,6 +910,7 @@ fn semantic_cache_variant(state: &AppState) -> String {
         "registrationOpen": state.registration_open,
         "localAuth": state.local_auth_enabled,
         "oauthRequested": state.oauth_requested,
+        "administratorAuth": state.admin_auth.mode().as_str(),
         "comments": state.comments_enabled,
         "collaboration": state.collaboration_enabled,
         "customCss": state.custom_css_enabled,
@@ -1055,6 +1195,13 @@ async fn ai2ai_discovery(
     let comments_href =
         absolute_public_url(&state.seo_policy, "/api/v1/posts/__post_id__/comments")?
             .replace("__post_id__", "{postId}");
+    let admin_available = !state.delivery_only
+        && (state.admin_auth.mode() != AdminAuthMode::Disabled || state.admin_token_hash.is_some());
+    let admin_transport = if state.admin_auth.mode() != AdminAuthMode::Disabled {
+        "session"
+    } else {
+        "owner"
+    };
     Ok(Json(serde_json::json!({
         "specVersion": "1.0",
         "name": "OpenSoverignBlog",
@@ -1068,8 +1215,8 @@ async fn ai2ai_discovery(
             "publishedContent": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/posts")?, &["GET"], "none", false, true),
             "comments": endpoint_descriptor(comments_href.clone(), &["GET"], "none", false, state.comments_enabled),
             "commentSubmission": endpoint_descriptor(comments_href, &["POST"], "session", true, state.comments_enabled && state.local_auth_enabled && !state.delivery_only),
-            "proposeRevision": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/ai2ai/proposals")?, &["POST"], "owner", true, !state.delivery_only && state.admin_token_hash.is_some()),
-            "uploadFirstPartyAsset": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/assets")?, &["POST"], "owner", true, !state.delivery_only && state.admin_token_hash.is_some()),
+            "proposeRevision": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/ai2ai/proposals")?, &["POST"], admin_transport, true, admin_available),
+            "uploadFirstPartyAsset": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/assets")?, &["POST"], admin_transport, true, admin_available),
             "runnerProfiles": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/code-runner/profiles")?, &["GET"], "none", false, state.features.is_active("code_runner") && state.runner.is_some())
         },
         "schemas": {
@@ -1092,6 +1239,7 @@ async fn ai2ai_discovery(
         "operatorIntent": {
             "localAuth": state.local_auth_enabled,
             "oauthRequested": state.oauth_requested,
+            "administratorAuth": state.admin_auth.mode().as_str(),
             "comments": state.comments_enabled,
             "collaboration": state.collaboration_enabled,
             "customCss": state.custom_css_enabled,
@@ -1156,15 +1304,61 @@ async fn capabilities(State(state): State<AppState>) -> Json<Capabilities> {
         .collect();
     let mut mutation_mechanisms = Vec::new();
     if !state.delivery_only {
-        if state.local_auth_enabled {
+        if state.local_auth_enabled || state.admin_auth.mode() != AdminAuthMode::Disabled {
             mutation_mechanisms.push("session");
         }
         if state.admin_token_hash.is_some() {
             mutation_mechanisms.push("owner_token");
         }
     }
+    let mut auth_methods = Vec::new();
+    if !state.delivery_only {
+        match state.admin_auth.mode() {
+            AdminAuthMode::AccessKey => auth_methods.push(AuthMethodDescriptor {
+                id: "admin-access-key".into(),
+                kind: "access_key".into(),
+                flow: "secret_exchange".into(),
+                audience: "admin".into(),
+                label: "관리자 접근 키".into(),
+                action_href: "/api/v1/auth/access-key/session".into(),
+                provider: None,
+            }),
+            AdminAuthMode::External => auth_methods.push(AuthMethodDescriptor {
+                id: "admin-external".into(),
+                kind: "external".into(),
+                flow: "redirect".into(),
+                audience: "admin".into(),
+                label: state
+                    .admin_auth
+                    .external_label()
+                    .unwrap_or("외부 계정으로 계속하기")
+                    .into(),
+                action_href: "/api/v1/auth/external/start".into(),
+                provider: state.admin_auth.external_adapter().map(str::to_owned),
+            }),
+            AdminAuthMode::Disabled => {}
+        }
+    }
+    let has_admin_session =
+        !state.delivery_only && state.admin_auth.mode() != AdminAuthMode::Disabled;
     Json(Capabilities {
-        version: "1.0",
+        version: "2.0",
+        public_access: "anonymous_read",
+        studio_access: if state.delivery_only || (!state.local_auth_enabled && !has_admin_session) {
+            "disabled"
+        } else if state.local_auth_enabled {
+            "members"
+        } else {
+            "admin_only"
+        },
+        auth: AuthCapabilities {
+            status: if auth_methods.is_empty() {
+                "disabled"
+            } else {
+                "ready"
+            },
+            methods: auth_methods,
+        },
         views: vec!["intent", "markdown", "markdown_source"],
         features: state.features.active_ids(),
         modules: state.features.modules().to_vec(),
@@ -1172,7 +1366,7 @@ async fn capabilities(State(state): State<AppState>) -> Json<Capabilities> {
         mutation_mechanisms,
         mutation_mode: if state.delivery_only {
             "read_only"
-        } else if state.local_auth_enabled {
+        } else if state.local_auth_enabled || has_admin_session {
             "authenticated_members"
         } else if state.admin_token_hash.is_some() {
             "single_owner_token"
@@ -2101,22 +2295,80 @@ where
         .map_err(ApiError::from)
 }
 
-fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+async fn require_admin(
+    state: &AppState,
+    headers: &HeaderMap,
+    method: &Method,
+    path: &str,
+) -> Result<(), ApiError> {
     if state.delivery_only {
         return Err(ApiError::ReadOnly);
     }
-    let expected = state.admin_token_hash.ok_or(ApiError::ReadOnly)?;
-    let provided = headers
+    if state.admin_auth.mode() == AdminAuthMode::Disabled && state.admin_token_hash.is_none() {
+        return Err(ApiError::ReadOnly);
+    }
+    if state.admin_auth.mode() != AdminAuthMode::Disabled
+        && let Some(token_hash) = community::session_hash_from_headers(headers)
+    {
+        let repository = Arc::clone(&state.repository);
+        let authenticated = tokio::task::spawn_blocking(move || {
+            repository.get_primary_owner_session(&token_hash).is_ok()
+        })
+        .await
+        .map_err(|error| ApiError::Internal(format!("session worker failed: {error}")))?;
+        if authenticated {
+            return Ok(());
+        }
+    }
+    if let Some(provided) = bearer_token_hash(headers) {
+        if let Some(expected) = state.admin_token_hash
+            && bool::from(provided.ct_eq(&expected))
+        {
+            return Ok(());
+        }
+        if state.admin_auth.mode() != AdminAuthMode::Disabled
+            && mcp_content_route(method, path)
+            && let Some(expected) = state.mcp_token_hash
+            && bool::from(provided.ct_eq(&expected))
+        {
+            return Ok(());
+        }
+    }
+    Err(ApiError::Unauthorized)
+}
+
+fn bearer_token_hash(headers: &HeaderMap) -> Option<[u8; 32]> {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
-        .ok_or(ApiError::Unauthorized)?;
-    let provided: [u8; 32] = Sha256::digest(provided.as_bytes()).into();
-    if bool::from(provided.ct_eq(&expected)) {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized)
+        .map(|provided| Sha256::digest(provided.as_bytes()).into())
+}
+
+fn mcp_content_route(method: &Method, path: &str) -> bool {
+    match *method {
+        Method::GET => {
+            path == "/api/v1/admin/documents"
+                || uuid_path(path, "/api/v1/admin/documents/", "")
+                || uuid_path(path, "/api/v1/admin/documents/", "/revisions")
+        }
+        Method::POST => {
+            path == "/api/v1/posts"
+                || uuid_path(path, "/api/v1/documents/", "/revisions")
+                || uuid_path(path, "/api/v1/documents/", "/publish")
+        }
+        _ => false,
     }
+}
+
+fn uuid_path(path: &str, prefix: &str, suffix: &str) -> bool {
+    let Some(segment) = path
+        .strip_prefix(prefix)
+        .and_then(|value| value.strip_suffix(suffix))
+    else {
+        return false;
+    };
+    !segment.is_empty() && !segment.contains('/') && Uuid::parse_str(segment).is_ok()
 }
 
 async fn admin_guard(
@@ -2124,7 +2376,21 @@ async fn admin_guard(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    match require_admin(&state, request.headers()) {
+    if !matches!(
+        request.method(),
+        &Method::GET | &Method::HEAD | &Method::OPTIONS
+    ) && !admin_auth::request_origin_is_valid(&state, request.headers())
+    {
+        return ApiError::Unauthorized.into_response();
+    }
+    match require_admin(
+        &state,
+        request.headers(),
+        request.method(),
+        request.uri().path(),
+    )
+    .await
+    {
         Ok(()) => next.run(request).await,
         Err(error) => error.into_response(),
     }
@@ -2158,12 +2424,35 @@ fn escape_xml(value: &str) -> String {
 #[serde(rename_all = "camelCase")]
 struct Capabilities {
     version: &'static str,
+    public_access: &'static str,
+    studio_access: &'static str,
+    auth: AuthCapabilities,
     views: Vec<&'static str>,
     features: Vec<String>,
     modules: Vec<ModuleDescriptor>,
     unavailable_by_default: Vec<&'static str>,
     mutation_mechanisms: Vec<&'static str>,
     mutation_mode: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthCapabilities {
+    status: &'static str,
+    methods: Vec<AuthMethodDescriptor>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthMethodDescriptor {
+    id: String,
+    kind: String,
+    flow: String,
+    audience: String,
+    label: String,
+    action_href: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2407,6 +2696,10 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
+    use argon2::{
+        Argon2,
+        password_hash::{PasswordHasher, SaltString},
+    };
     use axum::{
         body::{Body, to_bytes},
         http::Request,
@@ -2415,6 +2708,7 @@ mod tests {
     use osb_feature_code_runner_client::{
         OutputMode, ProfileRegistry, RemoteRunnerConfig, RunnerProfile,
     };
+    use osb_storage_sqlite::SessionAuthMethod;
     use tower::ServiceExt;
 
     use super::*;
@@ -2436,6 +2730,8 @@ mod tests {
                 no_index: false,
             }),
             admin_token_hash: token.map(|value| Sha256::digest(value.as_bytes()).into()),
+            mcp_token_hash: None,
+            admin_auth: AdminAuthRuntime::Disabled,
             features: Arc::new(features),
             runner: None,
             runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -2461,6 +2757,76 @@ mod tests {
             secure_session_cookie: true,
             password_workers: Arc::new(tokio::sync::Semaphore::new(PASSWORD_WORKER_LIMIT)),
         }
+    }
+
+    fn access_key_state(access_key: &str) -> AppState {
+        let mut state = test_state(None);
+        state.local_auth_enabled = false;
+        state.registration_open = false;
+        let salt = SaltString::generate(&mut OsRng);
+        let phc = Argon2::default()
+            .hash_password(access_key.as_bytes(), &salt)
+            .unwrap()
+            .to_string();
+        state.admin_auth = AdminAuthRuntime::from_settings(&config::AdminAuthSettings {
+            mode: AdminAuthMode::AccessKey,
+            access_key_phc: Some(phc),
+            external: None,
+            session_days: 30,
+        })
+        .unwrap();
+        state
+            .repository
+            .provision_primary_owner_site(
+                &PrimaryOwnerBootstrap {
+                    site_id: state.site_id,
+                    site_handle: "test-blog".into(),
+                    site_title: "Test blog".into(),
+                    site_description: None,
+                    owner_display_name: "Test owner".into(),
+                    theme_profile: ThemeProfile::Paper,
+                },
+                StoredAdminAuthMode::AccessKey,
+                &state.admin_auth.binding_fingerprint(),
+            )
+            .unwrap();
+        state
+    }
+
+    fn unavailable_external_state() -> AppState {
+        let mut state = test_state(None);
+        state.local_auth_enabled = false;
+        state.registration_open = false;
+        state.admin_auth = AdminAuthRuntime::from_settings(&config::AdminAuthSettings {
+            mode: AdminAuthMode::External,
+            access_key_phc: None,
+            external: Some(config::ExternalAdminSettings {
+                adapter: "oidc".into(),
+                issuer_url: Url::parse("http://127.0.0.1:9/test-issuer").unwrap(),
+                client_id: "test-client".into(),
+                client_secret: None,
+                owner_subject: "test-owner-subject".into(),
+                label: "Test identity".into(),
+            }),
+            session_days: 30,
+        })
+        .unwrap();
+        state
+            .repository
+            .provision_primary_owner_site(
+                &PrimaryOwnerBootstrap {
+                    site_id: state.site_id,
+                    site_handle: "external-test-blog".into(),
+                    site_title: "External test blog".into(),
+                    site_description: None,
+                    owner_display_name: "External owner".into(),
+                    theme_profile: ThemeProfile::Paper,
+                },
+                StoredAdminAuthMode::External,
+                &state.admin_auth.binding_fingerprint(),
+            )
+            .unwrap();
+        state
     }
 
     fn test_runner_client() -> Arc<RemoteRunnerClient> {
@@ -2609,6 +2975,10 @@ mod tests {
             .await
             .unwrap();
         let capabilities = json(response).await;
+        assert_eq!(capabilities["version"], "2.0");
+        assert_eq!(capabilities["publicAccess"], "anonymous_read");
+        assert_eq!(capabilities["studioAccess"], "members");
+        assert_eq!(capabilities["auth"]["status"], "disabled");
         assert_eq!(capabilities["mutationMode"], "authenticated_members");
         assert_eq!(
             capabilities["mutationMechanisms"],
@@ -2635,6 +3005,424 @@ mod tests {
                 .iter()
                 .any(|feature| feature == "comments" || feature == "rbac")
         );
+    }
+
+    #[tokio::test]
+    async fn administrator_access_key_is_exchanged_once_for_an_owner_session() {
+        let access_key = "correct-administrator-access-key-with-enough-entropy";
+        let router = app(access_key_state(access_key));
+        let wrong = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/access-key/session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(
+                        serde_json::json!({ "accessKey": "wrong-administrator-access-key-value" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json(wrong).await["error"], "invalid_admin_auth");
+
+        let cross_origin = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/access-key/session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://attacker.example")
+                    .body(Body::from(
+                        serde_json::json!({ "accessKey": access_key }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_origin.status(), StatusCode::UNAUTHORIZED);
+
+        let login = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/access-key/session")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(
+                        serde_json::json!({ "accessKey": access_key }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = login.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(!cookie.contains(access_key));
+        let payload = json(login).await;
+        assert_eq!(payload["state"], "authenticated");
+        assert!(payload["blog"].is_null());
+        assert!(payload["membershipRole"].is_null());
+
+        let onboarding = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/blogs")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "handle": "chosen-blog",
+                            "title": "Chosen blog",
+                            "description": "Owned on premise",
+                            "themePreset": "forest"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(onboarding.status(), StatusCode::CREATED);
+        let blog = json(onboarding).await;
+        assert_eq!(blog["handle"], "chosen-blog");
+        assert_eq!(blog["theme"]["presetId"], "forest");
+        assert!(
+            router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/blogs")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::ORIGIN, "https://blog.example")
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::from(
+                            serde_json::json!({
+                                "handle": "second-blog",
+                                "title": "Second blog",
+                                "themePreset": "paper"
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+                .is_client_error()
+        );
+
+        let studio = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/studio/documents")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(studio.status(), StatusCode::OK);
+
+        let legacy_admin_route = router
+            .oneshot(
+                Request::get("/api/v1/admin/documents")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(legacy_admin_route.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn disabling_member_auth_rejects_preexisting_legacy_sessions() {
+        let mut state = test_state(None);
+        let repository = Arc::clone(&state.repository);
+        let user = repository
+            .create_user(
+                "former-member@example.test",
+                "former-member",
+                "Former Member",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        repository
+            .create_site(
+                user.id,
+                "former-member-blog",
+                "Former member blog",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        let raw_token = [0x91_u8; 32];
+        let token_hash: [u8; 32] = Sha256::digest(raw_token).into();
+        repository
+            .create_session(
+                user.id,
+                &token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .unwrap();
+        state.local_auth_enabled = false;
+        state.registration_open = false;
+        let router = app(state);
+        let cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_token));
+
+        let session = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json(session).await["state"], "anonymous");
+
+        let studio = router
+            .oneshot(
+                Request::get("/api/v1/studio/documents")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(studio.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn runtime_admin_mode_rejects_a_session_from_another_module() {
+        let mut state = access_key_state("correct-administrator-access-key-with-enough-entropy");
+        let raw_token = [0x92_u8; 32];
+        let token_hash: [u8; 32] = Sha256::digest(raw_token).into();
+        state
+            .repository
+            .create_primary_owner_session(
+                &token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::AccessKey,
+                &state.admin_auth.binding_fingerprint(),
+            )
+            .unwrap();
+
+        // Model an already-running replica whose runtime module has changed
+        // before the persisted control plane is reconciled or rotated.
+        state.admin_auth = AdminAuthRuntime::Disabled;
+        let router = app(state);
+        let cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_token));
+
+        let session = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/session")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json(session).await["state"], "anonymous");
+
+        let studio = router
+            .oneshot(
+                Request::get("/api/v1/studio/documents")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(studio.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn mcp_bearer_is_limited_to_the_six_content_route_shapes() {
+        let mcp_token = URL_SAFE_NO_PAD.encode([0xa5; 32]);
+        let authorization = format!("Bearer {mcp_token}");
+        let mut state = access_key_state("correct-administrator-access-key-with-enough-entropy");
+        state.mcp_token_hash = Some(Sha256::digest(mcp_token.as_bytes()).into());
+        let router = app(state);
+
+        let list = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/documents")
+                    .header(header::AUTHORIZATION, &authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+
+        let created = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/posts")
+                    .header(header::AUTHORIZATION, &authorization)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r##"{"title":"MCP draft","slug":"mcp-draft","sourceMarkdown":"# MCP"}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let created = json(created).await;
+        let document_id = created["id"].as_str().unwrap();
+        let base_revision_id = created["currentRevisionId"].as_str().unwrap();
+
+        for path in [
+            format!("/api/v1/admin/documents/{document_id}"),
+            format!("/api/v1/admin/documents/{document_id}/revisions"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::AUTHORIZATION, &authorization)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let revised = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/documents/{document_id}/revisions"))
+                    .header(header::AUTHORIZATION, &authorization)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "baseRevisionId": base_revision_id,
+                            "title": "MCP revision",
+                            "slug": "mcp-draft",
+                            "sourceMarkdown": "# Revised by MCP",
+                            "idempotencyKey": "mcp-test-revision"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revised.status(), StatusCode::CREATED);
+        let revision_id = json(revised).await["id"].as_str().unwrap().to_owned();
+
+        let published = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/documents/{document_id}/publish"))
+                    .header(header::AUTHORIZATION, &authorization)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "revisionId": revision_id }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(published.status(), StatusCode::OK);
+
+        for (method, path) in [
+            (Method::POST, "/api/v1/ai2ai/proposals"),
+            (Method::POST, "/api/v1/assets"),
+            (Method::POST, "/api/v1/code-runner/runs"),
+            (
+                Method::GET,
+                "/api/v1/code-runner/runs/00000000-0000-7000-8000-000000000001",
+            ),
+            (Method::GET, "/api/v1/studio/settings"),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header(header::AUTHORIZATION, &authorization)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn access_key_capability_advertises_session_exchange_not_owner_bearer() {
+        let response = app(access_key_state(
+            "another-correct-administrator-access-key-with-entropy",
+        ))
+        .oneshot(
+            Request::get("/api/v1/capabilities")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        let body = json(response).await;
+        assert_eq!(body["studioAccess"], "admin_only");
+        assert_eq!(body["auth"]["status"], "ready");
+        assert_eq!(body["auth"]["methods"][0]["kind"], "access_key");
+        assert_eq!(
+            body["auth"]["methods"][0]["actionHref"],
+            "/api/v1/auth/access-key/session"
+        );
+        assert_eq!(body["mutationMechanisms"], serde_json::json!(["session"]));
+    }
+
+    #[tokio::test]
+    async fn unavailable_external_provider_does_not_break_public_reading() {
+        let router = app(unavailable_external_state());
+        let capabilities = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(capabilities.status(), StatusCode::OK);
+        let body = json(capabilities).await;
+        assert_eq!(body["studioAccess"], "admin_only");
+        assert_eq!(body["auth"]["methods"][0]["kind"], "external");
+
+        let feed = router
+            .clone()
+            .oneshot(Request::get("/api/v1/posts").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(feed.status(), StatusCode::OK);
+
+        let login = router
+            .oneshot(
+                Request::get("/api/v1/auth/external/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(login.headers()[header::CACHE_CONTROL], "private, no-store");
     }
 
     #[tokio::test]

@@ -15,13 +15,14 @@ FROM rust:1.88.0-bookworm AS rust-builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY apps/cli apps/cli
+COPY apps/mcp apps/mcp
 COPY apps/server apps/server
 COPY crates crates
 COPY features features
 COPY plugins plugins
 COPY openapi openapi
 COPY deploy/custom.css deploy/custom.css
-RUN cargo build --locked --release -p osb-server -p osb-cli
+RUN cargo build --locked --release -p osb-server -p osb-cli -p osb-mcp
 
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update \
@@ -32,6 +33,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=rust-builder /src/target/release/osb-server /usr/local/bin/osb-server
 COPY --from=rust-builder /src/target/release/osb /usr/local/bin/osb
+COPY --from=rust-builder /src/target/release/osb-mcp /usr/local/bin/osb-mcp
 COPY --from=web-builder /src/apps/web/dist apps/web/dist
 # The project license and generated application-dependency notices travel with
 # the binaries and web bundle. Base-image package notices remain under

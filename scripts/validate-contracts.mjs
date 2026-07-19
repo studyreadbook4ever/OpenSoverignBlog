@@ -151,15 +151,69 @@ const ownerRoutes = new Set([
   "POST /api/v1/code-runner/runs",
   "GET /api/v1/code-runner/runs/{id}",
 ]);
-for (const [route, operation] of documentedRoutes) {
-  const usesOwnerBearer = Boolean(
-    operation.security?.some((requirement) => Object.hasOwn(requirement, "OwnerBearer")),
+const mcpContentRoutes = new Set([
+  "GET /api/v1/admin/documents",
+  "GET /api/v1/admin/documents/{id}",
+  "GET /api/v1/admin/documents/{id}/revisions",
+  "POST /api/v1/posts",
+  "POST /api/v1/documents/{id}/revisions",
+  "POST /api/v1/documents/{id}/publish",
+]);
+
+const securityAlternatives = (operation) =>
+  Array.isArray(operation.security) ? operation.security : [];
+const mentionsSecurityScheme = (operation, scheme) =>
+  securityAlternatives(operation).some(
+    (requirement) => typeof requirement === "object"
+      && requirement !== null
+      && Object.hasOwn(requirement, scheme),
   );
-  if (usesOwnerBearer !== ownerRoutes.has(route)) {
-    throw new Error(`${openApiPath}: OwnerBearer security drift at ${route}`);
+const hasEmptyScopeAlternative = (operation, scheme) =>
+  securityAlternatives(operation).some((requirement) => {
+    if (typeof requirement !== "object" || requirement === null) return false;
+    const keys = Object.keys(requirement);
+    return keys.length === 1
+      && keys[0] === scheme
+      && Array.isArray(requirement[scheme])
+      && requirement[scheme].length === 0;
+  });
+
+for (const route of ownerRoutes) {
+  const operation = documentedRoutes.get(route);
+  const alternatives = securityAlternatives(operation);
+  const expectsMcpBearer = mcpContentRoutes.has(route);
+  if (
+    alternatives.length !== (expectsMcpBearer ? 3 : 2)
+    || !hasEmptyScopeAlternative(operation, "SessionCookie")
+    || !hasEmptyScopeAlternative(operation, "OwnerBearer")
+    || hasEmptyScopeAlternative(operation, "McpBearer") !== expectsMcpBearer
+  ) {
+    throw new Error(
+      `${openApiPath}: ${route} has incorrect SessionCookie/McpBearer/deprecated OwnerBearer alternatives`,
+    );
   }
 }
+for (const [route, operation] of documentedRoutes) {
+  if (!ownerRoutes.has(route) && mentionsSecurityScheme(operation, "OwnerBearer")) {
+    throw new Error(`${openApiPath}: unexpected OwnerBearer security at ${route}`);
+  }
+}
+for (const [route, operation] of documentedRoutes) {
+  const expectsMcpBearer = mcpContentRoutes.has(route);
+  const hasMcpBearerAlternative = hasEmptyScopeAlternative(operation, "McpBearer");
+  const mentionsMcpBearer = mentionsSecurityScheme(operation, "McpBearer");
+  if (
+    (expectsMcpBearer && !hasMcpBearerAlternative)
+    || (!expectsMcpBearer && mentionsMcpBearer)
+  ) {
+    throw new Error(`${openApiPath}: McpBearer content-scope drift at ${route}`);
+  }
+}
+if (!openApi.components?.securitySchemes?.McpBearer) {
+  throw new Error(`${openApiPath}: missing McpBearer security scheme`);
+}
 const sessionRoutes = new Set([
+  ...ownerRoutes,
   "GET /api/v1/session",
   "POST /api/v1/auth/logout",
   "POST /api/v1/blogs",
@@ -178,10 +232,13 @@ const sessionRoutes = new Set([
   "POST /api/v1/posts/{id}/comments",
 ]);
 for (const [route, operation] of documentedRoutes) {
-  const usesSessionCookie = Boolean(
-    operation.security?.some((requirement) => Object.hasOwn(requirement, "SessionCookie")),
-  );
-  if (usesSessionCookie !== sessionRoutes.has(route)) {
+  const expectsSessionCookie = sessionRoutes.has(route);
+  const hasSessionCookieAlternative = hasEmptyScopeAlternative(operation, "SessionCookie");
+  const mentionsSessionCookie = mentionsSecurityScheme(operation, "SessionCookie");
+  if (
+    (expectsSessionCookie && !hasSessionCookieAlternative)
+    || (!expectsSessionCookie && mentionsSessionCookie)
+  ) {
     throw new Error(`${openApiPath}: SessionCookie security drift at ${route}`);
   }
 }

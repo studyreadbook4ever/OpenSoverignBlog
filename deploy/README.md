@@ -4,7 +4,8 @@ The supported profile is one application container, an owned SQLite/blob
 volume, and a self-managing Redis hot path. The bundled managed topology uses a
 Redis primary, replica, and three Sentinel voters. It is deliberately somewhat
 inefficient so process failover does not require an operator command. Search,
-OAuth, a model, advertising, and a code-runner remain optional capabilities.
+Administrator auth, member auth, a model, advertising, and a code-runner remain
+separately selected capabilities.
 
 On a Linux Docker host, Redis background checkpoints and replication require
 memory overcommit. Verify `sysctl vm.overcommit_memory` returns `1`; otherwise
@@ -33,10 +34,50 @@ set `OSB_PUBLIC_URL` to the exact canonical origin. Do not mount a Docker socket
 Do not place the SQLite file on a network filesystem or let multiple containers
 open it independently.
 
-`OSB_ADMIN_TOKEN` is optional legacy compatibility and is not needed for local
-accounts. Registration defaults closed. If public signup is enabled, place
-rate limiting and abuse controls at the trusted reverse proxy before exposing
-the service; the preview server does not yet include them.
+Personal bootstrap defaults to `--admin-auth access-key`. It creates
+`admin-access-key.txt` and `.env` with mode `0600`, adds both to a fresh
+deployment `.gitignore`, and stores only a Base64-encoded Argon2id PHC in
+`OSB_ADMIN_ACCESS_KEY_PHC_B64`. The plaintext access key is typed into the
+administrator login form and exchanged for an opaque HttpOnly session; it is
+an administrator access key, not a WebAuthn Passkey. Protect and back it up as a
+secret, and use HTTPS anywhere except loopback development. If `.gitignore`
+already exists, add exact `.env` and `admin-access-key.txt` entries (a leading
+`/` is also accepted) before bootstrap; an unsafe file is never changed and
+bootstrap stops before generating secrets.
+
+Choose `--admin-auth external` to use the built-in generic OIDC
+authorization-code adapter. Bootstrap then requires `--external-issuer-url`,
+`--external-client-id`, and the exact stable
+`--external-owner-subject`; the callback checks provider discovery, issuer and
+`sub`, state, PKCE, nonce, and the signed ID token before creating the same
+owner session. The issuer must not contain URL credentials, a query, or a
+fragment. Put an optional confidential-client secret in
+`OSB_EXTERNAL_CLIENT_SECRET`, not TOML. Firebase token verification and email
+verification are future second-party adapters at this verified-identity
+boundary, not built-in choices today. OIDC login state is kept in the application
+process for ten minutes, so a multi-replica deployment must keep the start and
+callback requests on the same replica with sticky routing.
+
+Changing the administrator key, external issuer/subject binding, or auth mode is
+an explicit one-shot operation. Set `OSB_ADMIN_AUTH_ROTATE=true` for the restart
+that applies the new configuration. The server advances `auth_epoch`, revokes all
+existing administrator sessions, and resets the external binding when relevant.
+After that start succeeds, immediately put `OSB_ADMIN_AUTH_ROTATE=false` back in
+the environment file before any subsequent restart or rollout.
+
+`--admin-auth disabled` removes the remote administrator login routes. On a
+personal deployment, where member auth also defaults disabled, the public site
+then has no remote web control plane. Member auth is independent: community local
+accounts, registration, and comments are controlled by `--auth` and the community
+flags, not by the administrator choice.
+
+Schema v2 rejects `security.admin_token` and `OSB_ADMIN_TOKEN` because they bypass
+the selected administrator module. The legacy per-request Bearer remains accepted
+only for API compatibility while migrating a schema-v1 or schema-less
+configuration. The new Web Studio intentionally has no browser Bearer input or
+storage. Registration defaults closed. If public signup is enabled, place rate
+limiting and abuse controls at the trusted reverse proxy before exposing the
+service; the preview server does not yet include complete abuse defenses.
 
 ## Delivery-only node
 
@@ -56,15 +97,16 @@ service automatically runs the one-shot storage initializer first, mounts
 `/data` read-write only for that restore, keeps `/backups` read-only, and has no
 network. The public `blog` service subsequently mounts both paths read-only.
 
-Set `OSB_INTENT=delivery`, `OSB_AUTH_MODE=disabled`, and
-`OSB_DELIVERY_ONLY=true` to run the public data plane without writable
-sessions, Studio, publication, upload, or comment submission. The node opens an
-already-migrated SQLite database with read-only flags and fails startup instead
-of migrating or creating missing data. Prepare a consistent, checkpointed
-database/blob snapshot on the writable node first. After verifying the snapshot,
-it may be supplied to a delivery container on a read-only volume. Public feed,
-blog, article, approved-comment, and immutable asset routes remain available and
-are suitable for a shared reverse-proxy/CDN cache.
+Set `OSB_INTENT=delivery`, `OSB_AUTH_MODE=disabled`,
+`OSB_ADMIN_AUTH=disabled`, and `OSB_DELIVERY_ONLY=true` to run the public data
+plane without writable sessions, Studio, publication, upload, or comment
+submission. The node opens an already-migrated SQLite database with read-only
+flags and fails startup instead of migrating or creating missing data. Prepare
+a consistent, checkpointed database/blob snapshot on the writable node first.
+After verifying the snapshot, it may be supplied to a delivery container on a
+read-only volume. Public feed, blog, article, approved-comment, and immutable
+asset routes remain available and are suitable for a shared reverse-proxy/CDN
+cache.
 
 Assign every immutable delivery snapshot a distinct `OSB_CONTENT_RELEASE` so
 an old and new SQLite generation cannot read each other's Redis derivatives.
@@ -92,9 +134,9 @@ time needed for one full generation.
 The generation intentionally contains canonical SQLite/blob data, not the
 operator configuration. Store `config.toml` and the secret-free
 `osb.intent.json` in the host's configuration backup so a replacement node
-retains its public URL, site ID, intent, and feature contract. Store `.env`
-only in a secrets system (or generate a new Redis password); never copy it into
-a public backup catalog.
+retains its public URL, site ID, intent, and feature contract. Store `.env` and,
+when used, `admin-access-key.txt` only in a secrets system; never copy either
+into a public backup catalog.
 
 The bundled one-shot storage initializer assigns local backup trees to
 container UID/GID `65532`, normalizing directories to `0700` and regular files
@@ -216,3 +258,16 @@ renderer does not remove content.
 
 The optional code runner is a separate security domain and is intentionally not
 included in `compose.yaml`. See `docs/security/CODE-RUNNER.md`.
+
+The optional `osb-mcp` binary is likewise separate from the web server. Its
+stdio adapter is read-only by default and only calls the HTTP API. Optional write
+mode uses the same dedicated, static 32-128-character Base64url
+`OSB_MCP_TOKEN` in the server and MCP process. It is accepted only for the six
+content list/read/draft/revise/publish route shapes; it cannot authorize AI2AI,
+assets, the runner, Studio settings, administrator auth, or member APIs. An
+active administrator module is required, delivery nodes reject the token, and
+remote write mode requires HTTPS. Change or remove the environment value and
+restart every application replica to rotate or globally revoke it. This is one
+global static credential, not per-client issuance. Never reuse an administrator
+access key, legacy owner token, OIDC token, or browser cookie. See
+[the MCP adapter guide](../apps/mcp/README.md).

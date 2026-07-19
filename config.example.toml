@@ -1,4 +1,4 @@
-schema_version = "open-soverign-blog/1"
+schema_version = "open-soverign-blog/2"
 
 # This is the authoritative human/AI intent. The server rejects combinations
 # that contradict it instead of guessing what an operator meant.
@@ -18,10 +18,29 @@ blob_directory = "/data/blobs"
 profile = "durable" # durable | balanced | fast
 
 [security]
-# Secrets stay in environment variables. OSB_ADMIN_TOKEN is legacy-only.
+# Secrets stay in environment variables. Schema v2 rejects OSB_ADMIN_TOKEN; it
+# exists only for schema-v1/schema-less API migration compatibility. Optional
+# OSB_MCP_TOKEN is environment-only and has a fixed content-route scope.
+
+# Instance administration is independent from reader/member accounts. Choose
+# access_key, external, or disabled. Bootstrap stores only the Argon2id hash of
+# an access key in OSB_ADMIN_ACCESS_KEY_PHC_B64.
+[admin]
+auth = "access_key" # access_key | external | disabled
+session_days = 30
+# Credential/provider/mode changes require one explicit restart with the
+# environment-only OSB_ADMIN_AUTH_ROTATE=true; reset it to false immediately.
+
+# External OIDC example (use only with auth = "external"):
+# [admin.external]
+# adapter = "oidc"
+# issuer_url = "https://identity.example/realms/blog"
+# client_id = "open-soverign-blog"
+# owner_subject = "stable-provider-subject"
+# label = "회사 계정으로 계속하기"
 
 [community]
-auth = "local" # local | oauth | local_and_oauth | disabled
+auth = "disabled" # member accounts: local | oauth | local_and_oauth | disabled
 registration_open = false
 comments = false
 collaboration = false

@@ -26,8 +26,8 @@ use osb_kernel::{
 };
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
-    CommentRecord, SiteMembershipRecord, SiteMembershipRole, SiteRecord, SqliteRepository,
-    ThemeProfile, UserRecord,
+    CommentRecord, SessionAuthMethod, SiteMembershipRecord, SiteMembershipRole, SiteRecord,
+    SqliteRepository, ThemeProfile, UserRecord,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -106,10 +106,26 @@ pub fn routes(state: AppState) -> Router<AppState> {
     }
     let mutations = mutations
         // Delivery-only rejection happens before body buffering/JSON parsing.
-        .route_layer(middleware::from_fn_with_state(state, delivery_guard))
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            delivery_guard,
+        ))
+        .route_layer(middleware::from_fn_with_state(state, origin_guard))
         .route_layer(middleware::from_fn(private_no_store));
 
     public.merge(private_reads).merge(mutations)
+}
+
+async fn origin_guard(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    if !super::admin_auth::request_origin_is_valid(&state, request.headers()) {
+        CommunityApiError::Unauthorized.into_response()
+    } else {
+        next.run(request).await
+    }
 }
 
 async fn delivery_guard(
@@ -213,7 +229,7 @@ async fn logout(
     Ok(response)
 }
 
-async fn authenticated_response(
+pub(super) async fn authenticated_response(
     state: &AppState,
     user: UserRecord,
     status: StatusCode,
@@ -246,6 +262,46 @@ async fn authenticated_response(
     Ok(response)
 }
 
+pub(super) async fn administrator_authenticated_response(
+    state: &AppState,
+    user: UserRecord,
+    status: StatusCode,
+    auth_method: SessionAuthMethod,
+    session_days: i64,
+) -> Result<Response, CommunityApiError> {
+    let mut raw_token = [0_u8; 32];
+    OsRng.fill_bytes(&mut raw_token);
+    let token_hash: [u8; 32] = Sha256::digest(raw_token).into();
+    let token = URL_SAFE_NO_PAD.encode(raw_token);
+    let expires_at = Utc::now() + Duration::days(session_days);
+    let repository = Arc::clone(&state.repository);
+    let binding_fingerprint = state.admin_auth.binding_fingerprint();
+    repository_task(move || {
+        repository
+            .create_primary_owner_session(
+                &token_hash,
+                expires_at,
+                auth_method,
+                &binding_fingerprint,
+            )
+            .map(|_| ())
+    })
+    .await?;
+    let payload = session_payload(state, Some(user)).await?;
+    let mut response = (status, Json(payload)).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&session_cookie(
+            &token,
+            state.secure_session_cookie,
+            &session_cookie_path(state),
+            session_days * 24 * 60 * 60,
+        ))
+        .map_err(internal_error)?,
+    );
+    Ok(response)
+}
+
 async fn session_payload(
     state: &AppState,
     user: Option<UserRecord>,
@@ -260,6 +316,13 @@ async fn session_payload(
     let user_id = user.id;
     let collaboration_enabled = state.collaboration_enabled;
     let (blog, membership_role) = repository_task(move || {
+        match repository.get_admin_control_plane() {
+            Ok(control) if control.owner_user_id == user_id && !control.setup_complete => {
+                return Ok((None, None));
+            }
+            Ok(_) | Err(RepositoryError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
         let sites = if collaboration_enabled {
             repository.list_accessible_sites(user_id, 1)?
         } else {
@@ -294,8 +357,22 @@ async fn resolve_session_user(
         return Ok(None);
     };
     let repository = Arc::clone(&state.repository);
+    let local_auth_enabled = state.local_auth_enabled;
+    let admin_auth_mode = state.admin_auth.mode();
     repository_optional(move || {
         let session = repository.get_session(&token_hash)?;
+        let enabled = match session.auth_method {
+            SessionAuthMethod::Legacy => local_auth_enabled,
+            SessionAuthMethod::AccessKey => {
+                admin_auth_mode == super::config::AdminAuthMode::AccessKey
+            }
+            SessionAuthMethod::External => {
+                admin_auth_mode == super::config::AdminAuthMode::External
+            }
+        };
+        if !enabled {
+            return Err(RepositoryError::NotFound);
+        }
         repository.get_user_by_id(session.user_id)
     })
     .await
@@ -405,6 +482,19 @@ async fn create_blog(
     let user_id = user.id;
     let handle = input.handle;
     let site = repository_task(move || {
+        match repository.get_admin_control_plane() {
+            Ok(control) if control.owner_user_id == user_id && !control.setup_complete => {
+                return repository.complete_primary_owner_setup(
+                    user_id,
+                    &handle,
+                    &title,
+                    description.as_deref(),
+                    input.theme_preset,
+                );
+            }
+            Ok(_) | Err(RepositoryError::NotFound) => {}
+            Err(error) => return Err(error),
+        }
         if !repository.list_owned_sites(user_id, 1)?.is_empty() {
             return Err(RepositoryError::Validation(
                 "an account can own one blog in this deployment".into(),
@@ -1171,7 +1261,7 @@ async fn verify_password(
     .map_err(|error| CommunityApiError::Internal(format!("password worker failed: {error}")))?
 }
 
-fn session_hash_from_headers(headers: &HeaderMap) -> Option<[u8; 32]> {
+pub(super) fn session_hash_from_headers(headers: &HeaderMap) -> Option<[u8; 32]> {
     let encoded = headers
         .get(header::COOKIE)?
         .to_str()
@@ -1568,7 +1658,7 @@ struct CommentView {
 }
 
 #[derive(Debug)]
-enum CommunityApiError {
+pub(super) enum CommunityApiError {
     Unauthorized,
     Forbidden(String),
     InvalidLogin,

@@ -32,18 +32,28 @@ the blog container. A host-side source deployment may run `osb doctor`
 directly; it applies the same non-empty `OSB_*` environment overrides as the
 server. Use `--offline` when only the TOML/filesystem contract is reachable.
 
-`bootstrap` creates four non-overwriting files:
+`bootstrap` creates these non-overwriting files:
 
 - `config.toml`: authoritative, versioned runtime intent;
-- `.env`: Compose overrides carrying the same meaning;
+- `.env`: mode-0600 Compose settings and secrets;
+- `.gitignore`: in a fresh directory, excludes `.env`, `admin-access-key.txt`,
+  and local backups; an existing operator file is preserved only when it already
+  has exact `.env` and `admin-access-key.txt` entries (leading `/` is accepted),
+  otherwise bootstrap fails before generating secrets;
 - `custom.css`: harmless first-party template; the feature flag decides whether it is served;
-- `osb.intent.json`: secret-free AI handoff and next commands.
+- `osb.intent.json`: secret-free AI handoff and next commands;
+- `admin-access-key.txt`: mode-0600 plaintext credential, created only for the
+  `access_key` administrator module.
 
 ## Intent and feature matrix
 
 | TOML | Environment | Values and meaning |
 | --- | --- | --- |
 | `semantic.intent` | `OSB_INTENT` | `personal`, `community`, or `delivery` |
+| `admin.auth` | `OSB_ADMIN_AUTH` | Administrator control plane: `access_key`, `external`, or `disabled` |
+| `admin.session_days` | `OSB_ADMIN_SESSION_DAYS` | Opaque administrator session lifetime, 1–365 days |
+| environment only | `OSB_ADMIN_ACCESS_KEY_PHC_B64` | Standard Base64 of an Argon2id PHC; required only for `access_key`, never plaintext |
+| environment only | `OSB_ADMIN_AUTH_ROTATE` | One-shot `true` switch for an intentional administrator key/provider/mode change; reset to `false` immediately after a successful start |
 | `community.auth` | `OSB_AUTH_MODE` | `local`, `oauth`, `local_and_oauth`, `disabled` |
 | `community.registration_open` | `OSB_REGISTRATION_OPEN` | Allow new local accounts; existing accounts can sign in when closed |
 | `community.comments` | `OSB_COMMENTS` | Mount or remove authenticated comment routes |
@@ -54,12 +64,12 @@ server. Use `--offline` when only the TOML/filesystem contract is reachable.
 | `features.seo` | `OSB_FEATURES` | Canonical search discovery, robots, and sitemap (`none` means an empty request set) |
 | `deployment.delivery_only` | `OSB_DELIVERY_ONLY` | Open a pre-migrated SQLite artifact immutable/read-only and reject mutations |
 
-`delivery` intent requires `delivery_only=true` and `auth=disabled`. Open
-registration, comments, and collaboration on a writable node require an
-operational local auth mode. OAuth-only is rejected until a verified adapter
-exists; `local_and_oauth` continues through local auth while reporting OAuth as
-requested but unavailable. These are validated relationships, not
-documentation-only conventions.
+`delivery` intent requires `delivery_only=true`, `admin.auth=disabled`, and
+`community.auth=disabled`. Open registration, comments, and collaboration on a
+writable node require an operational local member-auth mode. Member OAuth-only
+is rejected until a member adapter exists; `local_and_oauth` continues through
+local auth while reporting member OAuth as requested but unavailable. These are
+validated relationships, not documentation-only conventions.
 
 A delivery bootstrap additionally requires `--site-id` copied from the
 writable node and a generation-specific `--content-release`. Its handoff lists
@@ -84,9 +94,52 @@ When attaching beneath an existing origin, configure the host reverse proxy's
 root robots file to reference `/team/sitemap.xml` (or rely on per-page noindex)
 and coordinate its origin-wide `Allow`/`Disallow` rules with the existing site.
 
-OAuth/OIDC is capability-scoped. `local_and_oauth` advertises OAuth as requested
-but not operational until a cryptographically verifying provider adapter is
-configured; the server never treats an unverified proxy header as a login.
+Member OAuth/OIDC is distinct from administrator authentication.
+`local_and_oauth` advertises member OAuth as requested but not operational until
+a cryptographically verifying member adapter is configured; the server never
+treats an unverified proxy header as a login.
+
+## Administrator authentication
+
+Administrator auth controls the instance owner session and is independent from
+reader/member signup and login. The modes are mutually exclusive:
+
+- `access_key` is the default for writable bootstrap profiles. Bootstrap
+  generates 32 random bytes, writes the Base64url plaintext to mode-0600
+  `admin-access-key.txt`, and writes only the standard-Base64-wrapped Argon2id
+  PHC to `OSB_ADMIN_ACCESS_KEY_PHC_B64`. The browser exchanges the typed key for
+  an opaque HttpOnly session; it does not persist the key as a Bearer token.
+- `external` runs a generic OIDC authorization-code flow. Configure
+  `[admin.external]` with `adapter="oidc"`, an HTTPS `issuer_url` without URL
+  credentials/query/fragment, `client_id`, exact stable `owner_subject` (`sub`),
+  and optional label. Put an optional client secret in
+  `OSB_EXTERNAL_CLIENT_SECRET`. Provider metadata and signed ID tokens are
+  verified, and state, PKCE, nonce, issuer, and exact `sub` must all match before
+  an owner session is issued. Pending state/PKCE/nonce records are process-local,
+  so multiple application replicas require sticky routing from the start request
+  through the callback.
+- `disabled` does not mount administrator login routes. With member auth also
+  disabled, a schema-v2 writable personal origin remains publicly readable but
+  has no remote web control plane. Delivery nodes require this mode and
+  additionally enforce read-only storage.
+
+The typed shared secret is an **administrator access key**, not a WebAuthn
+Passkey: there is no platform authenticator, public-key credential, or WebAuthn
+ceremony. Use HTTPS outside loopback, keep the plaintext file in a secret store,
+and keep a recoverable protected copy. A key, external issuer/subject binding, or
+mode change normally conflicts with the persisted control-plane fingerprint and
+fails startup. To approve it, set `OSB_ADMIN_AUTH_ROTATE=true` for one coordinated
+restart. The server atomically advances `auth_epoch`, invalidates existing admin
+sessions, clears the prior external identity binding when applicable, and applies
+the selected module. As soon as startup succeeds, write
+`OSB_ADMIN_AUTH_ROTATE=false` back to the environment before any later restart or
+rollout. Reusing the same target is idempotent, but leaving the one-shot switch
+armed weakens the operator confirmation boundary.
+
+The external adapter currently accepts one exact OIDC issuer/subject owner.
+Firebase ID-token verification, email verification, and additional provider
+policies are future second-party modules that should produce the same verified
+identity boundary; they are not silently treated as generic OIDC today.
 
 ## Redis: required speed, disposable data
 
@@ -183,13 +236,45 @@ hash.
 | `server.no_index` | `OSB_NO_INDEX` | Emit `noindex` and omit sitemap while leaving pages crawlable enough to observe it |
 | `storage.database` | `OSB_DATABASE` | Local SQLite file |
 | `storage.blob_directory` | `OSB_BLOB_DIRECTORY` | First-party content-addressed passive assets |
-| `security.admin_token` | `OSB_ADMIN_TOKEN` | Optional legacy owner credential; keep secrets out of TOML |
+| `security.admin_token` | `OSB_ADMIN_TOKEN` | Migration-only legacy owner Bearer; schema v2 rejects it, while schema v1/schema-less configurations retain temporary compatibility |
 
 Environment variables override TOML only when non-empty. `OSB_FEATURES=none`
 is the explicit empty feature request. `/api/v1/capabilities` reports requested
 versus operational modules, while `/livez`, `/readyz`, and `/healthz` separate
 process liveness, required Redis readiness, and degraded dependency detail.
+The schema-v1/schema-less legacy owner token is API migration compatibility only:
+the new Web Studio intentionally provides no browser Bearer input or storage.
 
 The isolated code-runner settings from the previous configuration contract
 remain supported. They are intentionally omitted from bootstrap; add a vetted
 `[runner]` profile only after the base server passes `osb doctor`.
+
+## MCP boundary
+
+`apps/mcp` contains a thin stdio adapter over the public HTTP API. Its default
+`OSB_MCP_MODE=read` exposes only list/read tools and needs no credential. It
+does not contain an LLM, prompt system, browser automation, macro interpreter,
+or direct SQLite/Redis access.
+
+Write mode uses a separate, static environment-only `OSB_MCP_TOKEN` containing
+32-128 unpadded Base64url ASCII characters. The server retains only its SHA-256
+digest. It is accepted for exactly these content route shapes:
+
+- `GET /api/v1/admin/documents`
+- `GET /api/v1/admin/documents/{uuid}`
+- `GET /api/v1/admin/documents/{uuid}/revisions`
+- `POST /api/v1/posts`
+- `POST /api/v1/documents/{uuid}/revisions`
+- `POST /api/v1/documents/{uuid}/publish`
+
+It cannot authorize administrator auth, AI2AI proposals, assets, runner calls,
+Studio settings, or member APIs. Configuration requires an active administrator
+module and is rejected on delivery-only nodes. Remote MCP write mode requires
+HTTPS; exact localhost/loopback development may use HTTP. This release has one
+global static content credential rather than per-client issuance or independent
+scopes. Rotate it by changing the value in both the server and MCP client secret
+environment and restarting every application/MCP replica. Remove it from the
+server environment and restart every application replica for global revocation.
+Never substitute an administrator access key, legacy owner token,
+external-provider token, or browser session cookie. See
+[the adapter guide](../../apps/mcp/README.md).

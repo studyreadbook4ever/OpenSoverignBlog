@@ -318,6 +318,15 @@ img { display: block; max-width: 100%; }
 .auth-panel h2 { margin: 0 0 .55rem; font-size: 1.8rem; letter-spacing: -.04em; }
 .auth-panel > p { margin: 0 0 1.8rem; color: var(--muted); }
 .auth-form { display: grid; gap: 1rem; }
+.external-auth-methods { display: grid; gap: .75rem; }
+.external-auth-methods .button { justify-content: center; text-align: center; text-decoration: none; }
+.admin-access-form { margin-top: 1rem; }
+.admin-access-form .field-hint { margin: -.35rem 0 0; line-height: 1.55; }
+.auth-divider { position: relative; display: grid; place-items: center; min-height: 2rem; margin: .35rem 0; color: var(--muted); font-size: .72rem; }
+.auth-divider::before { position: absolute; right: 0; left: 0; height: 1px; content: ""; background: var(--line); }
+.auth-divider span { position: relative; padding: 0 .7rem; background: var(--surface); }
+.local-auth-section.has-admin-methods { margin-top: .65rem; }
+.local-auth-section .auth-tabs { margin-top: .2rem; }
 .auth-form label, .onboarding-form label, .advanced-options-body label { display: grid; gap: .42rem; font-size: .83rem; font-weight: 800; }
 .auth-form input, .onboarding-form input, .onboarding-form textarea, .advanced-options-body input, .advanced-options-body textarea, .advanced-options-body select {
   width: 100%;
