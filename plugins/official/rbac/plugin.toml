@@ -5,6 +5,7 @@ name = "Role-based access control"
 version = "0.1.0"
 license = "Unlicense"
 pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["authorization-policy"]
 description = "Optional multi-user roles layered over the kernel's deny-by-default policy port."
 permissions = [

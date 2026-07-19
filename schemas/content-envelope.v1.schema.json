@@ -45,6 +45,7 @@
     "ontology": {
       "oneOf": [{ "$ref": "#/$defs/ontology" }, { "type": "null" }]
     },
+    "authorship": { "$ref": "#/$defs/publicAuthorship" },
     "contentHash": { "$ref": "#/$defs/digest" },
     "createdAt": { "type": "string", "format": "date-time" }
   },
@@ -91,6 +92,39 @@
         "actorId": { "type": "string", "maxLength": 200 },
         "generatedBy": { "type": "string", "maxLength": 500 }
       }
+    },
+    "publicAuthorship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "humanReviewed"],
+      "properties": {
+        "kind": { "enum": ["human", "ai_generated", "ai_assisted", "imported"] },
+        "generator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Portable provider/model label; never an internal actor or agent ID."
+        },
+        "humanReviewed": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "human" } },
+            "required": ["kind"]
+          },
+          "then": { "properties": { "generator": false } }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["ai_generated", "ai_assisted", "imported"] }
+            },
+            "required": ["kind"]
+          },
+          "then": { "required": ["generator"] }
+        }
+      ]
     },
     "ontology": {
       "type": "object",

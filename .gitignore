@@ -2,6 +2,7 @@
 /node_modules/
 **/node_modules/
 **/dist/
+**/__pycache__/
 /.env
 /admin-access-key.txt
 /config.toml
@@ -9,6 +10,7 @@
 /osb.intent.json
 /.data/
 /.osb-backups/
+/.osb-update/
 /backups/
 /restore-drill/
 *.db

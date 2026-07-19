@@ -18,9 +18,9 @@ blob_directory = "/data/blobs"
 profile = "durable" # durable | balanced | fast
 
 [security]
-# Secrets stay in environment variables. Schema v2 rejects OSB_ADMIN_TOKEN; it
-# exists only for schema-v1/schema-less API migration compatibility. Optional
-# OSB_MCP_TOKEN is environment-only and has a fixed content-route scope.
+# Secrets stay in environment variables. The removed OSB_ADMIN_TOKEN bypass is
+# rejected in every schema. Optional OSB_MCP_TOKEN is environment-only and has
+# a fixed content-route scope.
 
 # Instance administration is independent from reader/member accounts. Choose
 # access_key, external, or disabled. Bootstrap stores only the Argon2id hash of
@@ -48,10 +48,11 @@ collaboration = false
 [deployment]
 delivery_only = false
 
-# Redis is a core hot-path dependency. SQLite and blobs remain authoritative.
-# Credentials stay in OSB_REDIS_PASSWORD; `osb bootstrap` writes its .env with
-# mode 0600 and the bundled Redis/Sentinel services require that value.
+# Redis is an optional derivative-cache module. SQLite and blobs remain
+# authoritative when it is disabled. Credentials stay in OSB_REDIS_PASSWORD;
+# `osb bootstrap` writes its .env with mode 0600 when Redis is selected.
 [redis]
+enabled = true
 topology = "sentinel" # standalone | sentinel
 url = "redis://redis-primary:6379/"
 sentinel_urls = [

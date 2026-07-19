@@ -17,7 +17,6 @@ export function studioAccessFor(capabilities: Capabilities): StudioAccess {
   if (capabilities.studioAccess) return capabilities.studioAccess;
   if (capabilities.version.startsWith("2.")) return "disabled";
   if (capabilities.mutationMode === "authenticated_members") return "members";
-  if (capabilities.mutationMode === "single_owner_token") return "admin_only";
   return "disabled";
 }
 
@@ -32,16 +31,6 @@ export function adminAuthChoices(capabilities: Capabilities): AdminAuthChoices {
     accessKeyMethods: methods.filter(isAccessKeyMethod),
     externalMethods: methods.filter(isExternalMethod),
   };
-}
-
-/**
- * Legacy owner Bearer mode is never inferred from a v2 response. A v2
- * `admin_only` Studio uses the ordinary HttpOnly session APIs.
- */
-export function isLegacyOwnerBearerMode(capabilities: Capabilities): boolean {
-  return !capabilities.version.startsWith("2.")
-    && capabilities.studioAccess === undefined
-    && capabilities.mutationMode === "single_owner_token";
 }
 
 export function safeAuthActionHref(method: AdminAuthMethod): string | undefined {

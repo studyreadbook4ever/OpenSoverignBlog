@@ -1,7 +1,7 @@
 # Third-party notices
 
 OpenSoverignBlog's original project files are dedicated under the
-[Unlicense](LICENSE). That dedication applies only to material the project has
+[Unlicense](UNLICENSE). That dedication applies only to material the project has
 the right to dedicate. It does not replace, weaken, or relicense third-party
 code, generated bundles, fonts, operating-system packages, or other assets.
 
@@ -9,7 +9,7 @@ The server binaries statically include Rust dependencies, and the browser
 bundle includes JavaScript libraries and KaTeX assets. Those components retain
 their own licenses. The following files are distributed with release images:
 
-- `LICENSE` — the Unlicense for original OpenSoverignBlog material;
+- `UNLICENSE` — the Unlicense for original OpenSoverignBlog material;
 - `THIRD_PARTY_NOTICES.md` — license choices, provenance boundaries, and
   regeneration instructions;
 - `THIRD_PARTY_LICENSES.txt` — license and notice files collected from the

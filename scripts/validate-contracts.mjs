@@ -1,4 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -183,19 +184,19 @@ for (const route of ownerRoutes) {
   const alternatives = securityAlternatives(operation);
   const expectsMcpBearer = mcpContentRoutes.has(route);
   if (
-    alternatives.length !== (expectsMcpBearer ? 3 : 2)
+    alternatives.length !== (expectsMcpBearer ? 2 : 1)
     || !hasEmptyScopeAlternative(operation, "SessionCookie")
-    || !hasEmptyScopeAlternative(operation, "OwnerBearer")
     || hasEmptyScopeAlternative(operation, "McpBearer") !== expectsMcpBearer
+    || mentionsSecurityScheme(operation, "OwnerBearer")
   ) {
     throw new Error(
-      `${openApiPath}: ${route} has incorrect SessionCookie/McpBearer/deprecated OwnerBearer alternatives`,
+      `${openApiPath}: ${route} has incorrect SessionCookie/McpBearer alternatives`,
     );
   }
 }
 for (const [route, operation] of documentedRoutes) {
-  if (!ownerRoutes.has(route) && mentionsSecurityScheme(operation, "OwnerBearer")) {
-    throw new Error(`${openApiPath}: unexpected OwnerBearer security at ${route}`);
+  if (mentionsSecurityScheme(operation, "OwnerBearer")) {
+    throw new Error(`${openApiPath}: removed OwnerBearer security appears at ${route}`);
   }
 }
 for (const [route, operation] of documentedRoutes) {
@@ -212,11 +213,16 @@ for (const [route, operation] of documentedRoutes) {
 if (!openApi.components?.securitySchemes?.McpBearer) {
   throw new Error(`${openApiPath}: missing McpBearer security scheme`);
 }
+if (openApi.components?.securitySchemes?.OwnerBearer) {
+  throw new Error(`${openApiPath}: removed OwnerBearer security scheme is still declared`);
+}
 const sessionRoutes = new Set([
   ...ownerRoutes,
   "GET /api/v1/session",
   "POST /api/v1/auth/logout",
   "POST /api/v1/blogs",
+  "GET /api/v1/admin/home/pins",
+  "PUT /api/v1/admin/home/pins",
   "GET /api/v1/studio/documents",
   "GET /api/v1/studio/documents/{id}",
   "POST /api/v1/studio/documents",
@@ -267,6 +273,140 @@ for (const { relative, schema } of loadedSchemas) {
   if (!ajv.getSchema(schema.$id)) throw new Error(`schema did not compile: ${relative}`);
   process.stdout.write(`schema ok: ${relative}\n`);
 }
+
+const installationIntentSchemaId =
+  "urn:open-soverign-blog:schemas:installation-intent:v1";
+const installationLockSchemaId =
+  "urn:open-soverign-blog:schemas:installation-lock:v1";
+const validateInstallationIntent = ajv.getSchema(installationIntentSchemaId);
+const validateInstallationLock = ajv.getSchema(installationLockSchemaId);
+if (!validateInstallationIntent || !validateInstallationLock) {
+  throw new Error("installation intent/lock schemas were not loaded");
+}
+
+const installationIntentPath = "osb.install.example.toml";
+const installationLockPath = "osb.lock.example.json";
+const installationIntent = parseToml(
+  await readFile(path.join(root, installationIntentPath), "utf8"),
+);
+const installationLock = JSON.parse(
+  await readFile(path.join(root, installationLockPath), "utf8"),
+);
+if (!validateInstallationIntent(installationIntent)) {
+  throw new Error(
+    `${installationIntentPath}: ${ajv.errorsText(validateInstallationIntent.errors, {
+      separator: "\n",
+    })}`,
+  );
+}
+if (!validateInstallationLock(installationLock)) {
+  throw new Error(
+    `${installationLockPath}: ${ajv.errorsText(validateInstallationLock.errors, {
+      separator: "\n",
+    })}`,
+  );
+}
+
+const canonicalJson = (value) => {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (typeof value !== "object" || value === null) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, child]) => [key, canonicalJson(child)]),
+  );
+};
+const lockPayload = structuredClone(installationLock);
+lockPayload.lockDigest = "";
+const expectedLockDigest = createHash("sha256")
+  .update(JSON.stringify(canonicalJson(lockPayload)))
+  .digest("hex");
+if (expectedLockDigest !== installationLock.lockDigest) {
+  throw new Error(
+    `${installationLockPath}: lockDigest does not cover the canonical lock payload`,
+  );
+}
+if (
+  installationIntent.installation_id !== installationLock.installationId
+  || JSON.stringify(canonicalJson(installationIntent.selection))
+    !== JSON.stringify(canonicalJson(installationLock.selection))
+) {
+  throw new Error("installation example intent and lock identity/selection differ");
+}
+
+const requestedDlcs = new Map();
+for (const request of installationIntent.dlcs ?? []) {
+  if (requestedDlcs.has(request.id)) {
+    throw new Error(`${installationIntentPath}: duplicate DLC id ${request.id}`);
+  }
+  requestedDlcs.set(request.id, {
+    version: request.version,
+    enabled: request.enabled ?? true,
+  });
+}
+const installedDlcs = new Map();
+let previousDlcId;
+for (const installed of installationLock.dlcs) {
+  if (previousDlcId !== undefined && previousDlcId >= installed.id) {
+    throw new Error(`${installationLockPath}: DLC records are not strictly sorted by id`);
+  }
+  previousDlcId = installed.id;
+  installedDlcs.set(installed.id, {
+    version: installed.requestedVersion,
+    enabled: installed.enabled,
+  });
+  if (
+    installed.approvedCapabilities?.some(
+      (capability, index, values) => index > 0 && values[index - 1] >= capability,
+    )
+  ) {
+    throw new Error(
+      `${installationLockPath}: approved capabilities for ${installed.id} are not sorted`,
+    );
+  }
+  if (installed.sourceKind === "bundled") {
+    const bundledBytes = await readFile(path.join(root, installed.source));
+    const bundledDigest = createHash("sha256").update(bundledBytes).digest("hex");
+    if (bundledDigest !== installed.manifestSha256) {
+      throw new Error(
+        `${installationLockPath}: bundled manifest digest differs for ${installed.id}`,
+      );
+    }
+  }
+}
+if (JSON.stringify([...requestedDlcs]) !== JSON.stringify([...installedDlcs])) {
+  throw new Error("installation example requested and exact installed DLC sets differ");
+}
+for (const [index, record] of (installationLock.history ?? []).entries()) {
+  if (record.sequence !== index + 1) {
+    throw new Error(`${installationLockPath}: DLC history sequence is not contiguous`);
+  }
+  if (
+    ["enabled", "disabled"].includes(record.action)
+    && record.fromVersion !== record.toVersion
+  ) {
+    throw new Error(
+      `${installationLockPath}: ${record.action} history must retain one exact version`,
+    );
+  }
+}
+
+const invalidStyleIntent = structuredClone(installationIntent);
+invalidStyleIntent.selection.style = { kind: "none", id: "paper" };
+if (validateInstallationIntent(invalidStyleIntent)) {
+  throw new Error("installation intent schema accepted fields forbidden by style kind none");
+}
+if (installationLock.dlcs.length > 0) {
+  const invalidFileLock = structuredClone(installationLock);
+  invalidFileLock.dlcs[0].sourceKind = "file";
+  delete invalidFileLock.dlcs[0].artifactSha256;
+  if (validateInstallationLock(invalidFileLock)) {
+    throw new Error("installation lock schema accepted a file DLC without artifactSha256");
+  }
+}
+process.stdout.write(
+  `installation examples ok: ${installationIntentPath} + ${installationLockPath}\n`,
+);
 
 const pluginManifestSchemaId = "urn:ai-native-publishing:schemas:plugin-manifest:v1";
 const validatePluginManifest = ajv.getSchema(pluginManifestSchemaId);

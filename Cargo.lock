@@ -1553,9 +1553,11 @@ dependencies = [
  "argon2",
  "base64 0.22.1",
  "clap",
+ "osb-kernel",
  "osb-plugin-api",
  "osb-storage-sqlite",
  "rand_core 0.6.4",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -1659,11 +1661,14 @@ dependencies = [
 name = "osb-plugin-api"
 version = "0.1.0"
 dependencies = [
+ "semver",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "toml",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -1699,6 +1704,8 @@ dependencies = [
  "osb-storage-sqlite",
  "rand_core 0.6.4",
  "redis",
+ "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -2419,6 +2426,10 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "serde"

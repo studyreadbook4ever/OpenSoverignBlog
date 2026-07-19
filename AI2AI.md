@@ -56,10 +56,11 @@ OpenSoverignBlog's internal AI2AI envelope is not a claim of Agent2Agent (A2A)
 protocol conformance. Read `docs/ai2ai/A2A-ADAPTER.md` before exposing an A2A
 Agent Card or transport adapter.
 
-For provider-neutral, reviewable draft macros, read
-`docs/ai2ai/MACROS.md` and `schemas/macro-invocation.v1.schema.json`. Macro
-fences are inert until an external capability-scoped adapter resolves them and
-submits a complete revision through the same conflict-checked flow.
+The engine deliberately defines no macro fence, macro schema, prompt format, or
+model dispatcher. An external AI may create a task-specific prompt or script in
+its own workspace, then submit the resulting complete revision through the same
+conflict-checked flow. Prompt and script artifacts remain outside canonical blog
+content unless the author intentionally includes them as ordinary content.
 
 ## Minimal MCP access
 
@@ -75,7 +76,7 @@ list/private-read/draft/revise/publish operations; administrator auth, AI2AI,
 assets, runner, settings, and member APIs remain outside that boundary. It is one
 global credential rather than per-client issuance: change or remove it and
 restart every application replica to rotate or revoke it. Do not copy an
-administrator access key, legacy owner token, OIDC token, or browser cookie into
+administrator access key, OIDC token, or browser cookie into
 an MCP process. Direct SQLite or Redis access remains forbidden.
 
 ## Safe write sequence

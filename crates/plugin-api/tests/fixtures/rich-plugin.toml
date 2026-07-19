@@ -5,8 +5,8 @@ name = "Representative rich plugin"
 version = "1.2.3-beta.1+fixture"
 license = "Unlicense"
 pluginApi = "1"
-coreCompatibility = ">=0.1.0 <0.2.0"
-kinds = ["macro", "render-extension", "automation"]
+coreCompatibility = ">=0.1.0, <0.2.0"
+kinds = ["render-extension", "automation"]
 description = "Exercises every rich v1 declaration without executing a runtime."
 authors = [{ name = "Fixture Author", email = "author@example.org", url = "https://example.org/author" }]
 homepage = "https://example.org/plugin"
@@ -63,16 +63,6 @@ handler = "rich.render"
 output = "model"
 cache = "revision"
 
-[[macros]]
-id = "rich.summarize"
-handler = "rich.summarize"
-inputSchema = "schemas/macro-input.json"
-outputSchema = "schemas/macro-output.json"
-phases = ["draft", "publish"]
-deterministic = true
-cache = "inputs"
-requiresReview = true
-
 [ui]
 sandbox = "iframe"
 entrypoint = "ui/index.html"
@@ -98,7 +88,7 @@ handler = "rich.migrate-v2"
 
 [[dependencies]]
 id = "org.example.base-plugin"
-version = ">=1.0.0 <2.0.0"
+version = ">=1.0.0, <2.0.0"
 optional = true
 
 [limits]

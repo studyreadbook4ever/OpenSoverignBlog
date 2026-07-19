@@ -5,6 +5,7 @@ name = "Monetization policy and slots"
 version = "0.1.0"
 license = "Unlicense"
 pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["ad-provider", "render-extension"]
 description = "Named monetization slots, disclosure, consent gating, and provider adapter contracts."
 permissions = [

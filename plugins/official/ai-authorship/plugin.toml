@@ -1,0 +1,24 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.ai-authorship"
+name = "Portable AI authorship"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
+kinds = ["ai-agent", "render-extension"]
+description = "Optional AI proposal integration that writes portable public authorship metadata into immutable revisions."
+permissions = [
+  { capability = "content.read", scope = "drafts", reason = "Read an explicitly selected base revision for a proposal." },
+  { capability = "content.write", scope = "drafts", reason = "Append a reviewed proposal without publishing it." },
+  { capability = "render.slot", resources = ["article.meta"], reason = "Display stored authorship provenance without retaining an internal agent identity." }
+]
+metadata = { bundled = true }
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-server"
+extension = "ai_authorship"

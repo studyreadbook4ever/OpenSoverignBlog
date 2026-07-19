@@ -1,0 +1,25 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.release-check"
+name = "Release status check"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
+kinds = ["automation"]
+description = "Fetches bounded informational release metadata for the public version footer; it never downloads or executes an update."
+permissions = [
+  { capability = "route.public", resources = ["version.status"], reason = "Expose the current and last validated release status." },
+  { capability = "network.connect", resources = ["configured-release-channel"], reason = "Read only the operator-selected HTTPS release channel." }
+]
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-server"
+extension = "release_check"
+
+[metadata]
+bundled = true

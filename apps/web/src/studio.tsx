@@ -16,13 +16,22 @@ import type {
   CreatePostInput,
   DocumentSnapshot,
   EmbedReference,
+  FeedPostSummary,
   OntologySidecar,
   PublishArtifact,
   StudioSettings,
   ThemePresetId,
 } from "@opensoverignblog/sdk";
 import { useSession } from "./app";
-import { isLegacyOwnerBearerMode, studioAccessFor } from "./auth-policy";
+import { studioAccessFor } from "./auth-policy";
+import { socialEmbedFromUrl } from "./social-embeds";
+import {
+  acceptedEditorState,
+  editorFingerprint,
+  homeCurationCandidates,
+  normalizeSavePayload,
+  payloadFingerprint,
+} from "./studio-state";
 import {
   AppLink,
   THEME_PRESETS,
@@ -84,10 +93,8 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   usePageTitle("Studio");
 
   const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
-  const legacyOwnerMode = capabilities ? isLegacyOwnerBearerMode(capabilities) : false;
   const canLoad = Boolean(
     studioAccess !== "disabled"
-    && !legacyOwnerMode
     && session?.state === "authenticated"
     && session.blog,
   );
@@ -96,7 +103,7 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setLoading(true);
     setStatus("문서를 불러오는 중…");
     try {
-      const values = await listDocumentsCompat(legacyOwnerMode);
+      const values = await client.listStudioDocuments();
       setDocuments(values);
       setStatus(values.length ? `${values.length}개의 문서를 불러왔습니다.` : undefined);
     } catch (reason) {
@@ -126,9 +133,6 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   }
   if (studioAccess === "disabled") {
     return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 Studio가 비활성화되어 있습니다." />;
-  }
-  if (legacyOwnerMode) {
-    return <StudioAccessGate detail="이 서버는 브라우저에 관리자 토큰을 보관하는 이전 방식을 사용합니다. 세션 기반 관리자 인증을 설정해 주세요." login />;
   }
   if (session.state !== "authenticated") {
     return <StudioAccessGate detail="블로그의 글을 쓰고 관리하려면 먼저 인증해 주세요." login />;
@@ -208,6 +212,12 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const [customCss, setCustomCss] = useState("");
   const [saving, setSaving] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<{ kind: "success" | "error"; text: string }>();
+  const [curationPosts, setCurationPosts] = useState<FeedPostSummary[]>([]);
+  const [homePins, setHomePins] = useState<string[]>([]);
+  const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
+  const [curationState, setCurationState] = useState<SettingsLoadState>("unavailable");
+  const [curationNotice, setCurationNotice] = useState<{ kind: "success" | "error"; text: string }>();
+  const [savingCuration, setSavingCuration] = useState(false);
   const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
   const [collaborationState, setCollaborationState] = useState<CollaborationLoadState>("off");
   const [collaborationError, setCollaborationError] = useState<string>();
@@ -221,12 +231,16 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   usePageTitle("블로그 설정");
 
   const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
-  const legacyOwnerMode = capabilities ? isLegacyOwnerBearerMode(capabilities) : false;
   const ownerSession = session?.state === "authenticated" && Boolean(session.blog) && (
     !session.membershipRole || session.membershipRole === "owner"
   );
-  const canLoad = Boolean(studioAccess !== "disabled" && !legacyOwnerMode && ownerSession);
+  const canLoad = Boolean(studioAccess !== "disabled" && ownerSession);
   const collaborationAvailable = Boolean(capabilities?.features.includes("rbac"));
+  const homeCurationAvailable = Boolean(
+    session?.state === "authenticated"
+    && session.instanceAdministrator
+    && capabilities?.features.includes("home_curation"),
+  );
 
   useEffect(() => {
     if (!canLoad) return;
@@ -277,10 +291,42 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     return () => controller.abort();
   }, [canLoad, collaborationAvailable, loadAttempt]);
 
+  useEffect(() => {
+    if (!homeCurationAvailable) {
+      setCurationState("unavailable");
+      setCurationPosts([]);
+      setHomePins([]);
+      setSavedHomePins([]);
+      return;
+    }
+    const controller = new AbortController();
+    setCurationState("loading");
+    setCurationNotice(undefined);
+    void Promise.all([
+      client.home(controller.signal),
+      client.getHomePins(controller.signal),
+    ]).then(([home, pins]) => {
+      if (controller.signal.aborted) return;
+      setCurationPosts(homeCurationCandidates(home));
+      setHomePins(pins.documentIds);
+      setSavedHomePins(pins.documentIds);
+      setCurationState("ready");
+    }).catch((reason: unknown) => {
+      if (controller.signal.aborted) return;
+      if (isNotFound(reason)) setCurationState("unavailable");
+      else {
+        setCurationState("error");
+        setCurationNotice({ kind: "error", text: asMessage(reason) });
+      }
+    });
+    return () => controller.abort();
+  }, [homeCurationAvailable, loadAttempt]);
+
   const cssValidationMessage = customCssProblem(customCss);
   const settingsChanged = Boolean(settings) && (
     themePreset !== settings?.themePreset || (settings.customCssEnabled && customCss !== (settings.customCss ?? ""))
   );
+  const homePinsChanged = homePins.join(":") !== savedHomePins.join(":");
 
   async function saveSettings() {
     if (!settings || saving) return;
@@ -341,6 +387,41 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     }
   }
 
+  function toggleHomePin(documentId: string) {
+    setCurationNotice(undefined);
+    setHomePins((current) => {
+      if (current.includes(documentId)) return current.filter((id) => id !== documentId);
+      return current.length < 3 ? [...current, documentId] : current;
+    });
+  }
+
+  function moveHomePin(documentId: string, offset: -1 | 1) {
+    setHomePins((current) => {
+      const index = current.indexOf(documentId);
+      const target = index + offset;
+      if (index < 0 || target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    });
+  }
+
+  async function saveHomeCuration() {
+    if (savingCuration) return;
+    setSavingCuration(true);
+    setCurationNotice(undefined);
+    try {
+      const saved = await client.replaceHomePins(homePins);
+      setHomePins(saved.documentIds);
+      setSavedHomePins(saved.documentIds);
+      setCurationNotice({ kind: "success", text: "홈 주요 글을 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다." });
+    } catch (reason) {
+      setCurationNotice({ kind: "error", text: asMessage(reason) });
+    } finally {
+      setSavingCuration(false);
+    }
+  }
+
   async function removeCollaborator(collaborator: Collaborator) {
     const currentUserId = session?.state === "authenticated" ? session.user.id : undefined;
     if (removingUserId || collaborator.userId === currentUserId) return;
@@ -370,9 +451,6 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   }
   if (studioAccess === "disabled") {
     return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 블로그 설정을 바꿀 수 없습니다." />;
-  }
-  if (legacyOwnerMode) {
-    return <StudioAccessGate detail="이 서버는 이전 관리자 Bearer 방식을 사용하므로 새 세션 기반 설정 화면을 열 수 없습니다." login />;
   }
   if (session.state !== "authenticated") {
     return <StudioAccessGate detail="블로그 설정을 열려면 먼저 로그인해 주세요." login />;
@@ -448,9 +526,59 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
             {settingsNotice ? <p className={`settings-message is-${settingsNotice.kind}`} role={settingsNotice.kind === "error" ? "alert" : "status"}>{settingsNotice.text}</p> : null}
           </section>
 
+          {homeCurationAvailable ? (
+            <section className="settings-panel home-curation-panel" aria-labelledby="home-curation-title">
+              <div className="settings-panel-heading">
+                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">홈 주요 글</h2><p>발행된 글 중 최대 3개를 골라 공개 홈의 맨 위에 순서대로 고정합니다.</p></div></div>
+                <span className="settings-revision">{homePins.length} / 3</span>
+              </div>
+              {curationState === "loading" ? <div className="collaboration-loading" role="status">홈 구성을 불러오는 중…</div> : null}
+              {curationState === "error" ? <div className="collaboration-off is-error" role="alert"><strong>홈 구성을 불러오지 못했습니다.</strong><p>{curationNotice?.text}</p></div> : null}
+              {curationState === "unavailable" ? <div className="collaboration-off"><strong>홈 큐레이션 DLC가 활성화되지 않았습니다.</strong><p>공개 피드는 계속 최신순으로 동작합니다.</p></div> : null}
+              {curationState === "ready" ? (
+                <>
+                  {curationPosts.length ? (
+                    <ol className="home-curation-list">
+                      {curationPosts.map((post) => {
+                        const position = homePins.indexOf(post.id);
+                        const selected = position >= 0;
+                        return (
+                          <li className={selected ? "is-selected" : ""} key={post.id}>
+                            <button
+                              aria-pressed={selected}
+                              className="home-curation-select"
+                              disabled={!selected && homePins.length >= 3}
+                              onClick={() => toggleHomePin(post.id)}
+                              type="button"
+                            >
+                              <span aria-hidden="true">{selected ? position + 1 : "＋"}</span>
+                              <span><strong>{post.title}</strong><small>@{post.blog.handle} · /{post.slug}</small></span>
+                              <span>{selected ? "고정 해제" : "고정"}</span>
+                            </button>
+                            {selected ? (
+                              <div className="home-curation-order" aria-label={`${post.title} 순서 변경`}>
+                                <button disabled={position === 0} onClick={() => moveHomePin(post.id, -1)} type="button">위</button>
+                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(post.id, 1)} type="button">아래</button>
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  ) : <div className="collaborator-empty"><p>먼저 글을 하나 발행하면 여기에서 고를 수 있습니다.</p></div>}
+                  <div className="settings-save-row">
+                    <p>고정 글은 최근 글 목록에서 중복해서 나오지 않습니다.</p>
+                    <button className="button button-primary" disabled={!homePinsChanged || savingCuration} onClick={() => void saveHomeCuration()} type="button">{savingCuration ? "저장하는 중…" : "홈 구성 저장"}</button>
+                  </div>
+                  {curationNotice ? <p className={`settings-message is-${curationNotice.kind}`} role={curationNotice.kind === "error" ? "alert" : "status"}>{curationNotice.text}</p> : null}
+                </>
+              ) : null}
+            </section>
+          ) : null}
+
           <section className="settings-panel" aria-labelledby="collaboration-title">
             <div className="settings-panel-heading">
-              <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="collaboration-title">함께 쓰는 사람</h2><p>소유권은 그대로 둔 채 글을 쓰거나 편집할 사람만 추가합니다.</p></div></div>
+              <div><span className="settings-step" aria-hidden="true">{homeCurationAvailable ? "03" : "02"}</span><div><h2 id="collaboration-title">함께 쓰는 사람</h2><p>소유권은 그대로 둔 채 글을 쓰거나 편집할 사람만 추가합니다.</p></div></div>
             </div>
             {collaborationState === "off" || collaborationState === "unavailable" ? (
               <div className="collaboration-off" role="status"><strong>공동 작업 기능이 서버에서 꺼져 있습니다.</strong><p>개인 블로그에는 이 상태가 가장 단순합니다. 필요할 때 운영 설정에서 collaboration을 켤 수 있습니다.</p></div>
@@ -499,10 +627,8 @@ export function StudioEditor({
 }) {
   const { session } = useSession();
   const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
-  const legacyOwnerMode = capabilities ? isLegacyOwnerBearerMode(capabilities) : false;
   const canEdit = Boolean(
     studioAccess !== "disabled"
-    && !legacyOwnerMode
     && session?.state === "authenticated"
     && session.blog,
   );
@@ -573,7 +699,7 @@ export function StudioEditor({
     const controller = new AbortController();
     setLoadingDocument(true);
     setLoadError(undefined);
-    void loadDocument(documentId, legacyOwnerMode, controller.signal)
+    void loadDocument(documentId, controller.signal)
       .then((document) => {
         const restoreLocal = Boolean(
           initial.restored && initial.value.editing?.documentId === document.id,
@@ -592,7 +718,7 @@ export function StudioEditor({
     return () => controller.abort();
     // applyDocument is intentionally scoped to this editor instance.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [documentId, canEdit, legacyOwnerMode, loadAttempt, accepted?.id]);
+  }, [documentId, canEdit, loadAttempt, accepted?.id]);
 
   useEffect(() => {
     if (!canEdit || loadingDocument || loadError) return;
@@ -606,11 +732,6 @@ export function StudioEditor({
     if (!draft.sourceMarkdown.trim()) {
       setPreviewArtifact(undefined);
       setPreviewState("idle");
-      return;
-    }
-    if (legacyOwnerMode) {
-      setPreviewArtifact(undefined);
-      setPreviewState("local");
       return;
     }
     const controller = new AbortController();
@@ -634,7 +755,7 @@ export function StudioEditor({
     };
     // Sidecar parsing is intentionally deferred until save; source preview remains responsive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit, loadingDocument, loadError, legacyOwnerMode, draft.title, draft.slug, draft.sourceMarkdown, draft.intent]);
+  }, [canEdit, loadingDocument, loadError, draft.title, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, embedText]);
 
   function update<K extends keyof CreatePostInput>(key: K, value: CreatePostInput[K]) {
     setStatus(undefined);
@@ -657,6 +778,7 @@ export function StudioEditor({
       slug: revision.slug,
       sourceMarkdown: revision.sourceMarkdown,
       embeds: revision.embeds,
+      authorship: revision.authorship,
       ...(revision.intent ? { intent: revision.intent } : {}),
       ...(revision.ontology ? { ontology: revision.ontology } : {}),
     };
@@ -686,6 +808,7 @@ export function StudioEditor({
         title: memoryScopes.core ? draft.title : "",
         slug: memoryScopes.core ? draft.slug : "",
         sourceMarkdown: memoryScopes.core ? draft.sourceMarkdown : "",
+        ...(memoryScopes.core && draft.authorship ? { authorship: draft.authorship } : {}),
         ...(memoryScopes.intent && draft.intent ? { intent: draft.intent } : {}),
       };
       const value: StoredStudioDraft = {
@@ -746,21 +869,31 @@ export function StudioEditor({
       setStatus("AI 지식 연결 정보의 JSON 형식을 확인해 주세요.");
       return;
     }
-    return {
+    return normalizeSavePayload({
       title: draft.title.trim(),
       slug: draft.slug.trim(),
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
+      ...(draft.authorship ? { authorship: draft.authorship } : {}),
       ...(draft.intent ? { intent: draft.intent } : {}),
       ...(ontology ? { ontology } : {}),
-    };
+    });
   }
 
   function previewPayload(): CreatePostInput {
+    let embeds: EmbedReference[] = [];
+    try {
+      const parsed = embedText.trim() ? JSON.parse(embedText) as EmbedReference[] : [];
+      if (Array.isArray(parsed)) embeds = parsed;
+    } catch {
+      // Keep the writing preview responsive; save surfaces malformed JSON.
+    }
     return {
       title: draft.title || "제목 없는 글",
       slug: draft.slug || "untitled",
       sourceMarkdown: draft.sourceMarkdown,
+      embeds,
+      ...(draft.authorship ? { authorship: draft.authorship } : {}),
       ...(draft.intent ? { intent: draft.intent } : {}),
     };
   }
@@ -776,10 +909,12 @@ export function StudioEditor({
     setStatus(editing ? "현재 내용을 새 버전으로 저장하는 중…" : "첫 초안을 서버에 저장하는 중…");
     try {
       const document = editing
-        ? await saveRevisionCompat(editing, payload, legacyOwnerMode)
-        : await createDocumentCompat(payload, legacyOwnerMode);
+        ? await appendStudioRevision(editing, payload)
+        : await client.createStudioDocument(payload);
+      const acceptedState = acceptedEditorState(payload);
       setAccepted(document);
-      setAcceptedFingerprint(payloadFingerprint(payload));
+      setDraft(acceptedState.draft);
+      setAcceptedFingerprint(acceptedState.fingerprint);
       setEditing({ documentId: document.id, baseRevisionId: document.currentRevisionId });
       setStatus(canPublish
         ? `서버 저장 완료 · 버전 ${document.currentRevisionId.slice(0, 8)} · 아직 공개되지 않았습니다.`
@@ -806,9 +941,10 @@ export function StudioEditor({
     setPublishing(true);
     setStatus("저장된 글을 블로그에 공개하는 중…");
     try {
-      const published = legacyOwnerMode
-        ? await client.publish(accepted.id, accepted.currentRevisionId)
-        : await client.publishStudioDocument(accepted.id, accepted.currentRevisionId);
+      const published = await client.publishStudioDocument(
+        accepted.id,
+        accepted.currentRevisionId,
+      );
       setAccepted(published);
       setEditing({ documentId: published.id, baseRevisionId: published.currentRevisionId });
       setStatus("글이 블로그에 공개되었습니다.");
@@ -850,9 +986,7 @@ export function StudioEditor({
     if (!file) return;
     setStatus(`${file.name} 업로드 중…`);
     try {
-      const uploaded = legacyOwnerMode
-        ? await client.uploadAsset(file, file.name)
-        : await client.uploadStudioAsset(file, file.name);
+      const uploaded = await client.uploadStudioAsset(file, file.name);
       const markdown = `![${uploaded.record.originalFilename}](${uploaded.url})`;
       const textarea = textareaRef.current;
       if (textarea) {
@@ -926,9 +1060,6 @@ export function StudioEditor({
   if (!capabilities || !session) return <div className="editor-loading" role="status">Studio 접근 권한을 확인하는 중…</div>;
   if (studioAccess === "disabled") {
     return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 편집 기능이 없습니다." />;
-  }
-  if (legacyOwnerMode) {
-    return <StudioAccessGate detail="이 서버는 브라우저 Bearer 토큰을 요구하는 이전 방식입니다. 세션 기반 관리자 인증을 설정해 주세요." login />;
   }
   if (session.state !== "authenticated") {
     return <StudioAccessGate detail="글을 쓰려면 먼저 인증해 주세요." login />;
@@ -1019,6 +1150,14 @@ export function StudioEditor({
                 if (command === "image") fileInputRef.current?.click();
               }}
             />
+            {capabilities?.features.includes("social_embeds") ? (
+              <SocialEmbedComposer
+                embedText={embedText}
+                setDraft={setDraft}
+                setEmbedText={setEmbedText}
+                setStatus={setStatus}
+              />
+            ) : null}
             <div className="editor-writing-meta">
               <span className="writing-help">서식 버튼으로 본문을 쉽게 꾸밀 수 있어요.</span>
               <span className="writing-stats">공백 포함 {bodyCharacterCount.toLocaleString()}자 · 예상 {readingMinutes ? `${readingMinutes}분` : "1분 미만"}</span>
@@ -1104,6 +1243,75 @@ export function StudioEditor({
         />
       ) : null}
     </div>
+  );
+}
+
+function SocialEmbedComposer({
+  embedText,
+  setDraft,
+  setEmbedText,
+  setStatus,
+}: {
+  embedText: string;
+  setDraft: React.Dispatch<React.SetStateAction<CreatePostInput>>;
+  setEmbedText: (value: string) => void;
+  setStatus: (value: string | undefined) => void;
+}) {
+  const [url, setUrl] = useState("");
+  const preview = useMemo(() => socialEmbedFromUrl(url), [url]);
+
+  function insert() {
+    if (!preview) {
+      setStatus("지원하는 YouTube 또는 X 게시물의 https 주소를 확인해 주세요.");
+      return;
+    }
+    let current: EmbedReference[] = [];
+    try {
+      current = embedText.trim() ? JSON.parse(embedText) as EmbedReference[] : [];
+      if (!Array.isArray(current)) throw new Error("array");
+    } catch {
+      setStatus("기존 외부 콘텐츠 연결 JSON을 먼저 확인해 주세요.");
+      return;
+    }
+    const next = [...current.filter((embed) => embed.id !== preview.id), preview];
+    setEmbedText(JSON.stringify(next, null, 2));
+    setDraft((draft) => {
+      const directive = `::osb-embed ${preview.id}`;
+      if (draft.sourceMarkdown.includes(directive)) return draft;
+      const separator = draft.sourceMarkdown.trimEnd() ? "\n\n" : "";
+      return { ...draft, sourceMarkdown: `${draft.sourceMarkdown.trimEnd()}${separator}${directive}\n` };
+    });
+    setUrl("");
+    setStatus(`${preview.title} 연결과 본문 블록을 추가했습니다.`);
+  }
+
+  return (
+    <details className="social-embed-composer">
+      <summary>동영상·X 게시물 넣기 <small>URL만 붙여넣으세요</small></summary>
+      <div className="social-embed-input-row">
+        <label htmlFor="social-embed-url">YouTube 또는 X 주소</label>
+        <div>
+          <input
+            id="social-embed-url"
+            inputMode="url"
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://youtu.be/… 또는 https://x.com/…/status/…"
+            type="url"
+            value={url}
+          />
+          <button className="button button-primary" disabled={!preview} onClick={insert} type="button">본문에 넣기</button>
+        </div>
+      </div>
+      {url ? (
+        preview ? (
+          <div className="social-embed-preview" role="status">
+            <span>{preview.provider === "youtube" ? "YouTube" : "X"}</span>
+            <div><strong>{preview.title}</strong><small>{preview.canonicalUrl}</small></div>
+            <span aria-hidden="true">✓</span>
+          </div>
+        ) : <p className="field-error" role="alert">지원하는 공개 게시물 주소가 아닙니다.</p>
+      ) : null}
+    </details>
   );
 }
 
@@ -1348,36 +1556,19 @@ function LocalMarkdownPreview({ markdown }: { markdown: string }) {
   return <div className="article-content local-markdown-preview">{nodes}</div>;
 }
 
-async function listDocumentsCompat(legacyOwnerMode: boolean, signal?: AbortSignal): Promise<DocumentSnapshot[]> {
-  return legacyOwnerMode
-    ? client.listAdminDocuments(signal)
-    : client.listStudioDocuments(signal);
-}
-
 async function loadDocument(
   documentId: string,
-  legacyOwnerMode: boolean,
   signal: AbortSignal,
 ): Promise<DocumentSnapshot> {
-  if (legacyOwnerMode) return client.getAdminDocument(documentId, signal);
   return client.getStudioDocument(documentId, signal);
 }
 
-async function createDocumentCompat(input: CreatePostInput, legacyOwnerMode: boolean): Promise<DocumentSnapshot> {
-  return legacyOwnerMode
-    ? client.createPost(input)
-    : client.createStudioDocument(input);
-}
-
-async function saveRevisionCompat(
+async function appendStudioRevision(
   editing: EditingTarget,
   input: CreatePostInput,
-  legacyOwnerMode: boolean,
 ): Promise<DocumentSnapshot> {
   const payload = { ...input, baseRevisionId: editing.baseRevisionId, idempotencyKey: crypto.randomUUID() };
-  if (!legacyOwnerMode) return client.createStudioRevision(editing.documentId, payload);
-  await client.proposeRevision(editing.documentId, payload);
-  return client.getAdminDocument(editing.documentId);
+  return client.createStudioRevision(editing.documentId, payload);
 }
 
 function capabilityModeLabel(capabilities: Capabilities): string {
@@ -1435,36 +1626,4 @@ function loadDraft(draftKey: string): { value: StoredStudioDraft; mode: DraftSto
     }
   }
   return { value: fallback, mode: "session", restored: false };
-}
-
-function payloadFingerprint(post: CreatePostInput): string {
-  return JSON.stringify({
-    title: post.title.trim(),
-    slug: post.slug.trim(),
-    sourceMarkdown: post.sourceMarkdown,
-    embeds: post.embeds ?? [],
-    intent: post.intent ?? null,
-    ontology: post.ontology ?? null,
-  });
-}
-
-function editorFingerprint(
-  post: CreatePostInput,
-  embedText: string,
-  ontologyText: string,
-): string {
-  try {
-    const embeds = embedText.trim() ? JSON.parse(embedText) as unknown : [];
-    const ontology = ontologyText.trim() ? JSON.parse(ontologyText) as unknown : null;
-    return JSON.stringify({
-      title: post.title.trim(),
-      slug: post.slug.trim(),
-      sourceMarkdown: post.sourceMarkdown,
-      embeds,
-      intent: post.intent ?? null,
-      ontology,
-    });
-  } catch {
-    return `invalid-sidecar:${post.title}:${post.slug}:${post.sourceMarkdown}:${embedText}:${ontologyText}`;
-  }
 }

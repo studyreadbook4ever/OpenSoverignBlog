@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   adminAuthChoices,
-  isLegacyOwnerBearerMode,
   safeAuthActionHref,
   studioAccessFor,
 } from "../src/auth-policy.ts";
@@ -23,7 +22,7 @@ function capabilities(overrides = {}) {
 
 test("v2 Studio access overrides the compatible v1 mutation mode", () => {
   assert.equal(studioAccessFor(capabilities({ mutationMode: "authenticated_members" })), "members");
-  assert.equal(studioAccessFor(capabilities({ mutationMode: "single_owner_token" })), "admin_only");
+  assert.equal(studioAccessFor(capabilities({ mutationMode: "removed_owner_bearer" })), "disabled");
   assert.equal(studioAccessFor(capabilities({
     mutationMode: "authenticated_members",
     studioAccess: "disabled",
@@ -138,12 +137,4 @@ test("malformed v2 method payloads fail closed instead of breaking the login pag
   }));
   assert.deepEqual(invalidElements.accessKeyMethods, []);
   assert.deepEqual(invalidElements.externalMethods, []);
-});
-
-test("legacy Bearer compatibility is never inferred from a v2 capability", () => {
-  assert.equal(isLegacyOwnerBearerMode(capabilities({ mutationMode: "single_owner_token" })), true);
-  assert.equal(isLegacyOwnerBearerMode(capabilities({
-    version: "2.0",
-    mutationMode: "single_owner_token",
-  })), false);
 });

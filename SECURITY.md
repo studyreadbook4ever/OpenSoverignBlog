@@ -38,4 +38,5 @@ side of that three-part boundary requires a security regression test.
 The initial supported mode is a single Rust process, one local SQLite database,
 and a local content-addressed blob directory. Reverse proxies must overwrite,
 not append, trusted forwarding headers. Public deployments should use TLS and a
-real external authentication adapter or a rotated high-entropy admin token.
+real external authentication adapter or a high-entropy administrator access key
+that is exchanged once for a revocable HttpOnly session.

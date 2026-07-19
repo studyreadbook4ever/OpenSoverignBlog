@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "open-soverign-blog-lock/1",
+  "installationId": "019f7979-723a-75c0-8e97-11c3b13b004d",
+  "engine": {
+    "version": "0.1.0",
+    "configSchemaVersion": "open-soverign-blog/2",
+    "databaseSchemaVersion": 7,
+    "pluginApi": "1",
+    "source": "source-checkout"
+  },
+  "selection": {
+    "admin_auth": "access_key",
+    "style": {
+      "kind": "custom",
+      "file": "custom.css",
+      "sha256": "3d3be91eb7558e73a33c525d4aee26e25f996c8f91e27317f177e992e6fececc"
+    },
+    "cache": "redis_managed"
+  },
+  "dlcs": [
+    {
+      "id": "org.open-soverign-blog.seo",
+      "requestedVersion": "=0.1.0",
+      "version": "0.1.0",
+      "coreCompatibility": ">=0.1.0, <0.2.0",
+      "manifestVersion": 1,
+      "pluginApi": "1",
+      "sourceKind": "bundled",
+      "source": "plugins/official/seo/plugin.toml",
+      "manifestSha256": "008ab109ac59b68acbbbd5a922fe87c3b029cd8175ff06564011434bf00e0844",
+      "enabled": true,
+      "approvedCapabilities": [
+        "content.read",
+        "route.public"
+      ],
+      "appliedMigrations": []
+    }
+  ],
+  "history": [
+    {
+      "sequence": 1,
+      "action": "installed",
+      "dlcId": "org.open-soverign-blog.seo",
+      "toVersion": "0.1.0",
+      "engineVersion": "0.1.0"
+    }
+  ],
+  "lockDigest": "166299a0fde92c4a4cd88083d3a396aa5b524caf0b12924d262dff6f518e804f"
+}

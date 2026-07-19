@@ -14,8 +14,10 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod bootstrap;
+mod local;
 
-use bootstrap::{BootstrapArgs, DoctorArgs};
+use bootstrap::{BootstrapArgs, DoctorArgs, InstallationArgs};
+use local::LocalArgs;
 
 const BUNDLE_SCHEMA_VERSION: &str = "open-soverign-blog-backup/1";
 const LEGACY_MANAGED_BUNDLE_SCHEMA_VERSION: &str = "open-soverign-blog-managed-backup/1";
@@ -47,6 +49,10 @@ enum Command {
     Bootstrap(BootstrapArgs),
     /// Validate semantic configuration, storage paths, and Redis readiness.
     Doctor(DoctorArgs),
+    /// Verify, adopt, or atomically update the installation manifest and lock.
+    Installation(InstallationArgs),
+    /// Server-local setup and Markdown publishing with no remote authentication.
+    Local(LocalArgs),
     /// Create a SQLite snapshot or verify a complete backup generation.
     Backup {
         #[arg(value_name = "OUTPUT")]
@@ -78,6 +84,8 @@ fn main() -> Result<()> {
     match args.command {
         Command::Bootstrap(options) => bootstrap::bootstrap(options),
         Command::Doctor(options) => bootstrap::doctor(options),
+        Command::Installation(options) => bootstrap::installation(options),
+        Command::Local(options) => local::run(args.database, options),
         Command::Backup { output, action } => match (output, action) {
             (Some(output), None) => backup(args.database, output),
             (None, Some(BackupAction::Verify { bundle })) => verify_bundle_command(bundle),

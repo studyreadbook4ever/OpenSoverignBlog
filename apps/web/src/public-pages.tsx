@@ -14,6 +14,7 @@ import type {
   CodeRunResponse,
   CommentView,
   FeedPostSummary,
+  HomeResponse,
   PostSummary,
   PostView,
   RunnerProfile,
@@ -21,13 +22,15 @@ import type {
   ViewMode,
 } from "@opensoverignblog/sdk";
 import { useSession } from "./app";
+import { articleHref, articleViewFromSearch } from "./article-location";
+import { authorshipLabel, HUMAN_AUTHORSHIP, normalizedAuthorship } from "./authorship";
 import {
   adminAuthChoices,
-  isLegacyOwnerBearerMode,
   safeAuthActionHref,
   studioAccessFor,
 } from "./auth-policy";
 import { safeBlogStylesheetUrl } from "./site-stylesheet";
+import { installSocialEmbedHydration } from "./social-embeds";
 import {
   AppLink,
   THEME_PRESETS,
@@ -59,15 +62,15 @@ const LEGACY_BLOG: BlogSummary = {
 
 export function FeedPage() {
   const { session, capabilities } = useSession();
-  usePageTitle("피드");
-  const [items, setItems] = useState<FeedPostSummary[]>([]);
+  usePageTitle("홈");
+  const [home, setHome] = useState<HomeResponse>({ pinnedItems: [], recentItems: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     const controller = new AbortController();
-    void loadFeed(controller.signal)
-      .then(setItems)
+    void loadHome(controller.signal)
+      .then(setHome)
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) setError(asMessage(reason));
       })
@@ -77,47 +80,111 @@ export function FeedPage() {
     return () => controller.abort();
   }, []);
 
+  const total = home.pinnedItems.length + home.recentItems.length;
+  const writeHref = session?.state === "authenticated"
+    ? (session.blog ? "/studio/write" : "/onboarding")
+    : "/login";
+
   return (
-    <div className="feed-page">
-      <section className="feed-hero" aria-labelledby="feed-title">
-        <div>
-          <p className="eyebrow">Independent publishing network</p>
-          <h1 id="feed-title">좋은 글이 머무는<br />조용한 광장</h1>
-        </div>
-        <p className="feed-hero-copy">
-          여러 사람이 각자의 목소리와 테마로 발행한 글을 한곳에서 발견하세요.
-          원문 Markdown은 언제나 작성자에게 남습니다.
-        </p>
-      </section>
+    <div className="wiki-home">
+      <aside className="wiki-sidebar" aria-label="홈 안내">
+        <section>
+          <h2>OpenSoverignBlog</h2>
+          <p>Markdown 원문과 서버를 작성자가 직접 소유하는 온프레미스 블로그 엔진입니다.</p>
+        </section>
+        <nav aria-label="빠른 이동">
+          <strong>빠른 이동</strong>
+          <a href="#home-pinned">주요 글</a>
+          <a href="#home-recent">최근 글</a>
+          <a href={publicPath("/openapi/openapi.yaml")}>OpenAPI</a>
+          <a href={publicPath("/AI2AI.md")}>AI 접근 안내</a>
+        </nav>
+        <dl>
+          <div><dt>공개 글</dt><dd>{total}</dd></div>
+          <div><dt>운영 모드</dt><dd>{capabilities && studioAccessFor(capabilities) === "disabled" ? "읽기 전용" : "발행 가능"}</dd></div>
+        </dl>
+        {capabilities && studioAccessFor(capabilities) !== "disabled" ? (
+          <AppLink className="button button-primary wiki-write" href={writeHref}>
+            {session?.state === "authenticated" && session.blog ? "글 쓰기" : "관리 시작"}
+          </AppLink>
+        ) : null}
+      </aside>
 
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Latest stories</p>
-          <h2>새로 도착한 글</h2>
-        </div>
-        <span className="result-count">{items.length}개의 글</span>
+      <div className="wiki-main">
+        <header className="wiki-welcome">
+          <p className="eyebrow">Self-hosted publishing</p>
+          <h1>읽는 화면은 가볍게, 기록의 소유권은 분명하게.</h1>
+          <p>이 홈은 발행된 불변 리비전만 보여 줍니다. 초안과 관리자 기능은 공개 캐시에서 분리됩니다.</p>
+        </header>
+
+        {loading ? <FeedSkeleton /> : null}
+        {error ? <StatusMessage title="홈을 불러오지 못했습니다" detail={error} /> : null}
+        {!loading && !error && total === 0 ? (
+          <EmptyState
+            {...(!capabilities || studioAccessFor(capabilities) === "disabled" ? {} : {
+              actionHref: writeHref,
+              actionLabel: session?.state === "authenticated"
+                ? (session.blog ? "첫 글 쓰기" : "블로그 만들기")
+                : studioAccessFor(capabilities) === "admin_only" ? "관리자로 시작하기" : "로그인하고 시작하기",
+            })}
+            description="아직 발행된 글이 없습니다. 작은 메모부터 시작해 보세요."
+            title="첫 이야기를 기다리고 있어요"
+          />
+        ) : null}
+
+        {home.pinnedItems.length ? (
+          <HomePostSection id="home-pinned" items={home.pinnedItems} title="주요 글" tone="pinned" />
+        ) : null}
+        {home.recentItems.length ? (
+          <HomePostSection id="home-recent" items={home.recentItems} title="최근 변경" tone="recent" />
+        ) : null}
       </div>
-
-      {loading ? <FeedSkeleton /> : null}
-      {error ? <StatusMessage title="피드를 불러오지 못했습니다" detail={error} /> : null}
-      {!loading && !error && items.length === 0 ? (
-        <EmptyState
-          {...(!capabilities || studioAccessFor(capabilities) === "disabled" ? {} : {
-            actionHref: session?.state === "authenticated" ? (session.blog ? "/studio/write" : "/onboarding") : "/login",
-            actionLabel: session?.state === "authenticated"
-              ? (session.blog ? "첫 글 쓰기" : "블로그 만들기")
-              : studioAccessFor(capabilities) === "admin_only" ? "관리자로 시작하기" : "로그인하고 시작하기",
-          })}
-          description="아직 발행된 글이 없습니다. 작은 메모부터 시작해 보세요."
-          title="첫 이야기를 기다리고 있어요"
-        />
-      ) : null}
-      {items.length > 0 ? (
-        <div className="post-grid" aria-label="공개 글 목록">
-          {items.map((post) => <PostCard key={post.id} post={post} />)}
-        </div>
-      ) : null}
     </div>
+  );
+}
+
+function HomePostSection({
+  id,
+  items,
+  title,
+  tone,
+}: {
+  id: string;
+  items: FeedPostSummary[];
+  title: string;
+  tone: "pinned" | "recent";
+}) {
+  return (
+    <section className={`wiki-panel wiki-panel-${tone}`} id={id} aria-labelledby={`${id}-title`}>
+      <div className="wiki-panel-heading">
+        <h2 id={`${id}-title`}>{title}</h2>
+        <span>{items.length}개</span>
+      </div>
+      <div className="wiki-post-list">
+        {items.map((post) => <DensePostRow key={post.id} post={post} />)}
+      </div>
+    </section>
+  );
+}
+
+function DensePostRow({ post }: { post: FeedPostSummary }) {
+  const href = `/@${encodeURIComponent(post.blog.handle)}/${encodeURIComponent(post.slug)}`;
+  return (
+    <article className="wiki-post-row">
+      <div className="wiki-post-index" aria-hidden="true">{post.title.slice(0, 1)}</div>
+      <div className="wiki-post-copy">
+        <h3><AppLink href={href}>{post.title}</AppLink></h3>
+        <p>{post.excerpt}</p>
+        <div className="wiki-post-meta">
+          <AppLink href={`/@${encodeURIComponent(post.blog.handle)}`}>@{post.blog.handle}</AppLink>
+          <span>{post.author.displayName}</span>
+          <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
+          {post.commentCount ? <span>댓글 {post.commentCount}</span> : null}
+          <AuthorshipBadge value={post.authorship} />
+        </div>
+      </div>
+      <span className="list-arrow" aria-hidden="true">›</span>
+    </article>
   );
 }
 
@@ -127,6 +194,15 @@ async function loadFeed(signal?: AbortSignal): Promise<FeedPostSummary[]> {
   } catch (reason) {
     if (!isNotFound(reason)) throw reason;
     return (await client.listPosts(signal)).map(legacyFeedPost);
+  }
+}
+
+async function loadHome(signal?: AbortSignal): Promise<HomeResponse> {
+  try {
+    return await client.home(signal);
+  } catch (reason) {
+    if (!isNotFound(reason)) throw reason;
+    return { pinnedItems: [], recentItems: await loadFeed(signal) };
   }
 }
 
@@ -145,36 +221,16 @@ function legacyFeedPost(post: PostSummary): FeedPostSummary {
     tags: [],
     commentCount: 0,
     hasIntentView: post.hasIntentView,
+    authorship: post.authorship ?? HUMAN_AUTHORSHIP,
   };
 }
 
-function PostCard({ post }: { post: FeedPostSummary }) {
-  const href = `/@${encodeURIComponent(post.blog.handle)}/${encodeURIComponent(post.slug)}`;
+function AuthorshipBadge({ value }: { value: FeedPostSummary["authorship"] | undefined }) {
+  const authorship = normalizedAuthorship(value);
   return (
-    <article className="post-card">
-      <AppLink aria-label={`${post.title} 글 표지`} className="post-card-visual" data-theme={post.blog.theme.presetId} href={href} tabIndex={-1}>
-        {post.coverImageUrl ? (
-          <img alt="" src={post.coverImageUrl} />
-        ) : (
-          <span aria-hidden="true">{post.title.slice(0, 1)}</span>
-        )}
-      </AppLink>
-      <div className="post-card-body">
-        <div className="post-card-meta">
-          <AppLink href={`/@${encodeURIComponent(post.blog.handle)}`}>@{post.blog.handle}</AppLink>
-          <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
-        </div>
-        <h3><AppLink href={href}>{post.title}</AppLink></h3>
-        <p>{post.excerpt}</p>
-        <div className="post-card-footer">
-          <span className="author-inline">
-            <span className="avatar avatar-tiny" aria-hidden="true">{initials(post.author.displayName)}</span>
-            {post.author.displayName}
-          </span>
-          <span>댓글 {post.commentCount}</span>
-        </div>
-      </div>
-    </article>
+    <span className={`authorship-badge authorship-${authorship.kind}`} title="휴대 가능한 공개 작성 출처">
+      {authorshipLabel(authorship)}
+    </span>
   );
 }
 
@@ -231,7 +287,10 @@ export function BlogPage({ handle }: { handle: string }) {
               <article className="blog-list-item" key={post.id}>
                 <span className="post-order" aria-hidden="true">{String(index + 1).padStart(2, "0")}</span>
                 <div>
-                  <div className="post-card-meta"><time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time></div>
+                  <div className="post-card-meta">
+                    <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
+                    <AuthorshipBadge value={post.authorship} />
+                  </div>
                   <h3><AppLink href={`/@${encodeURIComponent(handle)}/${encodeURIComponent(post.slug)}`}>{post.title}</AppLink></h3>
                   <p>{post.excerpt}</p>
                 </div>
@@ -260,15 +319,17 @@ export function ArticlePage({
   capabilities: Capabilities | undefined;
   legacy?: boolean;
 }) {
-  const [view, setView] = useState<ViewMode>("intent");
+  const [view, setView] = useState<ViewMode>(() => articleViewFromSearch(window.location.search));
   const [post, setPost] = useState<BlogPostView>();
   const [error, setError] = useState<string>();
-  const legacyArticle = legacy || (
-    capabilities !== undefined
-    && isLegacyOwnerBearerMode(capabilities)
-    && handle === LEGACY_BLOG.handle
-  );
+  const legacyArticle = legacy;
   usePageTitle(post?.title ?? "글 읽기");
+
+  useEffect(() => {
+    const updateViewFromLocation = () => setView(articleViewFromSearch(window.location.search));
+    window.addEventListener("popstate", updateViewFromLocation);
+    return () => window.removeEventListener("popstate", updateViewFromLocation);
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -283,12 +344,12 @@ export function ArticlePage({
     )
       .then((value) => {
         if (value.requestedSlug !== value.canonicalSlug) {
-          navigate(
-            legacyArticle
-              ? `/blog/${encodeURIComponent(value.canonicalSlug)}`
-              : `/@${encodeURIComponent(handle)}/${encodeURIComponent(value.canonicalSlug)}`,
-            true,
-          );
+          navigate(articleHref({
+            handle,
+            slug: value.canonicalSlug,
+            legacy: legacyArticle,
+            view,
+          }), true);
           return;
         }
         setPost(value);
@@ -301,6 +362,15 @@ export function ArticlePage({
 
   if (error) return <StatusMessage title="글을 불러오지 못했습니다" detail={error} />;
   if (!post) return <PageLoading label="글을 불러오는 중" />;
+  const selectView = (nextView: ViewMode) => {
+    if (nextView === view && articleViewFromSearch(window.location.search) === nextView) return;
+    navigate(articleHref({
+      handle: post.blog.handle,
+      slug: post.canonicalSlug,
+      legacy: legacyArticle,
+      view: nextView,
+    }));
+  };
   return (
     <>
       <BlogCustomStylesheet handle={post.blog.handle} href={post.blog.theme.customCssUrl} />
@@ -312,6 +382,7 @@ export function ArticlePage({
             <AppLink href={`/@${post.blog.handle}`}>@{post.blog.handle}</AppLink>
             <span aria-hidden="true">/</span>
             <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
+            <AuthorshipBadge value={post.authorship} />
           </div>
           <h1>{post.title}</h1>
           {post.excerpt ? <p className="article-deck">{post.excerpt}</p> : null}
@@ -325,8 +396,8 @@ export function ArticlePage({
             ) : null}
           </div>
           <div className="projection-switcher" role="group" aria-label="콘텐츠 보기 방식">
-            <button aria-pressed={view === "intent"} onClick={() => setView("intent")} type="button">작성자 보기</button>
-            <button aria-pressed={view === "markdown_source"} onClick={() => setView("markdown_source")} type="button">.md 원문</button>
+            <button aria-pressed={view === "intent"} onClick={() => selectView("intent")} type="button">작성자 보기</button>
+            <button aria-pressed={view === "markdown_source"} onClick={() => selectView("markdown_source")} type="button">.md 원문</button>
           </div>
         </header>
         <ArticleBody capabilities={capabilities} html={post.artifact.html} />
@@ -388,6 +459,7 @@ function legacyPostView(post: PostView): BlogPostView {
   const now = new Date().toISOString();
   return {
     ...post,
+    authorship: post.authorship ?? HUMAN_AUTHORSHIP,
     slug: post.canonicalSlug,
     publishedAt: now,
     updatedAt: now,
@@ -409,6 +481,15 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
     }),
     [html],
   );
+  const safeInnerHtml = useMemo(() => ({ __html: sanitizedHtml }), [sanitizedHtml]);
+  const socialEmbedsEnabled = capabilities?.features.includes("social_embeds") ?? false;
+
+  useEffect(() => {
+    const body = bodyRef.current;
+    return body && socialEmbedsEnabled
+      ? installSocialEmbedHydration(body)
+      : undefined;
+  }, [sanitizedHtml, socialEmbedsEnabled]);
 
   useEffect(() => {
     if (
@@ -416,7 +497,7 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
       || studioAccessFor(capabilities) !== "admin_only"
       || session?.state !== "authenticated"
     ) {
-      setRunnerProfiles([]);
+      setRunnerProfiles((current) => current.length ? [] : current);
       return;
     }
     const controller = new AbortController();
@@ -485,7 +566,7 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
     return () => controller.abort();
   }, [sanitizedHtml, capabilities, runnerProfiles]);
 
-  return <div className="article-content" ref={bodyRef} dangerouslySetInnerHTML={{ __html: sanitizedHtml }} />;
+  return <div className="article-content" ref={bodyRef} dangerouslySetInnerHTML={safeInnerHtml} />;
 }
 
 function CommentSection({ postId }: { postId: string }) {

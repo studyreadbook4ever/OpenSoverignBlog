@@ -178,6 +178,7 @@ fn inject_intent_embeds(source: &str, embeds: &[EmbedReference]) -> String {
 
 fn embed_facade(embed: &EmbedReference) -> String {
     let provider = escape_html(&embed.provider);
+    let resource_id = escape_html(&embed.resource_id);
     let title = escape_html(&embed.title);
     let id = escape_html(&embed.id);
     let href = if matches!(embed.canonical_url.scheme(), "http" | "https") {
@@ -186,7 +187,7 @@ fn embed_facade(embed: &EmbedReference) -> String {
         "#".into()
     };
     format!(
-        "<figure id=\"embed-{id}\" class=\"osb-embed osb-embed-{provider}\"><figcaption>{title}</figcaption><a href=\"{href}\">Open {provider} content</a></figure>"
+        "<figure id=\"embed-{id}\" class=\"osb-embed osb-embed-{provider}\" data-osb-provider=\"{provider}\" data-osb-resource-id=\"{resource_id}\"><div class=\"osb-embed-facade\"><span class=\"osb-embed-provider\">{provider}</span><figcaption>{title}</figcaption><a class=\"osb-embed-action\" href=\"{href}\">원문 보기</a></div></figure>"
     )
 }
 
@@ -274,6 +275,12 @@ fn sanitizer<'a>() -> Builder<'a> {
         ["type", "checked", "disabled"].into_iter().collect(),
     );
     tag_attributes.insert("ol", ["start", "reversed"].into_iter().collect());
+    tag_attributes.insert(
+        "figure",
+        ["data-osb-provider", "data-osb-resource-id"]
+            .into_iter()
+            .collect(),
+    );
     tag_attributes.insert("td", ["colspan", "rowspan"].into_iter().collect());
     tag_attributes.insert("th", ["colspan", "rowspan", "scope"].into_iter().collect());
 

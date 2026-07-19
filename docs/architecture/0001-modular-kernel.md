@@ -124,18 +124,12 @@ Every accepted edit creates or advances a revision. Publication records an
 immutable publish snapshot. AI and plugins propose patches or new draft
 revisions; they do not silently overwrite a published revision.
 
-Engine-specific constructs use a versioned Markdown extension that preserves
-the original invocation. A macro or plugin block stores:
-
-- its stable type and schema version;
-- its source arguments;
-- references to input context;
-- the most recent successful artifact;
-- provenance and execution policy.
-
-If a plugin is absent, the source block remains editable and exportable. A
-published page may use the last successful artifact according to site policy;
-it must not silently delete the block.
+The core defines no macro syntax or prompt/script interpreter. External AI and
+automation tools construct task-specific prompts or scripts outside the engine,
+then submit a complete conflict-checked revision with portable provenance. If
+an author wants to retain an invocation or generated artifact, it is exported
+as ordinary Markdown or revision metadata rather than an engine-owned executable
+block.
 
 Native export consists of human-readable Markdown, metadata JSON, assets by
 digest, revision metadata, redirect aliases, and optional ontology statements.
@@ -250,8 +244,8 @@ not a promise of stable binary compatibility.
 
 ### Sandboxed WASI component
 
-Pure transforms, macros, validators, and bounded render extensions should use
-a versioned WASI Component/WIT contract. The host grants individual
+Pure transforms, validators, and bounded render extensions should use a
+versioned WASI Component/WIT contract. The host grants individual
 capabilities. No ambient filesystem, network, clock, randomness, or secret
 access is assumed.
 
@@ -312,7 +306,7 @@ delivery.
 ## Clean-room and licensing policy
 
 Original project code is released under the Unlicense. The repository root
-contains the controlling LICENSE, and first-party packages declare the SPDX
+contains the controlling UNLICENSE, and first-party packages declare the SPDX
 identifier Unlicense.
 
 Clean-room means:

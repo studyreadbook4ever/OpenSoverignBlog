@@ -6,6 +6,7 @@ import { OpenSoverignBlogClient } from "../src/index.ts";
 const authenticatedSession = {
   state: "authenticated",
   registrationOpen: false,
+  instanceAdministrator: true,
   user: {
     id: "01900000-0000-7000-8000-000000000001",
     handle: "owner",
@@ -13,11 +14,39 @@ const authenticatedSession = {
   },
 };
 
+test("health exposes dependency and data-boundary status", async () => {
+  const health = {
+    status: "ok",
+    version: "0.1.0",
+    dependencies: {
+      cache: { provider: "none", state: "disabled", required: false },
+      backups: { state: "externally_managed" },
+    },
+    dataBoundary: {
+      authoritative: ["sqlite", "content_addressed_blobs"],
+      redisRole: "disabled_by_installation",
+    },
+  };
+  let url;
+  const client = new OpenSoverignBlogClient({
+    baseUrl: "/team",
+    fetch: async (input) => {
+      url = input;
+      return new Response(JSON.stringify(health), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    },
+  });
+
+  assert.deepEqual(await client.health(), health);
+  assert.equal(url, "/team/healthz");
+});
+
 test("access-key login exchanges the key in JSON without a Bearer header", async () => {
   let captured;
   const client = new OpenSoverignBlogClient({
     baseUrl: "/team",
-    getAdminToken: () => "legacy-token-must-not-leak",
     fetch: async (input, init) => {
       captured = { input, init };
       return new Response(JSON.stringify(authenticatedSession), {

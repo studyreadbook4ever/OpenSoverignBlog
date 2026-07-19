@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:open-soverign-blog:schemas:release-channel:v1",
+  "title": "OpenSoverignBlog stable release channel",
+  "description": "Bounded metadata used for informational version checks and semantic update planning. An entry is valid only with its matching immutable tag and GitHub Release.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "channel",
+    "repositoryUrl",
+    "latest",
+    "releases"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "open-soverign-blog-release-channel/1"
+    },
+    "channel": {
+      "const": "stable"
+    },
+    "repositoryUrl": {
+      "const": "https://github.com/studyreadbook4ever/OpenSoverignBlog"
+    },
+    "latest": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/release" }
+      ]
+    },
+    "releases": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/release"
+      }
+    }
+  },
+  "$defs": {
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "tag",
+        "releaseDate",
+        "sourceCommit",
+        "releaseUrl",
+        "manifestSha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "Stable SemVer only; prerelease and build metadata belong to a future non-stable channel.",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        },
+        "releaseDate": {
+          "type": "string",
+          "format": "date"
+        },
+        "sourceCommit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "releaseUrl": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://github\\.com/studyreadbook4ever/OpenSoverignBlog/releases/tag/v"
+        },
+        "manifestSha256": {
+          "type": "string",
+          "description": "Lowercase SHA-256 of the exact release.toml bytes in the signed source tag.",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}
