@@ -19,6 +19,9 @@ the same versioned contracts.
 7. Do not invent legal approval. Legal profiles are operator assertions, not a
    compliance certification.
 8. Never put secrets in content, plugin manifests, logs, exports, or AI traces.
+9. Never give an AI process an administrator access key, external-provider
+   token, or browser session. Machine writes require a distinct scoped service
+   credential.
 
 ## Discovery
 
@@ -57,6 +60,23 @@ For provider-neutral, reviewable draft macros, read
 `docs/ai2ai/MACROS.md` and `schemas/macro-invocation.v1.schema.json`. Macro
 fences are inert until an external capability-scoped adapter resolves them and
 submits a complete revision through the same conflict-checked flow.
+
+## Minimal MCP access
+
+The optional [`osb-mcp` stdio adapter](apps/mcp/README.md) is intentionally a
+small HTTP client, not an AI or macro engine. It exposes list/read tools by
+default, allowing an external AI to construct a task-specific prompt or script
+without embedding that policy in OpenSoverignBlog. Create, revise, and publish
+are separate write-mode tools; publishing is never a side effect of drafting.
+
+`OSB_MCP_TOKEN` is a separate static machine credential with a fixed content-only
+route scope. The server stores its SHA-256 digest and accepts it only for content
+list/private-read/draft/revise/publish operations; administrator auth, AI2AI,
+assets, runner, settings, and member APIs remain outside that boundary. It is one
+global credential rather than per-client issuance: change or remove it and
+restart every application replica to rotate or revoke it. Do not copy an
+administrator access key, legacy owner token, OIDC token, or browser cookie into
+an MCP process. Direct SQLite or Redis access remains forbidden.
 
 ## Safe write sequence
 

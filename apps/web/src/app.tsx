@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Capabilities, Session } from "@opensoverignblog/sdk";
+import { studioAccessFor } from "./auth-policy";
 import { AppLink, asMessage, client, initials, isNotFound, navigate, publicPath, usePathname } from "./lib";
 import {
   ArticlePage,
@@ -63,7 +64,7 @@ export function App() {
       setSessionError(undefined);
     } catch (reason) {
       if (isNotFound(reason)) {
-        setSession({ state: "anonymous", registrationOpen: true });
+        setSession({ state: "anonymous", registrationOpen: false });
         return;
       }
       setSession({ state: "anonymous", registrationOpen: false });
@@ -102,7 +103,7 @@ export function App() {
         if (!isNotFound(reason)) setSessionError(asMessage(reason));
         setSession({
           state: "anonymous",
-          registrationOpen: isNotFound(reason),
+          registrationOpen: false,
         });
       });
     return () => controller.abort();
@@ -223,8 +224,8 @@ function CapabilityError({ detail, onRetry }: { detail: string; onRetry: () => v
 function SiteHeader() {
   const { session, capabilities, capabilitiesError, refreshCapabilities, setSession } = useSession();
   const [busy, setBusy] = useState(false);
-  const canUseLegacyStudio = capabilities?.mutationMode === "single_owner_token";
-  const deliveryOnly = capabilities?.mutationMode === "read_only";
+  const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
+  const deliveryOnly = studioAccess === "disabled";
 
   async function logout() {
     setBusy(true);
@@ -233,7 +234,7 @@ function SiteHeader() {
       navigate("/");
     } catch (reason) {
       if (isNotFound(reason)) {
-        setSession({ state: "anonymous", registrationOpen: true });
+        setSession({ state: "anonymous", registrationOpen: false });
         navigate("/");
       }
     } finally {
@@ -263,7 +264,13 @@ function SiteHeader() {
           <a href={publicPath("/AI2AI.md")}>AI2AI</a>
         </nav>
         <div className="header-actions">
-          {session?.state === "authenticated" ? (
+          {!capabilities ? (
+            <button className="button button-ghost" onClick={() => void refreshCapabilities()} title={capabilitiesError} type="button">
+              {capabilitiesError ? "기능 확인 재시도" : "서버 확인 중"}
+            </button>
+          ) : deliveryOnly ? (
+            <span className="mode-pill">읽기 전용</span>
+          ) : session?.state === "authenticated" ? (
             <>
               {session.blog && (!session.membershipRole || session.membershipRole === "owner") ? (
                 <AppLink className="button button-ghost header-settings" href="/studio/settings" aria-label="블로그 설정">
@@ -283,25 +290,10 @@ function SiteHeader() {
                 </button>
               </div>
             </>
-          ) : !capabilities ? (
-            <button className="button button-ghost" onClick={() => void refreshCapabilities()} title={capabilitiesError} type="button">
-              {capabilitiesError ? "기능 확인 재시도" : "서버 확인 중"}
-            </button>
-          ) : deliveryOnly ? (
-            <span className="mode-pill">읽기 전용</span>
           ) : (
-            <>
-              {canUseLegacyStudio ? (
-                <AppLink className="button button-ghost" href="/studio">
-                  Studio
-                </AppLink>
-              ) : null}
-              {!canUseLegacyStudio ? (
-                <AppLink className="button button-primary" href="/login">
-                  로그인
-                </AppLink>
-              ) : null}
-            </>
+            <AppLink className="button button-primary" href="/login">
+              {studioAccess === "admin_only" ? "관리자 접근" : "로그인"}
+            </AppLink>
           )}
         </div>
       </div>

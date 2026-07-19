@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json --emitDeclarationOnly",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "^5.9.0"

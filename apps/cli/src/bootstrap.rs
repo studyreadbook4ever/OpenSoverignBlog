@@ -7,6 +7,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher, SaltString},
+};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use clap::{Args, ValueEnum};
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -17,8 +25,10 @@ use uuid::Uuid;
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-const CONFIG_SCHEMA: &str = "open-soverign-blog/1";
+const CONFIG_SCHEMA: &str = "open-soverign-blog/2";
 const INTENT_SCHEMA: &str = "open-soverign-blog-intent/1";
+const GENERATED_GITIGNORE: &str = ".env\nadmin-access-key.txt\n.osb-backups/\n";
+const REQUIRED_SECRET_IGNORES: [&str; 2] = [".env", "admin-access-key.txt"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +55,24 @@ pub enum AuthChoice {
     Oauth,
     LocalAndOauth,
     Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminAuthChoice {
+    AccessKey,
+    External,
+    Disabled,
+}
+
+impl AdminAuthChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessKey => "access_key",
+            Self::External => "external",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 impl AuthChoice {
@@ -124,9 +152,24 @@ pub struct BootstrapArgs {
     /// Canonical URL visible to readers and search/AI agents.
     #[arg(long, default_value = "http://localhost:8787")]
     pub public_url: String,
-    /// Authentication experience. Defaults to local, or disabled for delivery nodes.
+    /// Reader/member account authentication. Personal defaults disabled; community defaults local.
     #[arg(long, value_enum)]
     pub auth: Option<AuthChoice>,
+    /// Administrator control plane: one-time access-key exchange, external OIDC, or no remote admin.
+    #[arg(long, value_enum)]
+    pub admin_auth: Option<AdminAuthChoice>,
+    /// OIDC issuer URL. Required with --admin-auth external.
+    #[arg(long)]
+    pub external_issuer_url: Option<String>,
+    /// OIDC client identifier. Required with --admin-auth external.
+    #[arg(long)]
+    pub external_client_id: Option<String>,
+    /// Exact stable OIDC subject (`sub`) allowed to administer this instance.
+    #[arg(long)]
+    pub external_owner_subject: Option<String>,
+    /// Human-facing label for the external login button.
+    #[arg(long, default_value = "외부 계정으로 계속하기")]
+    pub external_label: String,
     /// Allow new local accounts. Closed is the safe default.
     #[arg(long, value_enum, default_value_t = Toggle::Disabled)]
     pub registration: Toggle,
@@ -195,7 +238,8 @@ struct IntentManifest {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManifestFeatures {
-    auth: AuthChoice,
+    member_auth: AuthChoice,
+    admin_auth: AdminAuthChoice,
     registration_open: bool,
     comments: bool,
     collaboration: bool,
@@ -236,11 +280,15 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             && safe_public_path(public_url.path()),
         "--public-url must be an http(s) origin with a simple URL-safe base path and no credentials, query, or fragment"
     );
-    let auth = args.auth.unwrap_or_else(|| {
+    let auth = args.auth.unwrap_or(match args.intent {
+        Intent::Community => AuthChoice::Local,
+        Intent::Personal | Intent::Delivery => AuthChoice::Disabled,
+    });
+    let admin_auth = args.admin_auth.unwrap_or_else(|| {
         if args.intent == Intent::Delivery {
-            AuthChoice::Disabled
+            AdminAuthChoice::Disabled
         } else {
-            AuthChoice::Local
+            AdminAuthChoice::AccessKey
         }
     });
     let comments = args
@@ -276,6 +324,51 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         "delivery intent requires --auth disabled"
     );
     ensure!(
+        !delivery || admin_auth == AdminAuthChoice::Disabled,
+        "delivery intent requires --admin-auth disabled"
+    );
+    if admin_auth == AdminAuthChoice::External {
+        ensure!(
+            args.external_issuer_url.is_some()
+                && args.external_client_id.is_some()
+                && args.external_owner_subject.is_some(),
+            "external administrator auth requires --external-issuer-url, --external-client-id, and --external-owner-subject"
+        );
+        let issuer = Url::parse(args.external_issuer_url.as_deref().unwrap())
+            .context("--external-issuer-url must be an absolute URL")?;
+        ensure!(
+            external_issuer_url_is_safe(&issuer),
+            "--external-issuer-url must be HTTPS without credentials, query, or fragment (localhost may use HTTP)"
+        );
+        validate_cli_text(
+            "--external-client-id",
+            args.external_client_id.as_deref().unwrap(),
+            512,
+        )?;
+        validate_cli_text(
+            "--external-owner-subject",
+            args.external_owner_subject.as_deref().unwrap(),
+            512,
+        )?;
+        validate_cli_text("--external-label", &args.external_label, 80)?;
+    } else {
+        ensure!(
+            args.external_issuer_url.is_none()
+                && args.external_client_id.is_none()
+                && args.external_owner_subject.is_none(),
+            "external OIDC options require --admin-auth external"
+        );
+    }
+    ensure!(
+        admin_auth == AdminAuthChoice::Disabled
+            || public_url.scheme() == "https"
+            || matches!(
+                public_url.host_str(),
+                Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+            ),
+        "remote administrator authentication requires an https --public-url; localhost may use http for development"
+    );
+    ensure!(
         !registration_open || auth.local_enabled(),
         "open registration requires local or local-and-oauth authentication"
     );
@@ -303,6 +396,24 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         )
     })?;
     validate_deployment_path(&deployment_root)?;
+    let mut generated_targets = vec!["config.toml", ".env", "custom.css", "osb.intent.json"];
+    if admin_auth == AdminAuthChoice::AccessKey {
+        generated_targets.push("admin-access-key.txt");
+    }
+    for name in generated_targets {
+        let target = args.directory.join(name);
+        ensure!(
+            !target.exists(),
+            "refusing to overwrite existing file {}",
+            target.display()
+        );
+    }
+    let generated_gitignore = args.directory.join(".gitignore");
+    if generated_gitignore.exists() {
+        validate_existing_gitignore(&generated_gitignore)?;
+    } else {
+        write_new(&generated_gitignore, GENERATED_GITIGNORE.as_bytes())?;
+    }
     let backup_root = deployment_root.join(".osb-backups");
     let backup_generations = backup_root.join("generations");
     fs::create_dir_all(&backup_generations).with_context(|| {
@@ -322,20 +433,30 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     // Writable and delivery copies of one site may coexist on the same host.
     let deployment_id = Uuid::now_v7();
     let compose_project = format!("osb-{}", deployment_id.simple());
-    let config = render_config(
-        &args,
-        normalized_public_url,
+    let (admin_access_key, admin_access_key_phc_b64) = if admin_auth == AdminAuthChoice::AccessKey {
+        let key = random_access_key();
+        let phc = hash_admin_access_key(&key)?;
+        (Some(key), Some(BASE64_STANDARD.encode(phc.as_bytes())))
+    } else {
+        (None, None)
+    };
+    let config_render = ConfigRender {
+        public_url: normalized_public_url,
         site_id,
         content_release,
         auth,
+        admin_auth,
         comments,
         delivery,
-    );
+    };
+    let config = render_config(&args, &config_render);
     write_new(&args.directory.join("config.toml"), config.as_bytes())?;
     let redis_password = random_hex_secret();
     let cache_signing_key = random_hex_secret();
     let environment = EnvironmentRender {
         auth,
+        admin_auth,
+        admin_access_key_phc_b64: admin_access_key_phc_b64.as_deref(),
         comments,
         collaboration,
         delivery,
@@ -349,6 +470,11 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         &args.directory.join(".env"),
         render_env(&args, &environment).as_bytes(),
     )?;
+    if let Some(access_key) = admin_access_key.as_deref() {
+        let mut bytes = access_key.as_bytes().to_vec();
+        bytes.push(b'\n');
+        write_new_secret(&args.directory.join("admin-access-key.txt"), &bytes)?;
+    }
     // Compose bind-mounts this path even when the feature is disabled. Keeping a
     // harmless first-party template avoids Docker creating a directory at the
     // file mount while the semantic flag still controls whether it is served.
@@ -407,7 +533,8 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             "delivery intent rejects mutations",
         ],
         features: ManifestFeatures {
-            auth,
+            member_auth: auth,
+            admin_auth,
             registration_open,
             comments,
             collaboration,
@@ -439,6 +566,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         args.directory.display()
     );
     println!("  intent: {}", args.intent.as_str());
+    println!("  administrator auth: {}", admin_auth.as_str());
     println!("  Redis: required / {:?}", args.redis_topology);
     println!("  config: {}", args.directory.join("config.toml").display());
     println!(
@@ -452,8 +580,25 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             args.directory.join("osb.intent.json").display()
         );
     } else {
+        if admin_auth == AdminAuthChoice::AccessKey {
+            println!(
+                "  protected administrator access key: {}",
+                args.directory.join("admin-access-key.txt").display()
+            );
+        }
         println!("Next: {start_command}");
     }
+    Ok(())
+}
+
+fn validate_cli_text(name: &str, value: &str, maximum: usize) -> Result<()> {
+    ensure!(
+        value.trim() == value
+            && !value.is_empty()
+            && value.len() <= maximum
+            && !value.chars().any(char::is_control),
+        "{name} must be 1-{maximum} trimmed non-control bytes"
+    );
     Ok(())
 }
 
@@ -469,11 +614,60 @@ fn safe_public_path(path: &str) -> bool {
         })
 }
 
+fn is_loopback_url(url: &Url) -> bool {
+    matches!(
+        url.host_str(),
+        Some("localhost") | Some("127.0.0.1") | Some("::1") | Some("[::1]")
+    )
+}
+
+fn external_issuer_url_is_safe(url: &Url) -> bool {
+    url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && (url.scheme() == "https" || (url.scheme() == "http" && is_loopback_url(url)))
+}
+
 fn validate_deployment_path(path: &Path) -> Result<()> {
     let value = path.to_string_lossy();
     ensure!(
         !value.chars().any(char::is_control) && !value.contains('\''),
         "deployment directory path cannot contain control characters or apostrophes"
+    );
+    Ok(())
+}
+
+fn validate_existing_gitignore(path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("failed to inspect existing {}", path.display()))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "existing {} must be a regular file before bootstrap can create secrets",
+        path.display()
+    );
+    let source = fs::read_to_string(path)
+        .with_context(|| format!("failed to read existing {}", path.display()))?;
+    let entries = source
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect::<Vec<_>>();
+    let missing = REQUIRED_SECRET_IGNORES
+        .iter()
+        .filter(|required| {
+            !entries
+                .iter()
+                .any(|entry| *entry == **required || entry.strip_prefix('/') == Some(**required))
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    ensure!(
+        missing.is_empty(),
+        "existing {} must ignore {} before bootstrap can create secrets; add the exact entr{} and retry",
+        path.display(),
+        missing.join(" and "),
+        if missing.len() == 1 { "y" } else { "ies" }
     );
     Ok(())
 }
@@ -525,15 +719,31 @@ fn random_hex_secret() -> String {
     encoded
 }
 
-fn render_config(
-    args: &BootstrapArgs,
-    public_url: &str,
+fn random_access_key() -> String {
+    let mut bytes = [0_u8; 32];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn hash_admin_access_key(access_key: &str) -> Result<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(access_key.as_bytes(), &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| anyhow::anyhow!("failed to hash administrator access key: {error}"))
+}
+
+struct ConfigRender<'a> {
+    public_url: &'a str,
     site_id: Uuid,
-    content_release: &str,
+    content_release: &'a str,
     auth: AuthChoice,
+    admin_auth: AdminAuthChoice,
     comments: bool,
     delivery: bool,
-) -> String {
+}
+
+fn render_config(args: &BootstrapArgs, config: &ConfigRender<'_>) -> String {
     let (redis_topology, redis_url, sentinel_urls) = match args.redis_topology {
         RedisTopologyChoice::Standalone => (
             "standalone",
@@ -566,6 +776,11 @@ profile = "{database_profile}"
 
 [security]
 # Secrets are environment-only. Never put OAuth or owner credentials here.
+
+[admin]
+auth = "{admin_auth}"
+session_days = 30
+{external_admin}
 
 [community]
 auth = "{auth}"
@@ -609,26 +824,47 @@ code_runner = false
 ads = false
 "#,
         intent = args.intent.as_str(),
-        public_url = public_url,
-        site_id = site_id,
+        public_url = config.public_url,
+        site_id = config.site_id,
         no_index = !args.seo.enabled(),
         database_profile = args.database_profile.as_str(),
-        auth = auth.as_str(),
+        auth = config.auth.as_str(),
+        admin_auth = config.admin_auth.as_str(),
+        external_admin = render_external_admin(args, config.admin_auth),
         registration_open = args.registration.enabled(),
         collaboration = args.collaboration.enabled(),
         custom_css = args.custom_css.enabled(),
         agent_discovery = args.agent_discovery.enabled(),
-        managed_backups = args.managed_backups.enabled() && !delivery,
+        managed_backups = args.managed_backups.enabled() && !config.delivery,
         backup_interval = args.backup_interval_minutes,
         backup_retention = args.backup_retention,
-        external_auth = auth.oauth_enabled(),
+        external_auth =
+            config.auth.oauth_enabled() || config.admin_auth == AdminAuthChoice::External,
         seo = args.seo.enabled(),
-        content_release = content_release,
+        content_release = config.content_release,
+        comments = config.comments,
+        delivery = config.delivery,
+    )
+}
+
+fn render_external_admin(args: &BootstrapArgs, admin_auth: AdminAuthChoice) -> String {
+    if admin_auth != AdminAuthChoice::External {
+        return String::new();
+    }
+    let issuer = toml::Value::String(args.external_issuer_url.clone().unwrap()).to_string();
+    let client_id = toml::Value::String(args.external_client_id.clone().unwrap()).to_string();
+    let owner_subject =
+        toml::Value::String(args.external_owner_subject.clone().unwrap()).to_string();
+    let label = toml::Value::String(args.external_label.clone()).to_string();
+    format!(
+        "\n[admin.external]\nadapter = \"oidc\"\nissuer_url = {issuer}\nclient_id = {client_id}\nowner_subject = {owner_subject}\nlabel = {label}\n"
     )
 }
 
 struct EnvironmentRender<'a> {
     auth: AuthChoice,
+    admin_auth: AdminAuthChoice,
+    admin_access_key_phc_b64: Option<&'a str>,
     comments: bool,
     collaboration: bool,
     delivery: bool,
@@ -644,7 +880,10 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         ("seo", args.seo.enabled()),
         ("comments", environment.comments),
         ("rbac", environment.collaboration),
-        ("external_auth", environment.auth.oauth_enabled()),
+        (
+            "external_auth",
+            environment.auth.oauth_enabled() || environment.admin_auth == AdminAuthChoice::External,
+        ),
     ]
     .into_iter()
     .filter_map(|(name, enabled)| enabled.then_some(name))
@@ -656,13 +895,15 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         features
     };
     format!(
-        "COMPOSE_PROJECT_NAME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_REQUIRED=true\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
+        "COMPOSE_PROJECT_NAME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_REQUIRED=true\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
         environment.compose_project,
         environment.deployment_root.join("config.toml").display(),
         environment.deployment_root.join("custom.css").display(),
         environment.public_url,
         args.intent.as_str(),
         environment.auth.as_str(),
+        environment.admin_auth.as_str(),
+        environment.admin_access_key_phc_b64.unwrap_or_default(),
         args.registration.enabled(),
         environment.comments,
         environment.collaboration,
@@ -709,6 +950,7 @@ struct DoctorConfig {
     semantic: DoctorSemantic,
     server: DoctorServer,
     storage: DoctorStorage,
+    admin: DoctorAdmin,
     community: DoctorCommunity,
     deployment: DoctorDeployment,
     redis: DoctorRedis,
@@ -717,6 +959,8 @@ struct DoctorConfig {
     operations: DoctorOperations,
     #[serde(skip)]
     cache_signing_key_present: bool,
+    #[serde(skip)]
+    admin_access_key_phc_present: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -745,6 +989,34 @@ struct DoctorCommunity {
     auth: String,
     comments: bool,
     collaboration: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct DoctorAdmin {
+    auth: String,
+    session_days: i64,
+    external: Option<DoctorExternalAdmin>,
+}
+
+impl Default for DoctorAdmin {
+    fn default() -> Self {
+        Self {
+            auth: String::new(),
+            session_days: 30,
+            external: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct DoctorExternalAdmin {
+    adapter: Option<String>,
+    issuer_url: Option<String>,
+    client_id: Option<String>,
+    owner_subject: Option<String>,
+    label: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -890,6 +1162,73 @@ fn apply_environment_overrides_with(
             _ => item.to_ascii_lowercase(),
         };
     }
+    if let Some(item) = value("OSB_ADMIN_AUTH") {
+        config.admin.auth = match item.to_ascii_lowercase().replace('-', "_").as_str() {
+            "key" => "access_key".into(),
+            "oauth" | "oidc" => "external".into(),
+            "off" | "none" => "disabled".into(),
+            _ => item.to_ascii_lowercase().replace('-', "_"),
+        };
+    }
+    if let Some(item) = value("OSB_ADMIN_SESSION_DAYS") {
+        config.admin.session_days = item
+            .parse::<i64>()
+            .context("OSB_ADMIN_SESSION_DAYS must be an integer")?;
+    }
+    if let Some(item) = value("OSB_ADMIN_ACCESS_KEY_PHC_B64") {
+        ensure!(
+            item.len() <= 8_192,
+            "OSB_ADMIN_ACCESS_KEY_PHC_B64 is too large"
+        );
+        let decoded = BASE64_STANDARD
+            .decode(&item)
+            .context("OSB_ADMIN_ACCESS_KEY_PHC_B64 must be valid Base64")?;
+        let decoded = String::from_utf8(decoded)
+            .context("OSB_ADMIN_ACCESS_KEY_PHC_B64 must decode to UTF-8 PHC text")?;
+        ensure!(
+            (32..=4_096).contains(&decoded.len())
+                && decoded.starts_with("$argon2id$")
+                && !decoded.chars().any(char::is_control),
+            "OSB_ADMIN_ACCESS_KEY_PHC_B64 must decode to a bounded Argon2id PHC credential"
+        );
+        config.admin_access_key_phc_present = true;
+    }
+    let external_adapter = value("OSB_EXTERNAL_ADAPTER");
+    let external_issuer_url = value("OSB_EXTERNAL_ISSUER_URL");
+    let external_client_id = value("OSB_EXTERNAL_CLIENT_ID");
+    let external_owner_subject = value("OSB_EXTERNAL_OWNER_SUBJECT");
+    let external_client_secret = value("OSB_EXTERNAL_CLIENT_SECRET");
+    let external_label = value("OSB_EXTERNAL_LABEL");
+    let external_requested = config.admin.external.is_some()
+        || external_adapter.is_some()
+        || external_issuer_url.is_some()
+        || external_client_id.is_some()
+        || external_owner_subject.is_some()
+        || external_client_secret.is_some();
+    if external_requested {
+        if let Some(secret) = external_client_secret {
+            ensure!(
+                (32..=4_096).contains(&secret.len()) && !secret.chars().any(char::is_control),
+                "OSB_EXTERNAL_CLIENT_SECRET must be 32-4096 non-control bytes"
+            );
+        }
+        let external = config.admin.external.get_or_insert_with(Default::default);
+        if let Some(item) = external_adapter {
+            external.adapter = Some(item.to_ascii_lowercase());
+        }
+        if let Some(item) = external_issuer_url {
+            external.issuer_url = Some(item);
+        }
+        if let Some(item) = external_client_id {
+            external.client_id = Some(item);
+        }
+        if let Some(item) = external_owner_subject {
+            external.owner_subject = Some(item);
+        }
+        if let Some(item) = external_label {
+            external.label = Some(item);
+        }
+    }
     if let Some(item) = value("OSB_COMMENTS") {
         config.community.comments = doctor_bool("OSB_COMMENTS", &item)?;
     }
@@ -960,6 +1299,41 @@ fn doctor_bool(name: &str, value: &str) -> Result<bool> {
         "0" | "false" | "no" | "off" => Ok(false),
         _ => bail!("{name} must be true/false, yes/no, on/off, or 1/0"),
     }
+}
+
+fn doctor_external_admin_is_valid(external: &DoctorExternalAdmin) -> bool {
+    external
+        .adapter
+        .as_deref()
+        .unwrap_or("oidc")
+        .eq_ignore_ascii_case("oidc")
+        && external
+            .issuer_url
+            .as_deref()
+            .and_then(|raw| Url::parse(raw).ok())
+            .is_some_and(|url| external_issuer_url_is_safe(&url))
+        && external
+            .client_id
+            .as_deref()
+            .is_some_and(|value| bounded_external_text_is_valid(value, 512))
+        && external
+            .owner_subject
+            .as_deref()
+            .is_some_and(|value| bounded_external_text_is_valid(value, 512))
+        && bounded_external_text_is_valid(
+            external
+                .label
+                .as_deref()
+                .unwrap_or("외부 계정으로 계속하기"),
+            80,
+        )
+}
+
+fn bounded_external_text_is_valid(value: &str, maximum: usize) -> bool {
+    value.trim() == value
+        && !value.is_empty()
+        && value.len() <= maximum
+        && !value.chars().any(char::is_control)
 }
 
 fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
@@ -1086,6 +1460,52 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
             "authentication intent is unknown".into()
         },
         remediation: (!auth_ok).then(|| "choose local, oauth, local_and_oauth, or disabled".into()),
+    });
+    let admin_mode_ok = matches!(
+        config.admin.auth.as_str(),
+        "access_key" | "external" | "disabled"
+    );
+    let admin_material_ok = match config.admin.auth.as_str() {
+        "access_key" => config.admin_access_key_phc_present && config.admin.external.is_none(),
+        "external" => {
+            !config.admin_access_key_phc_present
+                && config
+                    .admin
+                    .external
+                    .as_ref()
+                    .is_some_and(doctor_external_admin_is_valid)
+        }
+        "disabled" => !config.admin_access_key_phc_present && config.admin.external.is_none(),
+        _ => false,
+    };
+    let admin_delivery_ok = config.semantic.intent != "delivery" || config.admin.auth == "disabled";
+    let admin_transport_ok = config.admin.auth == "disabled"
+        || Url::parse(&config.server.public_url)
+            .is_ok_and(|url| url.scheme() == "https" || is_loopback_url(&url));
+    let admin_ok = admin_mode_ok
+        && admin_material_ok
+        && admin_delivery_ok
+        && admin_transport_ok
+        && (1..=365).contains(&config.admin.session_days);
+    checks.push(DoctorCheck {
+        id: "admin.control_plane",
+        status: if admin_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        summary: if admin_ok {
+            format!(
+                "admin auth={} with {} day sessions",
+                config.admin.auth, config.admin.session_days
+            )
+        } else {
+            "administrator auth mode and its credential/provider material disagree".into()
+        },
+        remediation: (!admin_ok).then(|| {
+            "choose access_key, external, or disabled and provide only that module's required settings"
+                .into()
+        }),
     });
     checks.push(DoctorCheck {
         id: "discovery.agent_text",
@@ -1337,6 +1757,11 @@ mod tests {
             intent: Intent::Personal,
             public_url: "http://localhost:8787".into(),
             auth: None,
+            admin_auth: None,
+            external_issuer_url: None,
+            external_client_id: None,
+            external_owner_subject: None,
+            external_label: "외부 계정으로 계속하기".into(),
             registration: Toggle::Disabled,
             comments: None,
             collaboration: Toggle::Disabled,
@@ -1356,7 +1781,8 @@ mod tests {
         let root = tempdir().unwrap();
         bootstrap(personal(root.path().to_owned())).unwrap();
         let config = fs::read_to_string(root.path().join("config.toml")).unwrap();
-        assert!(config.contains("schema_version = \"open-soverign-blog/1\""));
+        assert!(config.contains("schema_version = \"open-soverign-blog/2\""));
+        assert!(config.contains("[admin]\nauth = \"access_key\""));
         assert!(config.contains("required = true"));
         assert!(config.contains("managed_backups = true"));
         assert!(!config.to_ascii_lowercase().contains("password"));
@@ -1382,17 +1808,37 @@ mod tests {
         assert_eq!(signing_key.len(), 64);
         assert!(signing_key.bytes().all(|byte| byte.is_ascii_hexdigit()));
         assert_ne!(signing_key, password);
+        let access_phc = environment
+            .lines()
+            .find_map(|line| line.strip_prefix("OSB_ADMIN_ACCESS_KEY_PHC_B64="))
+            .unwrap();
+        assert!(!access_phc.is_empty());
+        let decoded = BASE64_STANDARD.decode(access_phc).unwrap();
+        assert!(
+            String::from_utf8(decoded)
+                .unwrap()
+                .starts_with("$argon2id$")
+        );
+        let plaintext_key = fs::read_to_string(root.path().join("admin-access-key.txt")).unwrap();
+        assert_eq!(plaintext_key.trim().len(), 43);
+        assert!(!environment.contains(plaintext_key.trim()));
+        assert_eq!(
+            fs::read_to_string(root.path().join(".gitignore")).unwrap(),
+            GENERATED_GITIGNORE
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            assert_eq!(
-                fs::metadata(root.path().join(".env"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            for name in [".env", "admin-access-key.txt"] {
+                assert_eq!(
+                    fs::metadata(root.path().join(name))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
         }
         let manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(root.path().join("osb.intent.json")).unwrap())
@@ -1413,6 +1859,108 @@ mod tests {
         bootstrap(personal(root.path().to_owned())).unwrap();
         let error = bootstrap(personal(root.path().to_owned())).unwrap_err();
         assert!(error.to_string().contains("refusing to overwrite"));
+    }
+
+    #[test]
+    fn bootstrap_preserves_an_existing_safe_operator_gitignore() {
+        let root = tempdir().unwrap();
+        let existing = "operator-rule\n/.env\n/admin-access-key.txt\n";
+        fs::write(root.path().join(".gitignore"), existing).unwrap();
+        bootstrap(personal(root.path().to_owned())).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join(".gitignore")).unwrap(),
+            existing
+        );
+    }
+
+    #[test]
+    fn bootstrap_fails_before_creating_secrets_when_gitignore_is_unsafe() {
+        for (existing, missing) in [
+            (".env\noperator-rule\n", "admin-access-key.txt"),
+            ("admin-access-key.txt\noperator-rule\n", ".env"),
+        ] {
+            let root = tempdir().unwrap();
+            fs::write(root.path().join(".gitignore"), existing).unwrap();
+            let error = bootstrap(personal(root.path().to_owned())).unwrap_err();
+            assert!(error.to_string().contains(missing));
+            for name in [
+                "config.toml",
+                ".env",
+                "admin-access-key.txt",
+                "custom.css",
+                "osb.intent.json",
+                ".osb-backups",
+            ] {
+                assert!(!root.path().join(name).exists(), "unexpected {name}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bootstrap_rejects_a_symlinked_gitignore_before_creating_secrets() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().unwrap();
+        let target = root.path().join("operator-gitignore");
+        fs::write(&target, GENERATED_GITIGNORE).unwrap();
+        symlink(&target, root.path().join(".gitignore")).unwrap();
+        let error = bootstrap(personal(root.path().to_owned())).unwrap_err();
+        assert!(error.to_string().contains("regular file"));
+        assert!(!root.path().join(".env").exists());
+        assert!(!root.path().join("admin-access-key.txt").exists());
+    }
+
+    #[test]
+    fn administrator_auth_profiles_are_explicit_and_non_overlapping() {
+        let disabled_root = tempdir().unwrap();
+        let mut disabled = personal(disabled_root.path().to_owned());
+        disabled.admin_auth = Some(AdminAuthChoice::Disabled);
+        bootstrap(disabled).unwrap();
+        let disabled_config = fs::read_to_string(disabled_root.path().join("config.toml")).unwrap();
+        assert!(disabled_config.contains("[admin]\nauth = \"disabled\""));
+        assert!(!disabled_root.path().join("admin-access-key.txt").exists());
+        let disabled_env = fs::read_to_string(disabled_root.path().join(".env")).unwrap();
+        assert!(disabled_env.contains("OSB_ADMIN_ACCESS_KEY_PHC_B64=\n"));
+
+        let external_root = tempdir().unwrap();
+        let mut external = personal(external_root.path().to_owned());
+        external.admin_auth = Some(AdminAuthChoice::External);
+        external.public_url = "https://blog.example".into();
+        external.external_issuer_url = Some("https://identity.example/realm/blog".into());
+        external.external_client_id = Some("open-soverign-blog".into());
+        external.external_owner_subject = Some("stable-owner-subject".into());
+        external.external_label = "Identity login".into();
+        bootstrap(external).unwrap();
+        let external_config = fs::read_to_string(external_root.path().join("config.toml")).unwrap();
+        assert!(external_config.contains("auth = \"external\""));
+        assert!(external_config.contains("[admin.external]"));
+        assert!(external_config.contains("owner_subject = \"stable-owner-subject\""));
+        assert!(!external_root.path().join("admin-access-key.txt").exists());
+    }
+
+    #[test]
+    fn external_options_are_rejected_outside_the_external_profile() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.external_issuer_url = Some("https://identity.example".into());
+        assert!(bootstrap(args).is_err());
+        assert!(!root.path().join("config.toml").exists());
+    }
+
+    #[test]
+    fn external_issuer_rejects_embedded_credentials_before_writing_files() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.admin_auth = Some(AdminAuthChoice::External);
+        args.public_url = "https://blog.example".into();
+        args.external_issuer_url = Some("https://user:secret@identity.example/realm/blog".into());
+        args.external_client_id = Some("open-soverign-blog".into());
+        args.external_owner_subject = Some("stable-owner-subject".into());
+        let error = bootstrap(args).unwrap_err();
+        assert!(error.to_string().contains("without credentials"));
+        assert!(!root.path().join("config.toml").exists());
+        assert!(!root.path().join(".env").exists());
     }
 
     #[test]
@@ -1487,6 +2035,9 @@ mod tests {
                 database = "/data/blog.sqlite3"
                 blob_directory = "/data/blobs"
                 profile = "durable"
+                [admin]
+                auth = "disabled"
+                session_days = 30
                 [community]
                 auth = "local"
                 [deployment]
@@ -1508,6 +2059,17 @@ mod tests {
             ("OSB_REDIS_SENTINELS", ""),
             ("OSB_COMMENTS", "yes"),
             ("OSB_COLLABORATION", "on"),
+            ("OSB_ADMIN_AUTH", "external"),
+            ("OSB_ADMIN_SESSION_DAYS", "45"),
+            ("OSB_EXTERNAL_ADAPTER", "OIDC"),
+            ("OSB_EXTERNAL_ISSUER_URL", "https://identity.example/realm"),
+            ("OSB_EXTERNAL_CLIENT_ID", "blog-client"),
+            ("OSB_EXTERNAL_OWNER_SUBJECT", "stable-owner-subject"),
+            ("OSB_EXTERNAL_LABEL", "Identity login"),
+            (
+                "OSB_EXTERNAL_CLIENT_SECRET",
+                "0123456789abcdef0123456789abcdef",
+            ),
         ]);
         apply_environment_overrides_with(&mut config, |name| {
             overrides.get(name).map(|value| (*value).to_owned())
@@ -1522,5 +2084,69 @@ mod tests {
         assert_eq!(config.redis.sentinel_urls, ["redis://sentinel:26379/"]);
         assert!(config.community.comments);
         assert!(config.community.collaboration);
+        assert_eq!(config.admin.auth, "external");
+        assert_eq!(config.admin.session_days, 45);
+        let external = config.admin.external.as_ref().unwrap();
+        assert_eq!(external.adapter.as_deref(), Some("oidc"));
+        assert_eq!(
+            external.issuer_url.as_deref(),
+            Some("https://identity.example/realm")
+        );
+        assert_eq!(external.client_id.as_deref(), Some("blog-client"));
+        assert_eq!(
+            external.owner_subject.as_deref(),
+            Some("stable-owner-subject")
+        );
+        assert_eq!(external.label.as_deref(), Some("Identity login"));
+        let mut checks = Vec::new();
+        check_semantics(&config, &mut checks);
+        assert_eq!(
+            checks
+                .iter()
+                .find(|check| check.id == "admin.control_plane")
+                .unwrap()
+                .status,
+            CheckStatus::Pass
+        );
+    }
+
+    #[test]
+    fn doctor_rejects_the_same_admin_module_conflicts_as_runtime() {
+        let mut config: DoctorConfig = toml::from_str(
+            r#"
+                schema_version = "open-soverign-blog/2"
+                [semantic]
+                intent = "personal"
+                [server]
+                public_url = "https://blog.example"
+                [admin]
+                auth = "access_key"
+                session_days = 30
+            "#,
+        )
+        .unwrap();
+        let phc = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA";
+        let encoded = BASE64_STANDARD.encode(phc);
+        let overrides = std::collections::BTreeMap::from([
+            ("OSB_ADMIN_ACCESS_KEY_PHC_B64", encoded.as_str()),
+            ("OSB_EXTERNAL_ISSUER_URL", "https://identity.example"),
+            ("OSB_EXTERNAL_CLIENT_ID", "blog-client"),
+            ("OSB_EXTERNAL_OWNER_SUBJECT", "stable-owner-subject"),
+            ("OSB_ADMIN_SESSION_DAYS", "999"),
+        ]);
+        apply_environment_overrides_with(&mut config, |name| {
+            overrides.get(name).map(|value| (*value).to_owned())
+        })
+        .unwrap();
+        let mut checks = Vec::new();
+        check_semantics(&config, &mut checks);
+        assert_eq!(
+            checks
+                .iter()
+                .find(|check| check.id == "admin.control_plane")
+                .unwrap()
+                .status,
+            CheckStatus::Fail
+        );
     }
 }

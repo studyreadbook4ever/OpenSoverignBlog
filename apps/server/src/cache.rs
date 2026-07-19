@@ -47,6 +47,13 @@ if epoch == ARGV[1] then
 end
 return 0
 "#;
+const FIXED_WINDOW_LIMIT_SCRIPT: &str = r#"
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count <= tonumber(ARGV[2]) and 1 or 0
+"#;
 
 #[derive(Clone)]
 pub struct SemanticCache {
@@ -260,6 +267,50 @@ impl SemanticCache {
             }
             Err(source) => {
                 let error = anyhow!(source).context("Redis PING failed");
+                self.handle_command_error(generation, &error).await;
+                Err(error)
+            }
+        }
+    }
+
+    /// A small distributed security primitive kept separate from response
+    /// caching. Failure is returned to the caller so authentication can fail
+    /// closed without affecting anonymous public reads.
+    pub async fn admit_fixed_window(
+        &self,
+        bucket: &str,
+        limit: u64,
+        window_seconds: u64,
+    ) -> Result<bool> {
+        if bucket.is_empty()
+            || bucket.len() > 96
+            || !bucket
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b':'))
+            || limit == 0
+            || window_seconds == 0
+        {
+            return Err(anyhow!("invalid fixed-window limiter parameters"));
+        }
+        let lease = self.manager().await?;
+        let generation = lease.generation;
+        let mut manager = lease.manager;
+        let key = format!("{}:security:rate:{bucket}", self.inner.settings.namespace);
+        let result: redis::RedisResult<i64> = redis::cmd("EVAL")
+            .arg(FIXED_WINDOW_LIMIT_SCRIPT)
+            .arg(1)
+            .arg(key)
+            .arg(window_seconds)
+            .arg(limit)
+            .query_async(&mut manager)
+            .await;
+        match result {
+            Ok(admitted) => {
+                self.record_success().await;
+                Ok(admitted == 1)
+            }
+            Err(error) => {
+                let error = anyhow!(error).context("Redis security rate-limit check failed");
                 self.handle_command_error(generation, &error).await;
                 Err(error)
             }

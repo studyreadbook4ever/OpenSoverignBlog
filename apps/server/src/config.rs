@@ -1,6 +1,10 @@
 use std::{env, fs, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result};
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
+};
 use osb_feature_code_runner_client::{
     BearerToken, OutputMode, ProfileRegistry, RemoteRunnerConfig, RunLimits, RunnerProfile,
 };
@@ -9,7 +13,8 @@ use url::Url;
 use uuid::Uuid;
 
 const DEFAULT_SITE_ID: &str = "00000000-0000-7000-8000-000000000001";
-const CONFIG_SCHEMA_VERSION: &str = "open-soverign-blog/1";
+const CONFIG_SCHEMA_VERSION: &str = "open-soverign-blog/2";
+const LEGACY_CONFIG_SCHEMA_VERSION: &str = "open-soverign-blog/1";
 
 pub struct RuntimeConfig {
     pub bind: SocketAddr,
@@ -19,7 +24,12 @@ pub struct RuntimeConfig {
     pub site_id: Uuid,
     pub database: PathBuf,
     pub blob_directory: PathBuf,
+    /// Legacy per-request Bearer credential. New deployments use `admin_auth`.
     pub admin_token: Option<String>,
+    /// Dedicated, static MCP content credential loaded only from the environment.
+    pub mcp_token: Option<McpToken>,
+    pub admin_auth: AdminAuthSettings,
+    pub admin_auth_rotate: bool,
     pub cache_signing_key: Option<[u8; 32]>,
     pub requested_features: String,
     pub registration_open: bool,
@@ -37,6 +47,39 @@ pub struct RuntimeConfig {
     pub runner: Option<RunnerSettings>,
 }
 
+#[derive(Clone)]
+pub struct McpToken(String);
+
+impl McpToken {
+    fn parse(value: String) -> Result<Self> {
+        if !(32..=128).contains(&value.len())
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+            || URL_SAFE_NO_PAD.decode(value.as_bytes()).is_err()
+        {
+            anyhow::bail!(
+                "OSB_MCP_TOKEN must contain 32..=128 unpadded Base64url ASCII characters"
+            );
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for McpToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted MCP content token]")
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentIntent {
@@ -52,6 +95,78 @@ pub enum AuthMode {
     Oauth,
     LocalAndOauth,
     Disabled,
+}
+
+/// Authentication for the instance control plane. This is deliberately
+/// separate from `AuthMode`, which governs reader/member accounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminAuthMode {
+    AccessKey,
+    External,
+    Disabled,
+}
+
+impl AdminAuthMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccessKey => "access_key",
+            Self::External => "external",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AdminAuthSettings {
+    pub mode: AdminAuthMode,
+    /// Argon2id PHC decoded from the environment-only Base64 credential.
+    pub access_key_phc: Option<String>,
+    pub external: Option<ExternalAdminSettings>,
+    pub session_days: i64,
+}
+
+impl std::fmt::Debug for AdminAuthSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdminAuthSettings")
+            .field("mode", &self.mode)
+            .field(
+                "access_key_phc",
+                &self.access_key_phc.as_ref().map(|_| "[redacted]"),
+            )
+            .field("external", &self.external)
+            .field("session_days", &self.session_days)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct ExternalAdminSettings {
+    pub adapter: String,
+    pub issuer_url: Url,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    /// Exact stable OIDC `sub` allowed to become the primary instance owner.
+    pub owner_subject: String,
+    pub label: String,
+}
+
+impl std::fmt::Debug for ExternalAdminSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExternalAdminSettings")
+            .field("adapter", &self.adapter)
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[redacted]"),
+            )
+            .field("owner_subject", &"[redacted stable subject]")
+            .field("label", &self.label)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -116,6 +231,7 @@ pub struct RunnerSettings {
 impl RuntimeConfig {
     pub fn load() -> Result<Self> {
         let (file, source) = load_file()?;
+        let config_schema_version = file.schema_version.clone();
         let bind: SocketAddr = env_value("OSB_BIND")
             .or(file.server.bind)
             .unwrap_or_else(|| "127.0.0.1:8787".into())
@@ -158,6 +274,16 @@ impl RuntimeConfig {
         if let Some(token) = &admin_token {
             validate_secret("security.admin_token/OSB_ADMIN_TOKEN", token)?;
         }
+        validate_legacy_admin_token_policy(
+            config_schema_version.as_deref(),
+            admin_token.is_some(),
+        )?;
+        let mcp_token = env_value("OSB_MCP_TOKEN")
+            .map(McpToken::parse)
+            .transpose()?;
+        let access_key_phc = env_value("OSB_ADMIN_ACCESS_KEY_PHC_B64")
+            .map(|encoded| decode_access_key_phc(&encoded))
+            .transpose()?;
         let cache_signing_key = env_value("OSB_CACHE_SIGNING_KEY")
             .map(|value| parse_cache_signing_key(&value))
             .transpose()?;
@@ -190,8 +316,81 @@ impl RuntimeConfig {
             .or(file.community.auth)
             .unwrap_or(match deployment_intent {
                 DeploymentIntent::Delivery => AuthMode::Disabled,
-                DeploymentIntent::Personal | DeploymentIntent::Community => AuthMode::Local,
+                DeploymentIntent::Personal => AuthMode::Disabled,
+                DeploymentIntent::Community => AuthMode::Local,
             });
+        let admin_auth_mode = env_value("OSB_ADMIN_AUTH")
+            .map(|value| parse_admin_auth_mode("OSB_ADMIN_AUTH", &value))
+            .transpose()?
+            .or(file.admin.auth)
+            .unwrap_or(if matches!(deployment_intent, DeploymentIntent::Delivery) {
+                AdminAuthMode::Disabled
+            } else if access_key_phc.is_some() {
+                AdminAuthMode::AccessKey
+            } else {
+                // Source checkouts stay safely public-read-only until bootstrap
+                // explicitly materializes an administrator module and secret.
+                AdminAuthMode::Disabled
+            });
+        let admin_auth_rotate = env_bool("OSB_ADMIN_AUTH_ROTATE")?.unwrap_or(false);
+        let admin_session_days = env_value("OSB_ADMIN_SESSION_DAYS")
+            .map(|value| {
+                value
+                    .parse::<i64>()
+                    .context("OSB_ADMIN_SESSION_DAYS must be an integer")
+            })
+            .transpose()?
+            .or(file.admin.session_days)
+            .unwrap_or(30);
+        if !(1..=365).contains(&admin_session_days) {
+            anyhow::bail!("admin.session_days must be between 1 and 365");
+        }
+        let external_admin = resolve_external_admin(file.admin.external)?;
+        match admin_auth_mode {
+            AdminAuthMode::AccessKey => {
+                if access_key_phc.is_none() {
+                    anyhow::bail!(
+                        "admin.auth=\"access_key\" requires OSB_ADMIN_ACCESS_KEY_PHC_B64"
+                    );
+                }
+                if external_admin.is_some() {
+                    anyhow::bail!(
+                        "admin.external cannot be configured when admin.auth=\"access_key\""
+                    );
+                }
+            }
+            AdminAuthMode::External => {
+                if access_key_phc.is_some() {
+                    anyhow::bail!(
+                        "OSB_ADMIN_ACCESS_KEY_PHC_B64 cannot be set when admin.auth=\"external\""
+                    );
+                }
+                if external_admin.is_none() {
+                    anyhow::bail!("admin.auth=\"external\" requires [admin.external]");
+                }
+            }
+            AdminAuthMode::Disabled => {
+                if access_key_phc.is_some() || external_admin.is_some() {
+                    anyhow::bail!(
+                        "admin credentials/providers are configured while admin.auth=\"disabled\""
+                    );
+                }
+            }
+        }
+        if !matches!(admin_auth_mode, AdminAuthMode::Disabled)
+            && public_url.scheme() != "https"
+            && !is_loopback_url(&public_url)
+        {
+            anyhow::bail!(
+                "remote administrator authentication requires an https public URL; plain HTTP is allowed only on localhost/loopback"
+            );
+        }
+        let admin_auth = AdminAuthSettings {
+            mode: admin_auth_mode,
+            access_key_phc,
+            external: external_admin,
+            session_days: admin_session_days,
+        };
         let comments_enabled = env_bool("OSB_COMMENTS")?
             .or(file.community.comments)
             .unwrap_or(matches!(deployment_intent, DeploymentIntent::Community));
@@ -203,7 +402,8 @@ impl RuntimeConfig {
             ("rbac", collaboration_enabled),
             (
                 "external_auth",
-                matches!(auth_mode, AuthMode::Oauth | AuthMode::LocalAndOauth),
+                matches!(auth_mode, AuthMode::Oauth | AuthMode::LocalAndOauth)
+                    || matches!(admin_auth.mode, AdminAuthMode::External),
             ),
         ] {
             if enabled {
@@ -237,16 +437,28 @@ impl RuntimeConfig {
         if delivery_only && auth_mode != AuthMode::Disabled {
             anyhow::bail!("delivery intent requires community.auth=\"disabled\"");
         }
+        if delivery_only && admin_auth.mode != AdminAuthMode::Disabled {
+            anyhow::bail!("delivery intent requires admin.auth=\"disabled\"");
+        }
+        if delivery_only && admin_auth_rotate {
+            anyhow::bail!(
+                "OSB_ADMIN_AUTH_ROTATE cannot run on a delivery-only read-only deployment"
+            );
+        }
+        validate_mcp_token_policy(
+            mcp_token.as_ref(),
+            admin_token.as_deref(),
+            delivery_only,
+            admin_auth.mode,
+        )?;
         if !delivery_only && matches!(auth_mode, AuthMode::Oauth) {
             anyhow::bail!(
                 "oauth-only control planes are unavailable until a verified adapter is composed; use local or local_and_oauth"
             );
         }
-        if !delivery_only && matches!(auth_mode, AuthMode::Disabled) && admin_token.is_none() {
-            anyhow::bail!(
-                "a writable intent needs local authentication or OSB_ADMIN_TOKEN; use delivery intent for read-only service"
-            );
-        }
+        // A writable origin may intentionally expose no remote control plane.
+        // Public reads continue while writes remain available only to local
+        // maintenance jobs and future separately-scoped automation modules.
         if registration_open && !matches!(auth_mode, AuthMode::Local | AuthMode::LocalAndOauth) {
             anyhow::bail!("open registration requires local authentication");
         }
@@ -278,6 +490,9 @@ impl RuntimeConfig {
             database,
             blob_directory,
             admin_token,
+            mcp_token,
+            admin_auth,
+            admin_auth_rotate,
             cache_signing_key,
             requested_features,
             registration_open,
@@ -295,6 +510,27 @@ impl RuntimeConfig {
             runner,
         })
     }
+}
+
+fn validate_mcp_token_policy(
+    mcp_token: Option<&McpToken>,
+    legacy_admin_token: Option<&str>,
+    delivery_only: bool,
+    admin_auth_mode: AdminAuthMode,
+) -> Result<()> {
+    let Some(mcp_token) = mcp_token else {
+        return Ok(());
+    };
+    if delivery_only {
+        anyhow::bail!("OSB_MCP_TOKEN cannot be enabled on a delivery-only deployment");
+    }
+    if admin_auth_mode == AdminAuthMode::Disabled {
+        anyhow::bail!("OSB_MCP_TOKEN requires an active administrator authentication module");
+    }
+    if legacy_admin_token.is_some_and(|legacy| legacy == mcp_token.as_str()) {
+        anyhow::bail!("OSB_MCP_TOKEN must be distinct from the legacy OSB_ADMIN_TOKEN");
+    }
+    Ok(())
 }
 
 fn append_feature(current: &str, feature: &str) -> String {
@@ -332,6 +568,61 @@ fn parse_auth_mode(name: &str, value: &str) -> Result<AuthMode> {
     }
 }
 
+fn parse_admin_auth_mode(name: &str, value: &str) -> Result<AdminAuthMode> {
+    match value.to_ascii_lowercase().replace('-', "_").as_str() {
+        "access_key" | "key" => Ok(AdminAuthMode::AccessKey),
+        "external" | "oauth" | "oidc" => Ok(AdminAuthMode::External),
+        "disabled" | "off" | "none" => Ok(AdminAuthMode::Disabled),
+        _ => anyhow::bail!("{name} must be access_key, external, or disabled"),
+    }
+}
+
+fn validate_legacy_admin_token_policy(
+    schema_version: Option<&str>,
+    token_present: bool,
+) -> Result<()> {
+    if !token_present {
+        return Ok(());
+    }
+    if schema_version == Some(CONFIG_SCHEMA_VERSION) {
+        anyhow::bail!(
+            "schema v2 rejects security.admin_token/OSB_ADMIN_TOKEN because it bypasses the selected administrator authentication module"
+        );
+    }
+    tracing::warn!(
+        schema_version = schema_version.unwrap_or("missing"),
+        "legacy configuration is temporarily retaining OSB_ADMIN_TOKEN compatibility; migrate to schema v2 administrator authentication"
+    );
+    Ok(())
+}
+
+fn decode_access_key_phc(encoded: &str) -> Result<String> {
+    if encoded.len() > 8_192 {
+        anyhow::bail!("OSB_ADMIN_ACCESS_KEY_PHC_B64 is too large");
+    }
+    let decoded = BASE64_STANDARD
+        .decode(encoded)
+        .context("OSB_ADMIN_ACCESS_KEY_PHC_B64 must be standard Base64")?;
+    let phc = String::from_utf8(decoded)
+        .context("OSB_ADMIN_ACCESS_KEY_PHC_B64 must decode to UTF-8 PHC text")?;
+    if !(32..=4_096).contains(&phc.len())
+        || !phc.starts_with("$argon2id$")
+        || phc.chars().any(char::is_control)
+    {
+        anyhow::bail!(
+            "OSB_ADMIN_ACCESS_KEY_PHC_B64 must decode to a bounded Argon2id PHC credential"
+        );
+    }
+    Ok(phc)
+}
+
+fn is_loopback_url(url: &Url) -> bool {
+    matches!(
+        url.host_str(),
+        Some("localhost") | Some("127.0.0.1") | Some("[::1]") | Some("::1")
+    )
+}
+
 fn env_value(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
@@ -353,6 +644,10 @@ fn load_file() -> Result<(FileConfig, Option<PathBuf>)> {
         .with_context(|| format!("invalid configuration file {}", path.display()))?;
     match parsed.schema_version.as_deref() {
         Some(CONFIG_SCHEMA_VERSION) => {}
+        Some(LEGACY_CONFIG_SCHEMA_VERSION) => tracing::warn!(
+            path = %path.display(),
+            "configuration schema v1 is supported for migration; bootstrap a v2 deployment to select modular administrator authentication"
+        ),
         Some(other) => {
             anyhow::bail!("unsupported config schema {other:?}; expected {CONFIG_SCHEMA_VERSION:?}")
         }
@@ -372,6 +667,7 @@ struct FileConfig {
     server: ServerConfig,
     storage: StorageConfig,
     security: SecurityConfig,
+    admin: AdminConfig,
     community: CommunityConfig,
     deployment: DeploymentConfig,
     redis: RedisFileConfig,
@@ -380,6 +676,111 @@ struct FileConfig {
     operations: OperationsFileConfig,
     features: Option<FeaturesConfig>,
     runner: Option<RunnerFileConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AdminConfig {
+    auth: Option<AdminAuthMode>,
+    session_days: Option<i64>,
+    external: Option<ExternalAdminFileConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ExternalAdminFileConfig {
+    adapter: Option<String>,
+    issuer_url: Option<String>,
+    client_id: Option<String>,
+    owner_subject: Option<String>,
+    label: Option<String>,
+}
+
+fn resolve_external_admin(
+    file: Option<ExternalAdminFileConfig>,
+) -> Result<Option<ExternalAdminSettings>> {
+    let requested = file.is_some()
+        || [
+            "OSB_EXTERNAL_ADAPTER",
+            "OSB_EXTERNAL_ISSUER_URL",
+            "OSB_EXTERNAL_CLIENT_ID",
+            "OSB_EXTERNAL_OWNER_SUBJECT",
+            "OSB_EXTERNAL_CLIENT_SECRET",
+        ]
+        .iter()
+        .any(|name| env_value(name).is_some());
+    if !requested {
+        return Ok(None);
+    }
+    let file = file.unwrap_or_default();
+    let adapter = env_value("OSB_EXTERNAL_ADAPTER")
+        .or(file.adapter)
+        .unwrap_or_else(|| "oidc".into())
+        .to_ascii_lowercase();
+    if adapter != "oidc" {
+        anyhow::bail!(
+            "admin.external.adapter currently supports oidc; Firebase/email adapters plug into the same external identity boundary"
+        );
+    }
+    let issuer_url = Url::parse(
+        &env_value("OSB_EXTERNAL_ISSUER_URL")
+            .or(file.issuer_url)
+            .context("admin.external.issuer_url/OSB_EXTERNAL_ISSUER_URL is required")?,
+    )
+    .context("admin.external.issuer_url must be an absolute URL")?;
+    validate_external_issuer_url(&issuer_url)?;
+    let client_id = env_value("OSB_EXTERNAL_CLIENT_ID")
+        .or(file.client_id)
+        .context("admin.external.client_id/OSB_EXTERNAL_CLIENT_ID is required")?;
+    validate_bounded_external_text("admin.external.client_id", &client_id, 512)?;
+    let owner_subject = env_value("OSB_EXTERNAL_OWNER_SUBJECT")
+        .or(file.owner_subject)
+        .context("admin.external.owner_subject/OSB_EXTERNAL_OWNER_SUBJECT is required")?;
+    validate_bounded_external_text("admin.external.owner_subject", &owner_subject, 512)?;
+    let label = env_value("OSB_EXTERNAL_LABEL")
+        .or(file.label)
+        .unwrap_or_else(|| "외부 계정으로 계속하기".into());
+    validate_bounded_external_text("admin.external.label", &label, 80)?;
+    let client_secret = env_value("OSB_EXTERNAL_CLIENT_SECRET");
+    if let Some(secret) = &client_secret {
+        validate_secret("OSB_EXTERNAL_CLIENT_SECRET", secret)?;
+    }
+    Ok(Some(ExternalAdminSettings {
+        adapter,
+        issuer_url,
+        client_id,
+        client_secret,
+        owner_subject,
+        label,
+    }))
+}
+
+fn validate_external_issuer_url(issuer_url: &Url) -> Result<()> {
+    let transport_allowed = issuer_url.scheme() == "https"
+        || (issuer_url.scheme() == "http" && is_loopback_url(issuer_url));
+    if issuer_url.host_str().is_none()
+        || !issuer_url.username().is_empty()
+        || issuer_url.password().is_some()
+        || issuer_url.query().is_some()
+        || issuer_url.fragment().is_some()
+        || !transport_allowed
+    {
+        anyhow::bail!(
+            "admin.external.issuer_url must be HTTPS (plain HTTP is allowed only for localhost) and have no credentials, query, or fragment"
+        );
+    }
+    Ok(())
+}
+
+fn validate_bounded_external_text(name: &str, value: &str, maximum: usize) -> Result<()> {
+    if value.trim() != value
+        || value.is_empty()
+        || value.len() > maximum
+        || value.chars().any(char::is_control)
+    {
+        anyhow::bail!("{name} must be 1-{maximum} trimmed non-control bytes");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -903,6 +1304,101 @@ mod tests {
         .unwrap();
         assert_eq!(config.community.registration_open, Some(true));
         assert_eq!(config.deployment.delivery_only, Some(true));
+    }
+
+    #[test]
+    fn administrator_auth_is_an_independent_configuration_axis() {
+        let config: FileConfig = toml::from_str(
+            r#"
+                schema_version = "open-soverign-blog/2"
+                [admin]
+                auth = "external"
+                session_days = 45
+                [admin.external]
+                adapter = "oidc"
+                issuer_url = "https://identity.example/realm/blog"
+                client_id = "blog"
+                owner_subject = "stable-owner-subject"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.admin.auth, Some(AdminAuthMode::External));
+        assert_eq!(config.admin.session_days, Some(45));
+        assert!(config.admin.external.is_some());
+        assert_eq!(config.community.auth, None);
+    }
+
+    #[test]
+    fn administrator_access_key_environment_contains_only_a_phc() {
+        let phc = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA";
+        let encoded = BASE64_STANDARD.encode(phc);
+        assert_eq!(decode_access_key_phc(&encoded).unwrap(), phc);
+        assert!(decode_access_key_phc("plain-text-key").is_err());
+        assert!(decode_access_key_phc(&BASE64_STANDARD.encode("not-a-phc")).is_err());
+    }
+
+    #[test]
+    fn mcp_token_is_bounded_unpadded_base64url_and_redacted() {
+        let minimum = URL_SAFE_NO_PAD.encode([0x5a; 24]);
+        let maximum = URL_SAFE_NO_PAD.encode([0x5a; 96]);
+        assert_eq!(minimum.len(), 32);
+        assert_eq!(maximum.len(), 128);
+        let token = McpToken::parse(minimum.clone()).unwrap();
+        assert_eq!(token.as_bytes(), minimum.as_bytes());
+        assert!(!format!("{token:?}").contains(&minimum));
+        assert!(McpToken::parse(maximum).is_ok());
+        assert!(McpToken::parse(URL_SAFE_NO_PAD.encode([0x5a; 23])).is_err());
+        assert!(McpToken::parse(format!("{minimum}=")).is_err());
+        assert!(McpToken::parse("@".repeat(32)).is_err());
+        assert!(McpToken::parse("A".repeat(129)).is_err());
+    }
+
+    #[test]
+    fn mcp_token_requires_writable_active_admin_and_a_distinct_secret() {
+        let token = McpToken::parse(URL_SAFE_NO_PAD.encode([0x6b; 32])).unwrap();
+        assert!(
+            validate_mcp_token_policy(Some(&token), None, false, AdminAuthMode::AccessKey).is_ok()
+        );
+        assert!(
+            validate_mcp_token_policy(Some(&token), None, false, AdminAuthMode::External).is_ok()
+        );
+        assert!(
+            validate_mcp_token_policy(Some(&token), None, false, AdminAuthMode::Disabled).is_err()
+        );
+        assert!(
+            validate_mcp_token_policy(Some(&token), None, true, AdminAuthMode::AccessKey).is_err()
+        );
+        assert!(
+            validate_mcp_token_policy(
+                Some(&token),
+                Some(token.as_str()),
+                false,
+                AdminAuthMode::AccessKey
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn schema_v2_rejects_the_legacy_owner_token_bypass() {
+        assert!(validate_legacy_admin_token_policy(Some(CONFIG_SCHEMA_VERSION), true).is_err());
+        assert!(
+            validate_legacy_admin_token_policy(Some(LEGACY_CONFIG_SCHEMA_VERSION), true).is_ok()
+        );
+        assert!(validate_legacy_admin_token_policy(None, true).is_ok());
+        assert!(validate_legacy_admin_token_policy(Some(CONFIG_SCHEMA_VERSION), false).is_ok());
+    }
+
+    #[test]
+    fn external_issuer_rejects_embedded_credentials() {
+        let credentialed = Url::parse("https://user:secret@identity.example/realm/blog").unwrap();
+        assert!(validate_external_issuer_url(&credentialed).is_err());
+        let non_http_loopback = Url::parse("ftp://localhost/realm/blog").unwrap();
+        assert!(validate_external_issuer_url(&non_http_loopback).is_err());
+        let local_development = Url::parse("http://127.0.0.1:9000/realm/blog").unwrap();
+        assert!(validate_external_issuer_url(&local_development).is_ok());
+        let ordinary = Url::parse("https://identity.example/realm/blog").unwrap();
+        assert!(validate_external_issuer_url(&ordinary).is_ok());
     }
 
     #[test]

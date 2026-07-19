@@ -7,6 +7,7 @@ import {
 } from "react";
 import DOMPurify from "dompurify";
 import type {
+  AdminAccessKeyMethod,
   BlogPostView,
   BlogSummary,
   Capabilities,
@@ -20,6 +21,12 @@ import type {
   ViewMode,
 } from "@opensoverignblog/sdk";
 import { useSession } from "./app";
+import {
+  adminAuthChoices,
+  isLegacyOwnerBearerMode,
+  safeAuthActionHref,
+  studioAccessFor,
+} from "./auth-policy";
 import { safeBlogStylesheetUrl } from "./site-stylesheet";
 import {
   AppLink,
@@ -31,6 +38,7 @@ import {
   initials,
   isNotFound,
   navigate,
+  publicPath,
   usePageTitle,
 } from "./lib";
 
@@ -94,9 +102,11 @@ export function FeedPage() {
       {error ? <StatusMessage title="피드를 불러오지 못했습니다" detail={error} /> : null}
       {!loading && !error && items.length === 0 ? (
         <EmptyState
-          {...(!capabilities || capabilities.mutationMode === "read_only" ? {} : {
-            actionHref: capabilities?.mutationMode === "single_owner_token" ? "/studio" : session?.state === "authenticated" ? (session.blog ? "/studio/write" : "/onboarding") : "/login",
-            actionLabel: capabilities?.mutationMode === "single_owner_token" ? "Studio에서 시작하기" : session?.state === "authenticated" ? (session.blog ? "첫 글 쓰기" : "블로그 만들기") : "로그인하고 시작하기",
+          {...(!capabilities || studioAccessFor(capabilities) === "disabled" ? {} : {
+            actionHref: session?.state === "authenticated" ? (session.blog ? "/studio/write" : "/onboarding") : "/login",
+            actionLabel: session?.state === "authenticated"
+              ? (session.blog ? "첫 글 쓰기" : "블로그 만들기")
+              : studioAccessFor(capabilities) === "admin_only" ? "관리자로 시작하기" : "로그인하고 시작하기",
           })}
           description="아직 발행된 글이 없습니다. 작은 메모부터 시작해 보세요."
           title="첫 이야기를 기다리고 있어요"
@@ -254,7 +264,9 @@ export function ArticlePage({
   const [post, setPost] = useState<BlogPostView>();
   const [error, setError] = useState<string>();
   const legacyArticle = legacy || (
-    capabilities?.mutationMode === "single_owner_token" && handle === LEGACY_BLOG.handle
+    capabilities !== undefined
+    && isLegacyOwnerBearerMode(capabilities)
+    && handle === LEGACY_BLOG.handle
   );
   usePageTitle(post?.title ?? "글 읽기");
 
@@ -386,6 +398,7 @@ function legacyPostView(post: PostView): BlogPostView {
 }
 
 function ArticleBody({ html, capabilities }: { html: string; capabilities: Capabilities | undefined }) {
+  const { session } = useSession();
   const bodyRef = useRef<HTMLDivElement>(null);
   const [runnerProfiles, setRunnerProfiles] = useState<RunnerProfile[]>([]);
   const sanitizedHtml = useMemo(
@@ -398,14 +411,18 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
   );
 
   useEffect(() => {
-    if (!capabilities?.features.includes("code_runner") || !sessionStorage.getItem("osb.adminToken")) {
+    if (
+      !capabilities?.features.includes("code_runner")
+      || studioAccessFor(capabilities) !== "admin_only"
+      || session?.state !== "authenticated"
+    ) {
       setRunnerProfiles([]);
       return;
     }
     const controller = new AbortController();
     void client.codeRunnerProfiles(controller.signal).then(setRunnerProfiles).catch(() => setRunnerProfiles([]));
     return () => controller.abort();
-  }, [capabilities]);
+  }, [capabilities, session]);
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -478,7 +495,8 @@ function CommentSection({ postId }: { postId: string }) {
   const [body, setBody] = useState("");
   const [status, setStatus] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const commentsWritable = capabilities?.mutationMode === "authenticated_members";
+  const commentsWritable = capabilities !== undefined
+    && studioAccessFor(capabilities) === "members";
 
   useEffect(() => {
     const controller = new AbortController();
@@ -534,9 +552,9 @@ function CommentSection({ postId }: { postId: string }) {
         </form>
       ) : !capabilities ? (
         <div className="comment-signin"><p>댓글 기능을 확인하는 중입니다.</p></div>
-      ) : capabilities.mutationMode === "read_only" ? (
+      ) : studioAccessFor(capabilities) === "disabled" ? (
         <div className="comment-signin"><p>이 배포본은 공개 읽기 전용이라 새 댓글을 받지 않습니다.</p></div>
-      ) : capabilities.mutationMode === "single_owner_token" ? (
+      ) : studioAccessFor(capabilities) === "admin_only" ? (
         <div className="comment-signin"><p>단일 소유자 프로필에서는 커뮤니티 댓글을 사용하지 않습니다.</p></div>
       ) : (
         <div className="comment-signin"><p>로그인하면 이 글에 의견을 남길 수 있습니다.</p><AppLink className="button button-ghost" href="/login">로그인</AppLink></div>
@@ -566,6 +584,7 @@ export function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
+  const [accessKey, setAccessKey] = useState("");
   usePageTitle(mode === "login" ? "로그인" : "가입");
 
   if (!capabilities) {
@@ -574,17 +593,43 @@ export function LoginPage() {
       : <PageLoading label="로그인 기능을 확인하는 중" />;
   }
 
-  if (capabilities?.mutationMode === "single_owner_token") {
-    return <EmptyState actionHref="/studio" actionLabel="Studio 열기" description="이 서버는 로컬 계정 대신 단일 소유자 토큰으로 글쓰기를 보호합니다." title="소유자 Studio를 사용하세요" />;
-  }
+  const studioAccess = studioAccessFor(capabilities);
+  const authChoices = adminAuthChoices(capabilities);
+  const accessKeyMethod = authChoices.accessKeyMethods[0];
+  const localAccounts = studioAccess === "members"
+    && capabilities.mutationMechanisms.includes("session");
 
-  if (capabilities?.mutationMode === "read_only") {
+  if (studioAccess === "disabled") {
     return (
       <EmptyState
         actionHref="/"
         actionLabel="공개 글 읽기"
         description="이 인스턴스는 캐시 가능한 공개 읽기 전용으로 배포되어 로그인과 글쓰기를 제공하지 않습니다."
         title="읽기 전용 배포본입니다"
+      />
+    );
+  }
+
+  if (!localAccounts && authChoices.status !== "ready") {
+    return (
+      <EmptyState
+        actionHref="/"
+        actionLabel="공개 글 읽기"
+        description={authChoices.status === "misconfigured"
+          ? "관리자 인증 모듈의 설정이 완료되지 않았습니다. 공개 글은 계속 읽을 수 있습니다."
+          : "이 서버에는 사용할 수 있는 관리자 인증 방식이 없습니다."}
+        title="관리자 Studio를 열 수 없습니다"
+      />
+    );
+  }
+
+  if (!localAccounts && !accessKeyMethod && authChoices.externalMethods.length === 0) {
+    return (
+      <EmptyState
+        actionHref="/"
+        actionLabel="공개 글 읽기"
+        description="서버가 안전하게 사용할 수 있는 관리자 인증 방법을 제공하지 않았습니다."
+        title="관리자 인증을 사용할 수 없습니다"
       />
     );
   }
@@ -623,34 +668,101 @@ export function LoginPage() {
     }
   }
 
+  async function submitAccessKey(
+    event: FormEvent<HTMLFormElement>,
+    method: AdminAccessKeyMethod,
+  ) {
+    event.preventDefault();
+    if (!accessKey || busy) return;
+    setBusy(true);
+    setStatus("관리자 권한을 확인하는 중…");
+    try {
+      const next = await client.loginWithAdminAccessKey(
+        { accessKey },
+        method.actionHref,
+      );
+      setSession(next);
+      if (next.state === "authenticated") navigate(next.blog ? "/studio" : "/onboarding");
+    } catch (reason) {
+      setStatus(asMessage(reason));
+    } finally {
+      setAccessKey("");
+      setBusy(false);
+    }
+  }
+
   const registrationOpen = session?.state === "anonymous" ? session.registrationOpen : true;
+  const adminOnly = studioAccess === "admin_only";
+  const hasAdminMethods = Boolean(accessKeyMethod || authChoices.externalMethods.length);
   return (
     <div className="auth-page">
       <section className="auth-story">
-        <p className="eyebrow">One account, your own space</p>
-        <h1>쓰는 사람의<br />자리를 만듭니다.</h1>
-        <p>광장에서 글을 발견하고, 나만의 테마로 블로그를 만들고, Markdown 원문을 온전히 소유하세요.</p>
+        <p className="eyebrow">{adminOnly ? "Private control, public reading" : "One account, your own space"}</p>
+        <h1>{adminOnly ? <>어디서든<br />내 글을 씁니다.</> : <>쓰는 사람의<br />자리를 만듭니다.</>}</h1>
+        <p>{adminOnly
+          ? "공개 글은 누구나 읽고, 검증된 관리자 세션만 Studio에서 쓰고 고칠 수 있습니다."
+          : "광장에서 글을 발견하고, 나만의 테마로 블로그를 만들고, Markdown 원문을 온전히 소유하세요."}</p>
         <div className="auth-quote" aria-hidden="true"><span>“</span><p>좋은 도구는 글보다 앞에 나서지 않는다.</p></div>
       </section>
       <section className="auth-panel" aria-labelledby="auth-title">
-        <div className="auth-tabs" role="group" aria-label="인증 방식">
-          <button aria-pressed={mode === "login"} onClick={() => setMode("login")} type="button">로그인</button>
-          <button aria-pressed={mode === "register"} disabled={!registrationOpen} onClick={() => setMode("register")} type="button">가입</button>
-        </div>
-        <h2 id="auth-title">{mode === "login" ? "다시 만나 반가워요" : "새로운 공간을 시작하세요"}</h2>
-        <p>{mode === "login" ? "이메일과 비밀번호로 계속합니다." : "OAuth 없이 로컬 계정을 만듭니다."}</p>
-        <form className="auth-form" onSubmit={(event) => void submit(event)}>
-          {mode === "register" ? (
-            <>
-              <label>표시 이름<input autoComplete="name" maxLength={80} name="displayName" required /></label>
-              <label>사용자 핸들<span className="input-prefix"><span>@</span><input autoComplete="username" maxLength={40} name="handle" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></span></label>
-            </>
-          ) : null}
-          <label>이메일<input autoComplete="email" name="email" required type="email" /></label>
-          <label>비밀번호<input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} name="password" required type="password" /></label>
-          <button className="button button-primary button-wide" disabled={busy} type="submit">{mode === "login" ? "로그인" : "계정 만들기"}</button>
-          {status ? <p className="inline-status" role="status">{status}</p> : null}
-        </form>
+        <h2 id="auth-title">{adminOnly ? "관리자 Studio 열기" : mode === "login" ? "다시 만나 반가워요" : "새로운 공간을 시작하세요"}</h2>
+        <p>{adminOnly
+          ? "서버 운영자가 켜 둔 방법 중 하나로 관리자 세션을 시작합니다."
+          : mode === "login" ? "사용할 인증 방법을 선택하세요." : "로컬 계정을 만듭니다."}</p>
+
+        {authChoices.externalMethods.length ? (
+          <div className="external-auth-methods" aria-label="외부 관리자 인증">
+            {authChoices.externalMethods.map((method) => {
+              const href = safeAuthActionHref(method);
+              return href ? <a className="button button-ghost button-wide" href={publicPath(href)} key={method.id}>{method.label}</a> : null;
+            })}
+          </div>
+        ) : null}
+
+        {accessKeyMethod ? (
+          <form className="auth-form admin-access-form" onSubmit={(event) => void submitAccessKey(event, accessKeyMethod)}>
+            {authChoices.externalMethods.length ? <div className="auth-divider"><span>또는</span></div> : null}
+            <label htmlFor="admin-access-key">
+              {accessKeyMethod.label}
+              <input
+                autoCapitalize="none"
+                autoComplete="off"
+                id="admin-access-key"
+                maxLength={512}
+                minLength={32}
+                onChange={(event) => setAccessKey(event.target.value)}
+                required
+                spellCheck={false}
+                type="password"
+                value={accessKey}
+              />
+            </label>
+            <p className="field-hint">접근 키는 세션을 만드는 이 요청에만 사용되며 브라우저 저장소에 보관하지 않습니다.</p>
+            <button className="button button-primary button-wide" disabled={busy || !accessKey} type="submit">관리자로 계속</button>
+          </form>
+        ) : null}
+
+        {localAccounts ? (
+          <div className={hasAdminMethods ? "local-auth-section has-admin-methods" : "local-auth-section"}>
+            {hasAdminMethods ? <div className="auth-divider"><span>로컬 계정</span></div> : null}
+            <div className="auth-tabs" role="group" aria-label="로컬 계정 인증 방식">
+              <button aria-pressed={mode === "login"} onClick={() => setMode("login")} type="button">로그인</button>
+              <button aria-pressed={mode === "register"} disabled={!registrationOpen} onClick={() => setMode("register")} type="button">가입</button>
+            </div>
+            <form className="auth-form" onSubmit={(event) => void submit(event)}>
+              {mode === "register" ? (
+                <>
+                  <label>표시 이름<input autoComplete="name" maxLength={80} name="displayName" required /></label>
+                  <label>사용자 핸들<span className="input-prefix"><span>@</span><input autoComplete="username" maxLength={40} name="handle" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></span></label>
+                </>
+              ) : null}
+              <label>이메일<input autoComplete="email" name="email" required type="email" /></label>
+              <label>비밀번호<input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} name="password" required type="password" /></label>
+              <button className="button button-primary button-wide" disabled={busy} type="submit">{mode === "login" ? "로그인" : "계정 만들기"}</button>
+            </form>
+          </div>
+        ) : null}
+        {status ? <p className="inline-status" role="status">{status}</p> : null}
       </section>
     </div>
   );
@@ -669,13 +781,13 @@ export function OnboardingPage() {
       : <PageLoading label="블로그 기능을 확인하는 중" />;
   }
 
-  if (capabilities?.mutationMode === "single_owner_token") {
-    return <EmptyState actionHref="/studio" actionLabel="Studio 열기" description="단일 소유자 프로필은 별도의 커뮤니티 블로그 온보딩을 사용하지 않습니다." title="소유자 Studio를 사용하세요" />;
+  if (studioAccessFor(capabilities) === "disabled") {
+    return <EmptyState actionHref="/" actionLabel="공개 글 읽기" description="이 인스턴스는 공개 읽기 전용으로 배포되어 블로그를 만들 수 없습니다." title="읽기 전용 배포본입니다" />;
   }
 
   if (!session) return <PageLoading label="계정을 확인하는 중" />;
   if (session.state === "anonymous") {
-    return <EmptyState actionHref="/login" actionLabel="로그인 또는 가입" description="블로그를 만들려면 먼저 로컬 계정이 필요합니다." title="당신의 공간을 준비할까요?" />;
+    return <EmptyState actionHref="/login" actionLabel="관리자 인증" description="블로그를 만들려면 먼저 서버가 제공하는 방법으로 인증해야 합니다." title="당신의 공간을 준비할까요?" />;
   }
   if (session.blog) {
     return <EmptyState actionHref={`/@${session.blog.handle}`} actionLabel="내 블로그 보기" description="선택한 테마와 공개 글을 내 블로그에서 확인할 수 있습니다." title="블로그가 이미 준비되어 있어요" />;

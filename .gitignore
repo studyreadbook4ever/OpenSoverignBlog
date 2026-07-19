@@ -3,6 +3,7 @@
 **/node_modules/
 **/dist/
 /.env
+/admin-access-key.txt
 /config.toml
 /custom.css
 /osb.intent.json

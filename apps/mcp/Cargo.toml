@@ -1,0 +1,19 @@
+[package]
+name = "osb-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-std", "io-util"] }
+url.workspace = true
+uuid.workspace = true
+
+[[bin]]
+name = "osb-mcp"
+path = "src/main.rs"

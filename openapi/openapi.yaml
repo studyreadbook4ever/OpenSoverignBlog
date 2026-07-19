@@ -7,12 +7,15 @@ info:
     Contract for the routes mounted by the reference Rust server. This describes
     implemented wire behavior, not every capability that a future plugin may add.
 
-    The reference composition supports cacheable public reads, local account
-    sessions with owned blogs and comments, and the optional legacy single-owner
-    bearer token. `OSB_DELIVERY_ONLY=true` fails every community mutation closed
-    while keeping published feeds, blogs, articles, and approved comments public.
-    OAuth/OIDC, advertising, A2A, and a runner broker are not implied by this
-    document.
+    The reference composition supports cacheable anonymous public reads and
+    revocable browser sessions created by local accounts, a high-entropy
+    administrator access key, or an explicitly configured external OIDC adapter.
+    The optional legacy single-owner bearer remains documented for compatibility,
+    but new browser administrator flows exchange credentials for an HttpOnly
+    session instead of replaying them on every request. `OSB_DELIVERY_ONLY=true`
+    fails every mutation closed while keeping published feeds, blogs, articles,
+    and approved comments public. Advertising, A2A, and a runner broker are not
+    implied by this document.
   license:
     name: The Unlicense
     identifier: Unlicense
@@ -171,9 +174,13 @@ paths:
     get:
       tags: [Identity]
       operationId: getSession
-      summary: Resolve the current local account session
+      summary: Resolve the current browser session
       x-osb-route-source: true
-      description: Always returns an anonymous or authenticated session object. Delivery-only mode always resolves anonymously.
+      description: |
+        Always returns an anonymous or authenticated session object. An
+        authenticated session may have been issued by local account login,
+        administrator access-key exchange, or the verified external administrator
+        callback. Delivery-only mode always resolves anonymously.
       security:
         - {}
         - SessionCookie: []
@@ -235,6 +242,126 @@ paths:
                 $ref: "#/components/schemas/Session"
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/auth/access-key/session:
+    post:
+      tags: [Identity]
+      operationId: exchangeAdministratorAccessKey
+      summary: Exchange an administrator access key for a browser session
+      description: |
+        Mounted only when the access-key administrator module is active. The
+        high-entropy key is accepted in this request body only; successful
+        exchange creates the same opaque, revocable HttpOnly session used by
+        Studio. The key is never a per-request Bearer credential. When an Origin
+        header is present it must match the configured public origin. Failed
+        attempts are rate limited and all responses are non-cacheable.
+      x-osb-route-source: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminAccessKeySessionRequest"
+      responses:
+        "200":
+          description: Administrator session created; the submitted access key is not returned.
+          headers:
+            Set-Cookie:
+              description: Opaque `osb_session` with HttpOnly, SameSite=Lax, deployment-scoped Path, Max-Age, and Secure on HTTPS.
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+            Pragma:
+              schema: { type: string, const: no-cache }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429":
+          description: Too many administrator access-key attempts were made in the active rate-limit window.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/auth/external/start:
+    get:
+      tags: [Identity]
+      operationId: startExternalAdministratorAuthentication
+      summary: Start the configured external administrator OIDC flow
+      description: |
+        Mounted only when the external administrator module is active. Creates
+        bounded, short-lived state, nonce, and PKCE verifier material, then sends
+        the browser to the operator-approved OIDC authorization endpoint. No
+        arbitrary client-supplied provider or redirect target is accepted.
+      x-osb-route-source: true
+      responses:
+        "303":
+          description: Continue at the configured OIDC provider.
+          headers:
+            Location:
+              required: true
+              schema: { type: string, format: uri, pattern: '^https://' }
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+            Pragma:
+              schema: { type: string, const: no-cache }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429":
+          description: The bounded pending-login capacity is full.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorBody" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/auth/external/callback:
+    get:
+      tags: [Identity]
+      operationId: finishExternalAdministratorAuthentication
+      summary: Verify the external administrator callback and create a session
+      description: |
+        Provider callback endpoint. It validates state, PKCE, nonce, issuer,
+        signature, token claims, and the configured owner subject before binding
+        the external identity to the primary owner and issuing an opaque browser
+        session. Provider errors and any verification failure return the same
+        generic authentication error.
+      x-osb-route-source: true
+      parameters:
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+        - name: state
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 1024 }
+        - name: error
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "303":
+          description: External administrator verified; continue to this deployment's Studio.
+          headers:
+            Location:
+              required: true
+              schema: { type: string, pattern: '^/' }
+            Set-Cookie:
+              description: Opaque `osb_session` with HttpOnly, SameSite=Lax, deployment-scoped Path, Max-Age, and Secure on HTTPS.
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string, const: "private, no-store" }
+            Pragma:
+              schema: { type: string, const: no-cache }
+        "400": { $ref: "#/components/responses/QueryError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/auth/logout:
@@ -734,6 +861,8 @@ paths:
       summary: Create a draft document and its first immutable revision
       x-osb-route-source: true
       security:
+        - SessionCookie: []
+        - McpBearer: []
         - OwnerBearer: []
       requestBody:
         required: true
@@ -815,6 +944,8 @@ paths:
       summary: List up to 500 current document snapshots, including drafts
       x-osb-route-source: true
       security:
+        - SessionCookie: []
+        - McpBearer: []
         - OwnerBearer: []
       responses:
         "200":
@@ -839,6 +970,8 @@ paths:
       summary: Get the current snapshot for one document
       x-osb-route-source: true
       security:
+        - SessionCookie: []
+        - McpBearer: []
         - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
@@ -867,6 +1000,8 @@ paths:
       summary: List up to 1000 immutable revisions, newest first
       x-osb-route-source: true
       security:
+        - SessionCookie: []
+        - McpBearer: []
         - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
@@ -898,6 +1033,8 @@ paths:
       description: The server derives `documentId` from the path and creates the human owner actor.
       x-osb-route-source: true
       security:
+        - SessionCookie: []
+        - McpBearer: []
         - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
@@ -940,6 +1077,8 @@ paths:
       summary: Publish one exact immutable revision
       x-osb-route-source: true
       security:
+        - SessionCookie: []
+        - McpBearer: []
         - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
@@ -983,6 +1122,7 @@ paths:
       description: Appends a draft revision only. A separate publish call is always required.
       x-osb-route-source: true
       security:
+        - SessionCookie: []
         - OwnerBearer: []
       requestBody:
         required: true
@@ -1028,6 +1168,7 @@ paths:
         12 MiB.
       x-osb-route-source: true
       security:
+        - SessionCookie: []
         - OwnerBearer: []
       parameters:
         - name: X-OSB-Filename
@@ -1155,6 +1296,7 @@ paths:
       description: The reference server never executes source locally and v1 always denies network access.
       x-osb-route-source: true
       security:
+        - SessionCookie: []
         - OwnerBearer: []
       requestBody:
         required: true
@@ -1200,6 +1342,7 @@ paths:
       description: Jobs are not durable across reference-server restarts.
       x-osb-route-source: true
       security:
+        - SessionCookie: []
         - OwnerBearer: []
       parameters:
         - name: id
@@ -1266,16 +1409,30 @@ paths:
 
 components:
   securitySchemes:
+    McpBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: static Base64url MCP content token
+      description: |
+        Dedicated environment-only `OSB_MCP_TOKEN`. It authorizes only the six
+        documented content list/read/draft/revise/publish route shapes and never
+        administrator auth, AI2AI proposals, assets, runner operations, Studio
+        settings, or member APIs. Change the environment value and restart every
+        application replica to rotate or globally revoke it.
     OwnerBearer:
       type: http
       scheme: bearer
       bearerFormat: opaque owner token
-      description: Exact token configured by `server.admin_token` or `OSB_ADMIN_TOKEN`.
+      description: Legacy per-request token configured by `server.admin_token` or `OSB_ADMIN_TOKEN`; browser administrator access keys are never sent through this scheme.
     SessionCookie:
       type: apiKey
       in: cookie
       name: osb_session
-      description: Opaque local account session. Only its SHA-256 digest is persisted.
+      description: |
+        Opaque, revocable local-account or administrator browser session. Only
+        its SHA-256 digest and authorization binding are persisted. The server
+        sets HttpOnly and SameSite=Lax, scopes Path to the deployment base path,
+        sets Max-Age, and adds Secure whenever the public URL uses HTTPS.
 
   parameters:
     DocumentId:
@@ -1319,7 +1476,7 @@ components:
 
   responses:
     Unauthorized:
-      description: The owner bearer or local account session is missing, malformed, or invalid.
+      description: The administrator credential, legacy owner bearer, or browser session is missing, malformed, untrusted, expired, or invalid.
       content:
         application/json:
           schema:
@@ -1358,7 +1515,7 @@ components:
           schema:
             type: string
     NotFound:
-      description: The requested content or asset was not found.
+      description: The requested route, content, identity module, or asset was not found.
       content:
         application/json:
           schema:
@@ -1428,6 +1585,9 @@ components:
           enum:
             - unauthorized
             - invalid_login
+            - invalid_admin_auth
+            - admin_auth_rate_limited
+            - admin_auth_unavailable
             - registration_closed
             - delivery_only
             - read_only
@@ -1485,11 +1645,31 @@ components:
     Capabilities:
       type: object
       additionalProperties: false
-      required: [version, views, features, modules, unavailableByDefault, mutationMechanisms, mutationMode]
+      required:
+        - version
+        - publicAccess
+        - studioAccess
+        - auth
+        - views
+        - features
+        - modules
+        - unavailableByDefault
+        - mutationMechanisms
+        - mutationMode
       properties:
         version:
           type: string
-          const: "1.0"
+          const: "2.0"
+        publicAccess:
+          type: string
+          const: anonymous_read
+          description: Published pages and public APIs never require or vary on a browser session.
+        studioAccess:
+          type: string
+          enum: [disabled, admin_only, members]
+          description: Authoritative v2 control-plane policy; clients should prefer this over the legacy `mutationMode` field.
+        auth:
+          $ref: "#/components/schemas/AdminAuthCapabilities"
         views:
           type: array
           items:
@@ -1510,12 +1690,69 @@ components:
         mutationMechanisms:
           type: array
           uniqueItems: true
+          description: Compatibility field retained from v1; `session` now also covers access-key and external administrator sessions.
           items:
             type: string
             enum: [session, owner_token]
         mutationMode:
           type: string
           enum: [authenticated_members, single_owner_token, read_only]
+          description: Coarse v1 compatibility field. Use `studioAccess` and `auth` to render v2 administrator controls.
+
+    AdminAuthCapabilities:
+      type: object
+      additionalProperties: false
+      required: [status, methods]
+      properties:
+        status:
+          type: string
+          enum: [disabled, ready, misconfigured]
+          description: Only `ready` methods may be presented as usable authentication controls.
+        methods:
+          type: array
+          maxItems: 1
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/AdminAuthMethodDescriptor"
+
+    AdminAuthMethodDescriptor:
+      type: object
+      oneOf:
+        - $ref: "#/components/schemas/AdminAccessKeyAuthMethod"
+        - $ref: "#/components/schemas/AdminExternalAuthMethod"
+      discriminator:
+        propertyName: kind
+
+    AdminAccessKeyAuthMethod:
+      type: object
+      additionalProperties: false
+      required: [id, kind, flow, audience, label, actionHref]
+      properties:
+        id: { type: string, const: admin-access-key }
+        kind: { type: string, const: access_key }
+        flow: { type: string, const: secret_exchange }
+        audience: { type: string, const: admin }
+        label: { type: string, minLength: 1, maxLength: 80 }
+        actionHref:
+          type: string
+          const: /api/v1/auth/access-key/session
+          description: Same-origin endpoint; clients send the key once in JSON and rely on the returned session thereafter.
+
+    AdminExternalAuthMethod:
+      type: object
+      additionalProperties: false
+      required: [id, kind, flow, audience, provider, label, actionHref]
+      properties:
+        id: { type: string, const: admin-external }
+        kind: { type: string, const: external }
+        flow: { type: string, const: redirect }
+        audience: { type: string, const: admin }
+        provider: { type: string, minLength: 1, maxLength: 80 }
+        label: { type: string, minLength: 1, maxLength: 80 }
+        actionHref:
+          type: string
+          const: /api/v1/auth/external/start
+          description: Same-origin start endpoint; provider details and callback state remain server-owned.
 
     DiscoveryEndpoint:
       type: object
@@ -1787,6 +2024,19 @@ components:
       properties:
         email: { type: string, format: email, maxLength: 254 }
         password: { type: string, format: password, minLength: 1, maxLength: 4096, writeOnly: true }
+
+    AdminAccessKeySessionRequest:
+      type: object
+      additionalProperties: false
+      required: [accessKey]
+      properties:
+        accessKey:
+          type: string
+          format: password
+          minLength: 32
+          maxLength: 512
+          writeOnly: true
+          description: High-entropy administrator access key, used only to create a revocable browser session.
 
     CreateBlogRequest:
       type: object

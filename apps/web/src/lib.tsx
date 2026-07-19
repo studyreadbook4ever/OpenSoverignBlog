@@ -9,7 +9,6 @@ export const basePath = readBasePath();
 
 export const client = new OpenSoverignBlogClient({
   baseUrl: basePath === "/" ? "" : basePath,
-  getAdminToken: () => sessionStorage.getItem("osb.adminToken") ?? undefined,
 });
 
 export interface ThemePreset {

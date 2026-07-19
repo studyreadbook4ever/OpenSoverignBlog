@@ -487,6 +487,54 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/base16ct@0.2.0",
+      "name": "base16ct",
+      "version": "0.2.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/base16ct@0.2.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4C7F02D4EA65F2C1853089FFD8D2787BDBC63DE2F0D29DEDBCF8CCDFA0CCD4CF"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/base64@0.21.7",
+      "name": "base64",
+      "version": "0.21.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/base64@0.21.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9D297DEB1925B89F2CCC13D7635FA0714F12C87ADCE1C75356B39CA9B7178567"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/base64@0.22.1",
       "name": "base64",
       "version": "0.22.1",
@@ -596,6 +644,30 @@
         {
           "alg": "SHA-256",
           "content": "3078C7629B62D3F0439517FA394996ACACC5CBC91C5A20D8C658E77ABD503A71"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/bs58@0.5.1",
+      "name": "bs58",
+      "version": "0.5.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bs58@0.5.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "BF88BA1141D185C399BEE5288D850D63B8369520C1EAFC32A0430B5B6C287BF4"
         }
       ],
       "properties": [
@@ -943,6 +1015,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/const-oid@0.9.6",
+      "name": "const-oid",
+      "version": "0.9.6",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/const-oid@0.9.6",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "C2459377285AD874054D797F3CCEBF984978AA39129F6EAFDE5CDC8315B612F8"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/core-foundation-sys@0.8.7",
       "name": "core-foundation-sys",
       "version": "0.8.7",
@@ -1063,6 +1159,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/crypto-bigint@0.5.5",
+      "name": "crypto-bigint",
+      "version": "0.5.5",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/crypto-bigint@0.5.5",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0DC92FB57CA44DF6DB8059111AB3AF99A63D5D0F8375D9972E319A379C6BAB76"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/crypto-common@0.1.7",
       "name": "crypto-common",
       "version": "0.1.7",
@@ -1100,6 +1220,174 @@
         {
           "alg": "SHA-256",
           "content": "8C9CDAAE01D5ED7882B04D795E7F752F46FF52D2FA3B50A20D28C464510BBA98"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/curve25519-dalek-derive@0.1.1",
+      "name": "curve25519-dalek-derive",
+      "version": "0.1.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/curve25519-dalek-derive@0.1.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "F46882E17999C6CC590AF592290432BE3BCE0428CB0D5F8B6715E4DC7B383EB3"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/curve25519-dalek@4.1.3",
+      "name": "curve25519-dalek",
+      "version": "4.1.3",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:cargo/curve25519-dalek@4.1.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "97FB8B7C4503DE7D6AE7B42AB72A5A59857B4C937EC27A3D4539DBA95B5AB2BE"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/darling_core@0.23.0",
+      "name": "darling_core",
+      "version": "0.23.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/darling_core@0.23.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9865A50F7C335F53564BB694EF660825EB8610E0A53D3E11BF1B0D3DF31E03B0"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/darling_macro@0.23.0",
+      "name": "darling_macro",
+      "version": "0.23.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/darling_macro@0.23.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "AC3984EC7BD6CFA798E62B4A642426A5BE0E68F9401CFC2A01E3FA9EA2FCDB8D"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/darling@0.23.0",
+      "name": "darling",
+      "version": "0.23.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/darling@0.23.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "25AE13DA2F202D56BD7F91C25FBA009E7717A1E4A1CC98A76D844B65AE912E9D"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/der@0.7.10",
+      "name": "der",
+      "version": "0.7.10",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/der@0.7.10",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "E7C1832837B905BBFB5101E07CC24C8DEDDF52F93225EEE6EAD5F4D63D53DDCB"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/deranged@0.5.8",
+      "name": "deranged",
+      "version": "0.5.8",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/deranged@0.5.8",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7CD812CC2BC1D69D4764BD80DF88B4317EAEF9E773C75226407D9BC0876B211C"
         }
       ],
       "properties": [
@@ -1196,6 +1484,150 @@
         {
           "alg": "SHA-256",
           "content": "4C3CF4824E2D5F025C7B531AFCB2325364084A16806F6D47FBC1F5FBD9960590"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/dyn-clone@1.0.20",
+      "name": "dyn-clone",
+      "version": "1.0.20",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/dyn-clone@1.0.20",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "D0881EA181B1DF73FF77FFAAF9C7544ECC11E82FBA9B5F27B262A3C73A332555"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ecdsa@0.16.9",
+      "name": "ecdsa",
+      "version": "0.16.9",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/ecdsa@0.16.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "EE27F32B5C5292967D2D4A9D7F1E0B0AED2C15DADED5A60300E4ABB9D8020BCA"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ed25519-dalek@2.2.0",
+      "name": "ed25519-dalek",
+      "version": "2.2.0",
+      "licenses": [
+        {
+          "expression": "BSD-3-Clause"
+        }
+      ],
+      "purl": "pkg:cargo/ed25519-dalek@2.2.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "70E796C081CEE67DC755E1A36A0A172B897FAB85FC3F6BC48307991F64E4ECA9"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ed25519@2.2.3",
+      "name": "ed25519",
+      "version": "2.2.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/ed25519@2.2.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "115531BABC129696A58C64A4FEF0A8BF9E9698629FB97E9E40767D235CFBCD53"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/either@1.16.0",
+      "name": "either",
+      "version": "1.16.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/either@1.16.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "91622FF5E7162018101F2FEA40D6EBF4A78BBE5A49736A2020649EDF9693679E"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/elliptic-curve@0.13.8",
+      "name": "elliptic-curve",
+      "version": "0.13.8",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/elliptic-curve@0.13.8",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B5E6043086BF7973472E0C7DFF2142EA0B680D30E18D9CC40F267EFBF222BD47"
         }
       ],
       "properties": [
@@ -1364,6 +1796,54 @@
         {
           "alg": "SHA-256",
           "content": "9F1F227452A390804CDB637B74A86990F2A7D7BA4B7D5693AAC9B4DD6DEFD8D6"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ff@0.13.1",
+      "name": "ff",
+      "version": "0.13.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ff@0.13.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "C0B50BFB653653F9CA9095B427BED08AB8D75A137839D9AD64EB11810D5B6393"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/fiat-crypto@0.2.9",
+      "name": "fiat-crypto",
+      "version": "0.2.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0 OR BSD-1-Clause"
+        }
+      ],
+      "purl": "pkg:cargo/fiat-crypto@0.2.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "28DEA519A9695B9977216879A3EBFDDF92F1C08C05D984F8996AECD6ECDC811D"
         }
       ],
       "properties": [
@@ -1711,6 +2191,54 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/group@0.13.0",
+      "name": "group",
+      "version": "0.13.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/group@0.13.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "F0F9EF7462F7C099F518D754361858F86D8A07AF53BA9AF0FE635BBCCB151A63"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hashbrown@0.12.3",
+      "name": "hashbrown",
+      "version": "0.12.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hashbrown@0.12.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8A9EE70C43AAF417C914396645A0FA852624801B24EBB7AE78FE8272889AC888"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/hashbrown@0.15.5",
       "name": "hashbrown",
       "version": "0.15.5",
@@ -1796,6 +2324,78 @@
         {
           "alg": "SHA-256",
           "content": "2304E00983F87FFB38B55B444B5E3B60A884B5D30C0FCA7D82FE33449BBE55EA"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hex@0.4.3",
+      "name": "hex",
+      "version": "0.4.3",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hex@0.4.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7F24254AA9A54B5C858EAEE2F5BCCDB46AAF0E486A595ED5FD8F86BA55232A70"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hkdf@0.12.4",
+      "name": "hkdf",
+      "version": "0.12.4",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hkdf@0.12.4",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7B5F8EB2AD728638EA2C7D47A21DB23B7B58A72ED6A38256B8A1849F15FBBDF7"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/hmac@0.12.1",
+      "name": "hmac",
+      "version": "0.12.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/hmac@0.12.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "6C49C37C09C17A53D937DFBB742EB3A961D65A994E6BCDCF37E7399D0CC8AB5E"
         }
       ],
       "properties": [
@@ -2263,6 +2863,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/ident_case@1.0.1",
+      "name": "ident_case",
+      "version": "1.0.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ident_case@1.0.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B9E0384B61958566E926DC50660321D12159025E767C18E043DAF26B70104C39"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/idna_adapter@1.2.2",
       "name": "idna_adapter",
       "version": "1.2.2",
@@ -2300,6 +2924,30 @@
         {
           "alg": "SHA-256",
           "content": "3B0875F23CAA03898994F6DDC501886A45C7D3D62D04D2D90788D47BE1B1E4DE"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/indexmap@1.9.3",
+      "name": "indexmap",
+      "version": "1.9.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/indexmap@1.9.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "BD070E393353796E801D209AD339E89596EB4C8D430D18EDE6A1CCED8FAFBD99"
         }
       ],
       "properties": [
@@ -2372,6 +3020,30 @@
         {
           "alg": "SHA-256",
           "content": "A6CB138BB79A146C1BD460005623E142EF0181E3D0219CB493E02F7D08A35695"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/itertools@0.10.5",
+      "name": "itertools",
+      "version": "0.10.5",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/itertools@0.10.5",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B0FD2260E829BDDF4CB6EA802289DE2F86D6A7A690192FBE91B3F46E0F2C8473"
         }
       ],
       "properties": [
@@ -2468,6 +3140,30 @@
         {
           "alg": "SHA-256",
           "content": "68AB91017FE16C622486840E4C83C9A37AFEFF978BD239B5293D61ECE587DE66"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/libm@0.2.16",
+      "name": "libm",
+      "version": "0.2.16",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/libm@0.2.16",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B6D2CEC3EAE94F9F509C767B45932F1ADA8350C4BDB85AF2FCAB4A3C14807981"
         }
       ],
       "properties": [
@@ -2863,6 +3559,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/num-bigint-dig@0.8.6",
+      "name": "num-bigint-dig",
+      "version": "0.8.6",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/num-bigint-dig@0.8.6",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "E661DDA6640FAD38E827A6D4A310FF4763082116FE217F279885C97F511BB0B7"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/num-bigint@0.4.8",
       "name": "num-bigint",
       "version": "0.4.8",
@@ -2876,6 +3596,30 @@
         {
           "alg": "SHA-256",
           "content": "C89E69E7E0F03BEA5EF08013795C25018E101932225A656383BD384495ECC367"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/num-conv@0.2.2",
+      "name": "num-conv",
+      "version": "0.2.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/num-conv@0.2.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "521739C6D2BAC4AA25192232AFE6841231376B2B26D4D9FAE5ECF8CA5772E441"
         }
       ],
       "properties": [
@@ -2911,6 +3655,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/num-iter@0.1.46",
+      "name": "num-iter",
+      "version": "0.1.46",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/num-iter@0.1.46",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "C92800BD69A1EAC91786BCFE9DA64A897EB72911B8DC3095DECBD07429E8048B"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/num-traits@0.2.19",
       "name": "num-traits",
       "version": "0.2.19",
@@ -2924,6 +3692,30 @@
         {
           "alg": "SHA-256",
           "content": "071DFC062690E90B734C0B2273CE72AD0FFA95F0C74596BC250DCFD960262841"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/oauth2@5.0.0",
+      "name": "oauth2",
+      "version": "5.0.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/oauth2@5.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "51E219E79014DF21A225B1860A479E2DCD7CBD9130F4DEFD4BD0E191EA31D67D"
         }
       ],
       "properties": [
@@ -2983,6 +3775,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/openidconnect@4.0.1",
+      "name": "openidconnect",
+      "version": "4.0.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/openidconnect@4.0.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "0D8C6709BA2EA764BBED26BCE1ADF3C10517113DDEA6F2D4196E4851757EF2B2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/openssl-probe@0.2.1",
       "name": "openssl-probe",
       "version": "0.2.1",
@@ -2996,6 +3812,78 @@
         {
           "alg": "SHA-256",
           "content": "7C87DEF4C32AB89D880EFFC9E097653C8DA5D6EF28E6B539D313BAAACFBAFCBE"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ordered-float@2.10.1",
+      "name": "ordered-float",
+      "version": "2.10.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/ordered-float@2.10.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "68F19D67E5A2795C94E73E0BB1CC1A7EDEB2E28EFD39E2E1C9B7A40C1108B11C"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/p256@0.13.2",
+      "name": "p256",
+      "version": "0.13.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/p256@0.13.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "C9863AD85FA8F4460F9C48CB909D38A0D689DBA1F6F6988A5E3E0D31071BCD4B"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/p384@0.13.1",
+      "name": "p384",
+      "version": "0.13.1",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/p384@0.13.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "FE42F1670A52A47D448F14B6A5C61DD78FCE51856E68EDAA38F7AE3A46B8D6B6"
         }
       ],
       "properties": [
@@ -3092,6 +3980,30 @@
         {
           "alg": "SHA-256",
           "content": "346F04948BA92C43E8469C1EE6736C7563D71012B17D40745260FE106AAC2166"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/pem-rfc7468@0.7.0",
+      "name": "pem-rfc7468",
+      "version": "0.7.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/pem-rfc7468@0.7.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "88B39C9BFCFC231068454382784BB460AAE594343FB030D46E9F50A645418412"
         }
       ],
       "properties": [
@@ -3247,6 +4159,54 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/pkcs1@0.7.5",
+      "name": "pkcs1",
+      "version": "0.7.5",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/pkcs1@0.7.5",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "C8FFB9F10FA047879315E6625AF03C164B16962A5368D724ED16323B68ACE47F"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/pkcs8@0.10.2",
+      "name": "pkcs8",
+      "version": "0.10.2",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/pkcs8@0.10.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "F950B2377845CEBE5CF8B5165CB3CC1A5E0FA5CFA3E1F7F55707D8FD82E0A7B7"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/pkg-config@0.3.33",
       "name": "pkg-config",
       "version": "0.3.33",
@@ -3295,6 +4255,54 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/powerfmt@0.2.0",
+      "name": "powerfmt",
+      "version": "0.2.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/powerfmt@0.2.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "439EE305DEF115BA05938DB6EB1644FF94165C5AB5E9420D1C1BCEDBBA909391"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ppv-lite86@0.2.21",
+      "name": "ppv-lite86",
+      "version": "0.2.21",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ppv-lite86@0.2.21",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "85EAE3C4ED2F50DCFE72643DA4BEFC30DEADB458A9B590D720CDE2F2B1E97DA9"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/precomputed-hash@0.1.1",
       "name": "precomputed-hash",
       "version": "0.1.1",
@@ -3308,6 +4316,30 @@
         {
           "alg": "SHA-256",
           "content": "925383EFA346730478FB4838DBE9137D2A47675AD789C546D150A6E1DD4AB31C"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/primeorder@0.13.6",
+      "name": "primeorder",
+      "version": "0.13.6",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/primeorder@0.13.6",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "353E1CA18966C16D9DEB1C69278EDBC5F194139612772BD9537AF60AC231E1E6"
         }
       ],
       "properties": [
@@ -3511,6 +4543,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/rand_chacha@0.3.1",
+      "name": "rand_chacha",
+      "version": "0.3.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rand_chacha@0.3.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "E6C10A63A0FA32252BE49D21E7709D4D4BAF8D231C2DBCE1EAA8141B9B127D88"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/rand_core@0.10.1",
       "name": "rand_core",
       "version": "0.10.1",
@@ -3607,6 +4663,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/rand@0.8.7",
+      "name": "rand",
+      "version": "0.8.7",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rand@0.8.7",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "22F6172BDEC972074665ED81ED53B71DA00BFC44B65A753CFDE883EC4C702A1A"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/redis@1.4.1",
       "name": "redis",
       "version": "1.4.1",
@@ -3644,6 +4724,54 @@
         {
           "alg": "SHA-256",
           "content": "ED2BF2547551A7053D6FDFAFDA3F938979645C44812FBFCDA098FAAE3F1A362D"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ref-cast-impl@1.0.26",
+      "name": "ref-cast-impl",
+      "version": "1.0.26",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ref-cast-impl@1.0.26",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2C9283685FEEC7D69AF75FB0E858D5E7378F33FE4FC699383B2916AB9273E03C"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/ref-cast@1.0.26",
+      "name": "ref-cast",
+      "version": "1.0.26",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/ref-cast@1.0.26",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "216E8F773D7923BCBA9CEB86A86C93CABB3903A11872FC3F138C49630E50B96D"
         }
       ],
       "properties": [
@@ -3727,6 +4855,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/rfc6979@0.4.0",
+      "name": "rfc6979",
+      "version": "0.4.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rfc6979@0.4.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "F8DD2A808D456C4A54E300A23E9F5A67E122C3024119ACBFD73E3BF664491CB2"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/ring@0.17.14",
       "name": "ring",
       "version": "0.17.14",
@@ -3751,6 +4903,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/rsa@0.9.10",
+      "name": "rsa",
+      "version": "0.9.10",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rsa@0.9.10",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B8573F03F5883DCAEBDFCF4725CAA1ECB9C15B2EF50C43A07B816E06799BB12D"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/rusqlite@0.37.0",
       "name": "rusqlite",
       "version": "0.37.0",
@@ -3764,6 +4940,30 @@
         {
           "alg": "SHA-256",
           "content": "165CA6E57B20E1351573E3729B958BC62F0E48025386970B6E4D29E7A7E71F3F"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/rustc_version@0.4.1",
+      "name": "rustc_version",
+      "version": "0.4.1",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/rustc_version@0.4.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "CFCB3A22EF46E85B45DE6EE7E79D063319EBB6594FAAFCF1C225EA92AB6E9B92"
         }
       ],
       "properties": [
@@ -3991,6 +5191,54 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/schemars@0.9.0",
+      "name": "schemars",
+      "version": "0.9.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/schemars@0.9.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4CD191F9397D57D581CDDD31014772520AA448F65EF991055D7F61582C65165F"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/schemars@1.2.1",
+      "name": "schemars",
+      "version": "1.2.1",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/schemars@1.2.1",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "A2B42F36AA1CD011945615B92222F6BF73C599A102A300334CD7F8DBEEC726CC"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/scopeguard@1.2.0",
       "name": "scopeguard",
       "version": "1.2.0",
@@ -4004,6 +5252,30 @@
         {
           "alg": "SHA-256",
           "content": "94143F37725109F92C262ED2CF5E59BCE7498C01BCC1502D7B9AFE439A4E9F49"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/sec1@0.7.3",
+      "name": "sec1",
+      "version": "0.7.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/sec1@0.7.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "D3E97A565F76233A6003F9F5C54BE1D9C5BDFA3ECCFB189469F11EC4901C47DC"
         }
       ],
       "properties": [
@@ -4052,6 +5324,30 @@
         {
           "alg": "SHA-256",
           "content": "D17B898A6D6948C3A8EE4372C17CB384F90D2E6E912EF00895B14FD7AB54EC38"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/semver@1.0.28",
+      "name": "semver",
+      "version": "1.0.28",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/semver@1.0.28",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "8A7852D02FC848982E0C167EF163AAFF9CD91DC640BA85E263CB1CE46FAE51CD"
         }
       ],
       "properties": [
@@ -4159,6 +5455,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/serde_plain@1.0.2",
+      "name": "serde_plain",
+      "version": "1.0.2",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_plain@1.0.2",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9CE1FC6DB65A611022B23A0DEC6975D63FB80A302CB3388835FF02C097258D50"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/serde_spanned@1.1.1",
       "name": "serde_spanned",
       "version": "1.1.1",
@@ -4196,6 +5516,78 @@
         {
           "alg": "SHA-256",
           "content": "D3491C14715CA2294C4D6A88F15E84739788C1D030EED8C110436AAFDAA2F3FD"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_with_macros@3.21.0",
+      "name": "serde_with_macros",
+      "version": "3.21.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_with_macros@3.21.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "84D57BC0C8B9A17920C178DAA6BB924850D54A9C97AB45194BB8C17AD66BB660"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde_with@3.21.0",
+      "name": "serde_with",
+      "version": "3.21.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/serde_with@3.21.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "76A5C54C7310E7B8B9577C286D7E399DDD876C3E12B3ED917A8AABC4B96E9E8C"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/serde-value@0.7.0",
+      "name": "serde-value",
+      "version": "0.7.0",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/serde-value@0.7.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "F3A1A3341211875EF120E117EA7FD5228530AE7E7036A779FDC9117BE6B3282C"
         }
       ],
       "properties": [
@@ -4351,6 +5743,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/signature@2.2.0",
+      "name": "signature",
+      "version": "2.2.0",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/signature@2.2.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "77549399552DE45A898A580C1B41D445BF730DF867CC44E6C0233BBC4B8329DE"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/siphasher@1.0.3",
       "name": "siphasher",
       "version": "1.0.3",
@@ -4436,6 +5852,54 @@
         {
           "alg": "SHA-256",
           "content": "C3D1E2C7F27F8D4CB10542A02C49005DBD6E93095799D6F3BE745FAE9F8FEDD4"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/spin@0.9.9",
+      "name": "spin",
+      "version": "0.9.9",
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/spin@0.9.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3763264F6B73151DB08C50FF20D7D8A0B8796E021CDEA7CEEDAD07B80155FA0E"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/spki@0.7.3",
+      "name": "spki",
+      "version": "0.7.3",
+      "licenses": [
+        {
+          "expression": "Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/spki@0.7.3",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "D91ED6C858B01F942CD56B37A94B3E0A1798290327D1236E4D9CF4EACA44D29D"
         }
       ],
       "properties": [
@@ -4591,6 +6055,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/syn@3.0.0",
+      "name": "syn",
+      "version": "3.0.0",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/syn@3.0.0",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "F2FAC314A64DC9A36E61A9EB4261A5E9BBFBC922B27E518AF97BC32B926CF967"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/sync_wrapper@1.0.2",
       "name": "sync_wrapper",
       "version": "1.0.2",
@@ -4687,6 +6175,30 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/thiserror-impl@1.0.69",
+      "name": "thiserror-impl",
+      "version": "1.0.69",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror-impl@1.0.69",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "4FEE6C4EFC90059E10F81E6D42C60A18F76588C3D74CB83A0B242A2B6C7504C1"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/thiserror-impl@2.0.18",
       "name": "thiserror-impl",
       "version": "2.0.18",
@@ -4700,6 +6212,30 @@
         {
           "alg": "SHA-256",
           "content": "EBC4EE7F67670E9B64D05FA4253E753E016C6C95FF35B89B7941D6B856DEC1D5"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/thiserror@1.0.69",
+      "name": "thiserror",
+      "version": "1.0.69",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/thiserror@1.0.69",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B6AAF5339B578EA85B50E080FEB250A3E8AE8CFCDFF9A461C9EC2904BC923F52"
         }
       ],
       "properties": [
@@ -4748,6 +6284,78 @@
         {
           "alg": "SHA-256",
           "content": "1AD99C4C6D32803332C548B1AF0540B357B3F5FC0BE8F6C6BFE8B2E6AE784070"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/time-core@0.1.9",
+      "name": "time-core",
+      "version": "0.1.9",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/time-core@0.1.9",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "9E1C906769AD99C88EAA54E728060EDEF082F8E358FF32030CB7C7D315E81109"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/time-macros@0.2.31",
+      "name": "time-macros",
+      "version": "0.2.31",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/time-macros@0.2.31",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "C431B87111666E491A90BAA837F914FB45CD5DC3C268591B0220FF5057F2085F"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/time@0.3.53",
+      "name": "time",
+      "version": "0.3.53",
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/time@0.3.53",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "18DFAAEDDCB932337B5E7866EE7D0CE9B76D2FD092997146F187EC09B4558A50"
         }
       ],
       "properties": [
@@ -6380,6 +7988,54 @@
         {
           "alg": "SHA-256",
           "content": "709FE23A0424B6A435D82152B1BD3FDFB0833487D5FA90D05D42762A9891FEF5"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zerocopy-derive@0.8.54",
+      "name": "zerocopy-derive",
+      "version": "0.8.54",
+      "licenses": [
+        {
+          "expression": "BSD-2-Clause OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zerocopy-derive@0.8.54",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "E2E817B7B52D0C7358D3246DA9D69935EBB18116B2B102B4230DAC079B4862F5"
+        }
+      ],
+      "properties": [
+        {
+          "name": "osb:ecosystem",
+          "value": "cargo"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cargo/zerocopy@0.8.54",
+      "name": "zerocopy",
+      "version": "0.8.54",
+      "licenses": [
+        {
+          "expression": "BSD-2-Clause OR Apache-2.0 OR MIT"
+        }
+      ],
+      "purl": "pkg:cargo/zerocopy@0.8.54",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "B7CBBC0A705A0FD05CC3676525980D2BF5A9BC4ADAC6D6475209A7887CF59D19"
         }
       ],
       "properties": [

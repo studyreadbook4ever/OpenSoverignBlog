@@ -64,10 +64,13 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - run: cp .env.example .env
-      - name: Generate ephemeral Redis credential
+      - name: Generate ephemeral infrastructure credentials
         run: |
           sed -i "s/^OSB_REDIS_PASSWORD=.*/OSB_REDIS_PASSWORD=$(openssl rand -hex 32)/" .env
           sed -i "s/^OSB_CACHE_SIGNING_KEY=.*/OSB_CACHE_SIGNING_KEY=$(openssl rand -hex 32)/" .env
+          # This job exercises the public/Redis/backup topology. Administrator
+          # access-key exchange is covered by the server integration suite.
+          sed -i "s/^OSB_ADMIN_AUTH=.*/OSB_ADMIN_AUTH=disabled/" .env
       - run: cp config.example.toml config.toml
       - run: cp deploy/custom.css custom.css
       - name: Create a host-owned private backup fixture

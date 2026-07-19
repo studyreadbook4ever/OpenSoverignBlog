@@ -18,11 +18,11 @@ import type {
   EmbedReference,
   OntologySidecar,
   PublishArtifact,
-  RevisionSnapshot,
   StudioSettings,
   ThemePresetId,
 } from "@opensoverignblog/sdk";
 import { useSession } from "./app";
+import { isLegacyOwnerBearerMode, studioAccessFor } from "./auth-policy";
 import {
   AppLink,
   THEME_PRESETS,
@@ -81,20 +81,22 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const [documents, setDocuments] = useState<DocumentSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string>();
-  const [token, setToken] = useState(sessionStorage.getItem("osb.adminToken") ?? "");
   usePageTitle("Studio");
 
-  const communityMode = capabilities?.mutationMode === "authenticated_members";
-  const canLoad = capabilities?.mutationMode === "single_owner_token" || (
-    communityMode && session?.state === "authenticated" && Boolean(session.blog)
+  const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
+  const legacyOwnerMode = capabilities ? isLegacyOwnerBearerMode(capabilities) : false;
+  const canLoad = Boolean(
+    studioAccess !== "disabled"
+    && !legacyOwnerMode
+    && session?.state === "authenticated"
+    && session.blog,
   );
 
   async function load() {
     setLoading(true);
     setStatus("문서를 불러오는 중…");
-    if (token) sessionStorage.setItem("osb.adminToken", token);
     try {
-      const values = await listDocumentsCompat(capabilities?.mutationMode === "single_owner_token");
+      const values = await listDocumentsCompat(legacyOwnerMode);
       setDocuments(values);
       setStatus(values.length ? `${values.length}개의 문서를 불러왔습니다.` : undefined);
     } catch (reason) {
@@ -107,14 +109,13 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   useEffect(() => {
     if (!canLoad) return;
     void load();
-    // The owner token is deliberately submitted by the explicit reconnect action.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canLoad]);
 
   const published = documents.filter((document) => Boolean(document.publishedRevisionId)).length;
   const drafts = documents.filter((document) => document.publishedRevisionId !== document.currentRevisionId).length;
   const displayName = session?.state === "authenticated" ? session.user.displayName : "Owner";
-  const collaboratorSession = communityMode && session?.state === "authenticated"
+  const collaboratorSession = studioAccess === "members" && session?.state === "authenticated"
     && Boolean(session.membershipRole && session.membershipRole !== "owner");
 
   if (!capabilities && capabilitiesError) {
@@ -123,11 +124,14 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   if (!capabilities || !session) {
     return <div className="dashboard-loading" role="status">Studio 접근 권한을 확인하는 중…</div>;
   }
-  if (capabilities.mutationMode === "read_only") {
+  if (studioAccess === "disabled") {
     return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 Studio가 비활성화되어 있습니다." />;
   }
-  if (communityMode && session.state !== "authenticated") {
-    return <StudioAccessGate detail="내 블로그의 글을 쓰고 관리하려면 먼저 로그인해 주세요." login />;
+  if (legacyOwnerMode) {
+    return <StudioAccessGate detail="이 서버는 브라우저에 관리자 토큰을 보관하는 이전 방식을 사용합니다. 세션 기반 관리자 인증을 설정해 주세요." login />;
+  }
+  if (session.state !== "authenticated") {
+    return <StudioAccessGate detail="블로그의 글을 쓰고 관리하려면 먼저 인증해 주세요." login />;
   }
   if (session.state === "authenticated" && !session.blog) {
     return <StudioAccessGate detail="글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요." onboarding />;
@@ -147,7 +151,7 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
             : "편하게 쓰고 안전하게 저장한 뒤, 준비된 글만 블로그에 공개하세요."}</p>
         </div>
         <div className="studio-heading-actions">
-          {communityMode && session.state === "authenticated" && (!session.membershipRole || session.membershipRole === "owner") ? (
+          {session.state === "authenticated" && (!session.membershipRole || session.membershipRole === "owner") ? (
             <AppLink className="button button-ghost" href="/studio/settings"><span aria-hidden="true">⚙</span> 블로그 설정</AppLink>
           ) : null}
           <AppLink className="button button-primary" href="/studio/write">새 글 쓰기 <span aria-hidden="true">＋</span></AppLink>
@@ -158,7 +162,7 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         <div><span>전체 문서</span><strong>{documents.length}</strong></div>
         <div><span>초안</span><strong>{drafts}</strong></div>
         <div><span>발행됨</span><strong>{published}</strong></div>
-        <div><span>운영 상태</span><strong className="metric-mode">{capabilityModeLabel(capabilities.mutationMode)}</strong></div>
+        <div><span>운영 상태</span><strong className="metric-mode">{capabilityModeLabel(capabilities)}</strong></div>
       </section>
 
       <section className="document-section" aria-labelledby="documents-title">
@@ -187,17 +191,6 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         ) : null}
       </section>
 
-      {capabilities.mutationMode === "single_owner_token" ? (
-        <details className="owner-connect-panel">
-          <summary>단일 소유자 서버 연결</summary>
-          <p>커뮤니티 세션 API가 없는 기존 서버에서만 관리자 토큰을 사용합니다. 이 브라우저 탭 밖으로 전송하거나 저장하지 않습니다.</p>
-          <div className="inline-token-form">
-            <label htmlFor="owner-token">관리자 토큰</label>
-            <input id="owner-token" onChange={(event) => setToken(event.target.value)} type="password" value={token} />
-            <button className="button button-ghost" onClick={() => void load()} type="button">연결</button>
-          </div>
-        </details>
-      ) : null}
       {status ? <p className="inline-status" role="status">{status}</p> : null}
     </div>
   );
@@ -227,11 +220,12 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const [loadAttempt, setLoadAttempt] = useState(0);
   usePageTitle("블로그 설정");
 
-  const communityMode = capabilities?.mutationMode === "authenticated_members";
+  const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
+  const legacyOwnerMode = capabilities ? isLegacyOwnerBearerMode(capabilities) : false;
   const ownerSession = session?.state === "authenticated" && Boolean(session.blog) && (
     !session.membershipRole || session.membershipRole === "owner"
   );
-  const canLoad = Boolean(communityMode && ownerSession);
+  const canLoad = Boolean(studioAccess !== "disabled" && !legacyOwnerMode && ownerSession);
   const collaborationAvailable = Boolean(capabilities?.features.includes("rbac"));
 
   useEffect(() => {
@@ -374,11 +368,11 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   if (!capabilities || !session) {
     return <div className="dashboard-loading" role="status">블로그 설정 접근 권한을 확인하는 중…</div>;
   }
-  if (capabilities.mutationMode === "read_only") {
+  if (studioAccess === "disabled") {
     return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 블로그 설정을 바꿀 수 없습니다." />;
   }
-  if (!communityMode) {
-    return <StudioAccessGate detail="이 서버의 단일 소유자 호환 모드에는 블로그 설정 화면이 제공되지 않습니다." />;
+  if (legacyOwnerMode) {
+    return <StudioAccessGate detail="이 서버는 이전 관리자 Bearer 방식을 사용하므로 새 세션 기반 설정 화면을 열 수 없습니다." login />;
   }
   if (session.state !== "authenticated") {
     return <StudioAccessGate detail="블로그 설정을 열려면 먼저 로그인해 주세요." login />;
@@ -504,16 +498,19 @@ export function StudioEditor({
   documentId: string | undefined;
 }) {
   const { session } = useSession();
-  const communityMode = capabilities?.mutationMode === "authenticated_members";
-  const canEdit = capabilities?.mutationMode === "single_owner_token" || (
-    communityMode && session?.state === "authenticated" && Boolean(session.blog)
+  const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
+  const legacyOwnerMode = capabilities ? isLegacyOwnerBearerMode(capabilities) : false;
+  const canEdit = Boolean(
+    studioAccess !== "disabled"
+    && !legacyOwnerMode
+    && session?.state === "authenticated"
+    && session.blog,
   );
-  const legacyOwnerMode = capabilities?.mutationMode === "single_owner_token";
-  const canPublish = legacyOwnerMode || (
+  const canPublish = (
     session?.state === "authenticated"
     && (!session.membershipRole || session.membershipRole === "owner")
   );
-  const draftOwner = session?.state === "authenticated" ? `user-${session.user.id}` : "legacy-owner";
+  const draftOwner = session?.state === "authenticated" ? `user-${session.user.id}` : "anonymous";
   const draftKey = `${DRAFT_KEY_PREFIX}:${draftOwner}:${documentId ?? "new"}`;
   const [initial] = useState(() => loadDraft(draftKey));
   const [draft, setDraft] = useState<CreatePostInput>(initial.value.post);
@@ -532,10 +529,8 @@ export function StudioEditor({
   const [localSavedAt, setLocalSavedAt] = useState<string | undefined>(
     initial.restored ? initial.value.savedAt : undefined,
   );
-  const [token, setToken] = useState(sessionStorage.getItem("osb.adminToken") ?? "");
   const [accepted, setAccepted] = useState<DocumentSnapshot>();
   const [acceptedFingerprint, setAcceptedFingerprint] = useState<string>();
-  const [history, setHistory] = useState<RevisionSnapshot[]>([]);
   const [status, setStatus] = useState<string>();
   const [loadingDocument, setLoadingDocument] = useState(Boolean(documentId));
   const [loadError, setLoadError] = useState<string>();
@@ -675,9 +670,6 @@ export function StudioEditor({
     }
     setAccepted(document);
     setAcceptedFingerprint(payloadFingerprint(post));
-    if (token) {
-      void client.listAdminRevisions(document.id).then(setHistory).catch(() => setHistory([]));
-    }
   }
 
   function persistDraft() {
@@ -780,7 +772,6 @@ export function StudioEditor({
     }
     const payload = parsePayload();
     if (!payload) return;
-    if (token) sessionStorage.setItem("osb.adminToken", token);
     setSaving(true);
     setStatus(editing ? "현재 내용을 새 버전으로 저장하는 중…" : "첫 초안을 서버에 저장하는 중…");
     try {
@@ -795,7 +786,6 @@ export function StudioEditor({
         : `서버 저장 완료 · 버전 ${document.currentRevisionId.slice(0, 8)} · 소유자만 공개할 수 있습니다.`);
       localStorage.removeItem(draftKey);
       sessionStorage.removeItem(draftKey);
-      if (token) void client.listAdminRevisions(document.id).then(setHistory).catch(() => setHistory([]));
       if (!documentId) navigate(`/studio/write/${document.id}`, true);
     } catch (reason) {
       setStatus(asMessage(reason));
@@ -858,7 +848,6 @@ export function StudioEditor({
   async function uploadImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (token) sessionStorage.setItem("osb.adminToken", token);
     setStatus(`${file.name} 업로드 중…`);
     try {
       const uploaded = legacyOwnerMode
@@ -935,11 +924,14 @@ export function StudioEditor({
   });
 
   if (!capabilities || !session) return <div className="editor-loading" role="status">Studio 접근 권한을 확인하는 중…</div>;
-  if (capabilities.mutationMode === "read_only") {
+  if (studioAccess === "disabled") {
     return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 편집 기능이 없습니다." />;
   }
-  if (communityMode && session.state !== "authenticated") {
-    return <StudioAccessGate detail="글을 쓰려면 먼저 로그인해 주세요." login />;
+  if (legacyOwnerMode) {
+    return <StudioAccessGate detail="이 서버는 브라우저 Bearer 토큰을 요구하는 이전 방식입니다. 세션 기반 관리자 인증을 설정해 주세요." login />;
+  }
+  if (session.state !== "authenticated") {
+    return <StudioAccessGate detail="글을 쓰려면 먼저 인증해 주세요." login />;
   }
   if (session.state === "authenticated" && !session.blog) {
     return <StudioAccessGate detail="글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요." onboarding />;
@@ -1059,10 +1051,8 @@ export function StudioEditor({
               draft={draft}
               draftKey={draftKey}
               embedText={embedText}
-              history={history}
               handlePaste={handlePaste}
               intentEnabled={intentEnabled}
-              legacyOwnerMode={legacyOwnerMode}
               memoryScopes={memoryScopes}
               ontologyText={ontologyText}
               pastePolicy={pastePolicy}
@@ -1079,9 +1069,7 @@ export function StudioEditor({
               setSlugTouched={setSlugTouched}
               setStatus={setStatus}
               setStorageMode={setStorageMode}
-              setToken={setToken}
               storageMode={storageMode}
-              token={token}
             />
           </div>
         </section>
@@ -1146,10 +1134,8 @@ function AdvancedEditorOptions({
   draft,
   draftKey,
   embedText,
-  history,
   handlePaste,
   intentEnabled,
-  legacyOwnerMode,
   memoryScopes,
   ontologyText,
   pastePolicy,
@@ -1166,17 +1152,13 @@ function AdvancedEditorOptions({
   setSlugTouched,
   setStatus,
   setStorageMode,
-  setToken,
   storageMode,
-  token,
 }: {
   draft: CreatePostInput;
   draftKey: string;
   embedText: string;
-  history: RevisionSnapshot[];
   handlePaste: (field: PasteReceipt["field"], event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
   intentEnabled: boolean;
-  legacyOwnerMode: boolean;
   memoryScopes: DraftMemoryScopes;
   ontologyText: string;
   pastePolicy: PastePolicy;
@@ -1193,9 +1175,7 @@ function AdvancedEditorOptions({
   setSlugTouched: (value: boolean) => void;
   setStatus: (value: string | undefined) => void;
   setStorageMode: (value: DraftStorageMode) => void;
-  setToken: (value: string) => void;
   storageMode: DraftStorageMode;
-  token: string;
 }) {
   function update<K extends keyof CreatePostInput>(key: K, value: CreatePostInput[K]) {
     setStatus(undefined);
@@ -1237,8 +1217,6 @@ function AdvancedEditorOptions({
         </fieldset>
         <details><summary>외부 콘텐츠 연결 (개발자용)</summary><p>동영상 같은 외부 콘텐츠를 안전한 참조 정보로 연결합니다. 본문에는 <code>::osb-embed id</code>를 한 줄로 넣으세요.</p><label>연결 정보(JSON 배열)<textarea onChange={(event) => { setStatus(undefined); setEmbedText(event.target.value); }} onPaste={(event) => handlePaste("embeds", event)} value={embedText} /></label></details>
         <details><summary>AI 지식 연결 (AI2AI·개발자용)</summary><p>AI나 다른 도구가 글의 의미를 읽을 수 있도록 별도 구조화 정보를 붙입니다. 일반 글쓰기에는 필요하지 않습니다.</p><label>지식 연결 정보(JSON)<textarea onChange={(event) => { setStatus(undefined); setOntologyText(event.target.value); }} onPaste={(event) => handlePaste("ontology", event)} value={ontologyText} /></label></details>
-        {legacyOwnerMode ? <details><summary>기존 단일 소유자 서버 연결</summary><p>기존 서버를 사용할 때만 관리자 토큰을 입력하세요.</p><label>관리자 토큰<input autoComplete="off" onChange={(event) => setToken(event.target.value)} type="password" value={token} /></label></details> : null}
-        {history.length ? <details><summary>서버 저장 기록 {history.length}개</summary><ol>{history.map((revision) => <li key={revision.id}>버전 {revision.revisionNumber} · {revision.actor.kind} · {revision.id.slice(0, 8)}</li>)}</ol></details> : null}
       </div>
     </details>
   );
@@ -1402,9 +1380,10 @@ async function saveRevisionCompat(
   return client.getAdminDocument(editing.documentId);
 }
 
-function capabilityModeLabel(mode: Capabilities["mutationMode"]): string {
-  if (mode === "read_only") return "읽기 전용";
-  if (mode === "single_owner_token") return "단일 소유자";
+function capabilityModeLabel(capabilities: Capabilities): string {
+  const access = studioAccessFor(capabilities);
+  if (access === "disabled") return "읽기 전용";
+  if (access === "admin_only") return "관리자 전용";
   return "계정별 블로그";
 }
 

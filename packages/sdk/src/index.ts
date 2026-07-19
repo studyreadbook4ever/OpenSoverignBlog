@@ -216,6 +216,48 @@ export interface Capabilities {
   unavailableByDefault: string[];
   mutationMechanisms: Array<"session" | "owner_token">;
   mutationMode: "read_only" | "single_owner_token" | "authenticated_members";
+  /** Present on the v2 capability contract. Public reads remain anonymous in every profile. */
+  publicAccess?: "anonymous_read";
+  /**
+   * Describes Studio authorization independently from the legacy mutation
+   * transport. Older v1 servers omit this field.
+   */
+  studioAccess?: StudioAccess;
+  /** Operational administrator authentication methods advertised by a v2 server. */
+  auth?: AdminAuthCapabilities;
+}
+
+export type StudioAccess = "disabled" | "admin_only" | "members";
+export type AdminAuthStatus = "disabled" | "ready" | "misconfigured";
+
+export interface AdminAccessKeyMethod {
+  id: "admin-access-key";
+  kind: "access_key";
+  flow: "secret_exchange";
+  audience: "admin";
+  label: string;
+  actionHref: string;
+}
+
+export interface AdminExternalAuthMethod {
+  id: "admin-external";
+  kind: "external";
+  flow: "redirect";
+  audience: "admin";
+  provider: string;
+  label: string;
+  actionHref: string;
+}
+
+export type AdminAuthMethod = AdminAccessKeyMethod | AdminExternalAuthMethod;
+
+export interface AdminAuthCapabilities {
+  status: AdminAuthStatus;
+  methods: AdminAuthMethod[];
+}
+
+export interface AdminAccessKeyInput {
+  accessKey: string;
 }
 
 export type DiscoveryAuth = "none" | "session" | "owner";
@@ -506,6 +548,36 @@ export class OpenSoverignBlogClient {
       body: JSON.stringify(input),
       ...withSignal(signal),
     });
+  }
+
+  /**
+   * Exchanges a high-entropy administrator access key for the same HttpOnly
+   * session used by the rest of Studio. The key is sent only in this request
+   * body and is never installed as a Bearer credential by the SDK.
+   */
+  async loginWithAdminAccessKey(
+    input: AdminAccessKeyInput,
+    actionHref = "/api/v1/auth/access-key/session",
+    signal?: AbortSignal,
+  ): Promise<Session> {
+    return this.#request(validateAdminAuthActionHref(actionHref), {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
+  }
+
+  /** Alias matching the capability's `adminAccess` terminology. */
+  async adminAccessLogin(
+    input: AdminAccessKeyInput,
+    actionHref = "/api/v1/auth/access-key/session",
+    signal?: AbortSignal,
+  ): Promise<Session> {
+    return this.loginWithAdminAccessKey(input, actionHref, signal);
   }
 
   async logout(signal?: AbortSignal): Promise<Session> {
@@ -845,4 +917,25 @@ export class OpenSoverignBlogClient {
 
 function withSignal(signal: AbortSignal | undefined): Pick<RequestInit, "signal"> {
   return signal ? { signal } : {};
+}
+
+function validateAdminAuthActionHref(value: string): string {
+  if (
+    typeof value !== "string"
+    || !value.startsWith("/")
+    || value.startsWith("//")
+    || value.includes("\\")
+    || value.includes("#")
+  ) {
+    throw new TypeError("administrator authentication action must be a root-relative API path");
+  }
+  const parsed = new URL(value, "https://open-soverign-blog.invalid");
+  if (
+    parsed.origin !== "https://open-soverign-blog.invalid"
+    || !parsed.pathname.startsWith("/api/v1/auth/")
+    || parsed.pathname.split("/").some((segment) => segment === "." || segment === "..")
+  ) {
+    throw new TypeError("administrator authentication action must target /api/v1/auth/");
+  }
+  return `${parsed.pathname}${parsed.search}`;
 }
