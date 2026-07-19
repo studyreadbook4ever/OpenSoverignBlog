@@ -10,8 +10,8 @@
 set -eu
 umask 077
 
-SCRIPT_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPOSITORY_ROOT=$(CDPATH= cd -- "$SCRIPT_DIRECTORY/.." && pwd -P)
+SCRIPT_DIRECTORY=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPOSITORY_ROOT=$(CDPATH='' cd -- "$SCRIPT_DIRECTORY/.." && pwd -P)
 SUPPORT="$SCRIPT_DIRECTORY/osb-update-support.py"
 REPOSITORY_URL="https://github.com/studyreadbook4ever/OpenSoverignBlog"
 REMOTE_GIT_URL="$REPOSITORY_URL.git"
@@ -201,7 +201,8 @@ assert_volume_quiesced() {
 capture_health() {
     expected_version=$1
     health_directory=$2
-    mkdir -m 700 -p "$health_directory"
+    mkdir -p -- "$health_directory"
+    chmod 700 -- "$health_directory"
     attempt=1
     while [ "$attempt" -le 40 ]; do
         if compose_invoke exec -T blog curl --fail --silent --show-error \
@@ -227,6 +228,8 @@ capture_health() {
     return 1
 }
 
+# Called only from rollback(), which is reached indirectly through the EXIT trap.
+# shellcheck disable=SC2317,SC2329
 restore_runtime_pointer() {
     [ -n "$STATE_DIRECTORY" ] || return 0
     if [ "$PREVIOUS_RUNTIME_PRESENT" = true ]; then
@@ -240,6 +243,8 @@ restore_runtime_pointer() {
     fi
 }
 
+# Called only from finish(), which is registered as the EXIT trap handler.
+# shellcheck disable=SC2317,SC2329
 rollback() {
     [ "$ROLLBACK_ACTIVE" = false ] || return 1
     ROLLBACK_ACTIVE=true
@@ -248,33 +253,43 @@ rollback() {
     journal "rollback-start"
     rollback_failed=false
 
-    python3 "$SUPPORT" restore --deployment "$DEPLOYMENT" --snapshot "$CONTROL_SNAPSHOT"
-    [ "$?" -eq 0 ] || rollback_failed=true
-    if [ -n "$NEW_RUNTIME_DIRECTORY" ] && [ -d "$NEW_RUNTIME_DIRECTORY" ]; then
-        mv "$NEW_RUNTIME_DIRECTORY" "$TRANSACTION_DIRECTORY/failed-runtime"
-        [ "$?" -eq 0 ] || rollback_failed=true
+    if ! python3 "$SUPPORT" restore \
+        --deployment "$DEPLOYMENT" --snapshot "$CONTROL_SNAPSHOT"
+    then
+        rollback_failed=true
     fi
-    restore_runtime_pointer
-    [ "$?" -eq 0 ] || rollback_failed=true
+    if [ -n "$NEW_RUNTIME_DIRECTORY" ] && [ -d "$NEW_RUNTIME_DIRECTORY" ]; then
+        if ! mv "$NEW_RUNTIME_DIRECTORY" "$TRANSACTION_DIRECTORY/failed-runtime"; then
+            rollback_failed=true
+        fi
+    fi
+    if ! restore_runtime_pointer; then
+        rollback_failed=true
+    fi
 
     rollback_env="$STATE_DIRECTORY/transactions/rollback-$$.env"
-    python3 "$SUPPORT" env-rewrite \
+    if python3 "$SUPPORT" env-rewrite \
         --source "$DEPLOYMENT/.env" \
         --output "$rollback_env" \
         --set "OSB_IMAGE=$CURRENT_IMAGE_ID" \
         --set "OSB_DATA_VOLUME=$CURRENT_DATA_VOLUME" \
         --set "OSB_INSTALL_LOCK_DIGEST=$CURRENT_LOCK_DIGEST"
-    if [ "$?" -eq 0 ]; then
+    then
         if assert_volume_quiesced "$CURRENT_DATA_VOLUME"; then
             ACTIVE_COMPOSE=$CURRENT_COMPOSE
             ACTIVE_ENV=$rollback_env
             ACTIVE_CONTROL_ROOT=$DEPLOYMENT
-            compose_invoke up -d --wait --wait-timeout 180
-            [ "$?" -eq 0 ] || rollback_failed=true
-            assert_running_pair "$CURRENT_IMAGE_ID" "$CURRENT_DATA_VOLUME"
-            [ "$?" -eq 0 ] || rollback_failed=true
-            capture_health "$CURRENT_VERSION" "$STATE_DIRECTORY/transactions/rollback-health-$$"
-            [ "$?" -eq 0 ] || rollback_failed=true
+            if ! compose_invoke up -d --wait --wait-timeout 180; then
+                rollback_failed=true
+            fi
+            if ! assert_running_pair "$CURRENT_IMAGE_ID" "$CURRENT_DATA_VOLUME"; then
+                rollback_failed=true
+            fi
+            if ! capture_health \
+                "$CURRENT_VERSION" "$STATE_DIRECTORY/transactions/rollback-health-$$"
+            then
+                rollback_failed=true
+            fi
         else
             journal "rollback-old-volume-not-quiescent"
             rollback_failed=true
@@ -293,6 +308,8 @@ rollback() {
     return 0
 }
 
+# Called only from finish(), which is registered as the EXIT trap handler.
+# shellcheck disable=SC2317,SC2329
 cleanup_temp() {
     [ -n "$TEMP_ROOT" ] || return 0
     case "$TEMP_ROOT" in
@@ -305,6 +322,8 @@ cleanup_temp() {
     esac
 }
 
+# ShellCheck cannot follow this function through the EXIT trap registration below.
+# shellcheck disable=SC2317,SC2329
 finish() {
     result=$?
     trap - EXIT HUP INT TERM
@@ -380,7 +399,7 @@ python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1
 [ -f "$SUPPORT" ] || die "missing local updater support module: $SUPPORT"
 [ -d "$DEPLOYMENT" ] || die "deployment directory does not exist: $DEPLOYMENT"
 [ ! -L "$DEPLOYMENT" ] || die "deployment directory itself must not be a symlink"
-DEPLOYMENT=$(CDPATH= cd -- "$DEPLOYMENT" && pwd -P)
+DEPLOYMENT=$(CDPATH='' cd -- "$DEPLOYMENT" && pwd -P)
 case "$DEPLOYMENT" in *:*) die "deployment path cannot contain ':'" ;; esac
 
 if [ "$SELF_TEST" = true ]; then
@@ -395,7 +414,7 @@ if [ "$OFFLINE" = false ]; then
 fi
 require_command mktemp
 [ -d "$TEMP_BASE" ] || die "temporary directory does not exist: $TEMP_BASE"
-TEMP_BASE=$(CDPATH= cd -- "$TEMP_BASE" && pwd -P)
+TEMP_BASE=$(CDPATH='' cd -- "$TEMP_BASE" && pwd -P)
 [ "$TEMP_BASE" != / ] || die "refusing to place updater worktrees directly under /"
 TEMP_ROOT=$(mktemp -d "$TEMP_BASE/osb-update.XXXXXXXX")
 chmod 700 "$TEMP_ROOT"
@@ -485,8 +504,9 @@ docker compose version >/dev/null 2>&1 || die "Docker Compose v2 is required"
 GPG_PROGRAM=$(command -v gpg)
 case "$GPG_PROGRAM" in /*) ;; *) die "gpg must resolve to an absolute executable path" ;; esac
 GPG_PROGRAM=$(readlink -f -- "$GPG_PROGRAM")
-[ -f "$GPG_PROGRAM" ] && [ -x "$GPG_PROGRAM" ] \
-    || die "gpg must resolve to one executable regular file"
+if [ ! -f "$GPG_PROGRAM" ] || [ ! -x "$GPG_PROGRAM" ]; then
+    die "gpg must resolve to one executable regular file"
+fi
 if docker info --format '{{json .SecurityOptions}}' | grep -F 'rootless' >/dev/null 2>&1; then
     # Root in a rootless daemon maps back to the invoking host account and can
     # perform same-directory atomic replacement on its bind-mounted files.
@@ -496,7 +516,7 @@ else
 fi
 
 [ "$DEPLOYMENT" != / ] || die "deployment directory cannot be /"
-[ "$DEPLOYMENT" != "$(CDPATH= cd -- "${HOME:?}" && pwd -P)" ] || die "deployment directory cannot be HOME"
+[ "$DEPLOYMENT" != "$(CDPATH='' cd -- "${HOME:?}" && pwd -P)" ] || die "deployment directory cannot be HOME"
 STATE_DIRECTORY="$DEPLOYMENT/.osb-update"
 if [ -L "$STATE_DIRECTORY" ]; then
     die "update state directory must not be a symlink"
@@ -505,7 +525,7 @@ for state_child in transactions runtime; do
     [ ! -L "$STATE_DIRECTORY/$state_child" ] \
         || die "update state child must not be a symlink: $state_child"
 done
-mkdir -m 700 -p "$STATE_DIRECTORY/transactions" "$STATE_DIRECTORY/runtime"
+mkdir -p -- "$STATE_DIRECTORY/transactions" "$STATE_DIRECTORY/runtime"
 chmod 700 "$STATE_DIRECTORY" "$STATE_DIRECTORY/transactions" "$STATE_DIRECTORY/runtime"
 # Lock the already-validated state directory inode itself. Opening a writable
 # path here would let a pre-created update.lock symlink truncate its target.
@@ -546,17 +566,20 @@ if [ -L "$STATE_DIRECTORY/current" ]; then
     case "$runtime_leaf" in
         *[!v0-9.]*|*..*|*/*) die "current runtime pointer has an unsafe release name" ;;
     esac
-    [ -d "$STATE_DIRECTORY/$PREVIOUS_RUNTIME_TARGET" ] \
-        && [ ! -L "$STATE_DIRECTORY/$PREVIOUS_RUNTIME_TARGET" ] \
-        || die "current runtime target must be one real managed directory"
+    if [ ! -d "$STATE_DIRECTORY/$PREVIOUS_RUNTIME_TARGET" ] \
+        || [ -L "$STATE_DIRECTORY/$PREVIOUS_RUNTIME_TARGET" ]
+    then
+        die "current runtime target must be one real managed directory"
+    fi
     PREVIOUS_RUNTIME_PRESENT=true
     CURRENT_COMPOSE="$STATE_DIRECTORY/current/compose.yaml"
 else
     [ ! -e "$STATE_DIRECTORY/current" ] || die "current runtime pointer must be a managed symlink"
     CURRENT_COMPOSE="$REPOSITORY_ROOT/compose.yaml"
 fi
-[ -f "$CURRENT_COMPOSE" ] && [ ! -L "$CURRENT_COMPOSE" ] \
-    || die "current Compose bundle must be one real file: $CURRENT_COMPOSE"
+if [ ! -f "$CURRENT_COMPOSE" ] || [ -L "$CURRENT_COMPOSE" ]; then
+    die "current Compose bundle must be one real file: $CURRENT_COMPOSE"
+fi
 
 ACTIVE_COMPOSE=$CURRENT_COMPOSE
 ACTIVE_ENV=$CURRENT_ENV

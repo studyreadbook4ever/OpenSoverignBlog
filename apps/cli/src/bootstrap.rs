@@ -3144,18 +3144,42 @@ fn check_installation_contract(
         .install_lock
         .clone()
         .unwrap_or_else(|| root.join(INSTALL_LOCK));
-    if !intent_path.exists() && !lock_path.exists() {
-        checks.push(DoctorCheck {
-            id: "installation.contract",
-            status: CheckStatus::Warn,
-            summary: "legacy deployment has no installation manifest or lock".into(),
-            remediation: Some(
-                "run `osb installation adopt --directory <deployment>` before upgrading".into(),
-            ),
-        });
-        return;
-    }
-    match verify_installation_contract(args, config, &intent_path, &lock_path) {
+    let expected_digest = match installation_tracking(
+        args,
+        &intent_path,
+        config.deployment.delivery_only,
+    ) {
+        Ok(InstallationTracking::Tracked(digest)) => digest,
+        Ok(InstallationTracking::Untracked) => {
+            checks.push(DoctorCheck {
+                id: "installation.contract",
+                status: CheckStatus::Warn,
+                summary: "explicitly untracked source/legacy installation; adjacent example contract is not enforced".into(),
+                remediation: Some(
+                    "bootstrap or adopt this deployment, set OSB_INSTALL_LOCK_DIGEST to its canonical lock digest, then set OSB_ALLOW_UNTRACKED_INSTALLATION=false".into(),
+                ),
+            });
+            return;
+        }
+        Err(error) => {
+            checks.push(DoctorCheck {
+                id: "installation.contract",
+                status: CheckStatus::Fail,
+                summary: error.to_string(),
+                remediation: Some(
+                    "supply the canonical OSB_INSTALL_LOCK_DIGEST, or temporarily set OSB_ALLOW_UNTRACKED_INSTALLATION=true only for a writable pre-contract source/legacy deployment".into(),
+                ),
+            });
+            return;
+        }
+    };
+    match verify_installation_contract(
+        args,
+        config,
+        &intent_path,
+        &lock_path,
+        Some(&expected_digest),
+    ) {
         Ok(summary) => checks.push(DoctorCheck {
             id: "installation.contract",
             status: CheckStatus::Pass,
@@ -3173,11 +3197,90 @@ fn check_installation_contract(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstallationTracking {
+    Tracked(String),
+    Untracked,
+}
+
+fn installation_tracking(
+    args: &DoctorArgs,
+    intent_path: &Path,
+    delivery_only: bool,
+) -> Result<InstallationTracking> {
+    let default_env = root_for_contract(intent_path).join(".env");
+    let env_file = args
+        .env_file
+        .as_deref()
+        .or_else(|| default_env.exists().then_some(default_env.as_path()));
+    let mut values = if let Some(path) = env_file {
+        ensure_regular_contract_file(path, "deployment environment")?;
+        read_environment_file(path)?
+    } else {
+        BTreeMap::new()
+    };
+    for name in [
+        "OSB_INSTALL_LOCK_DIGEST",
+        "OSB_ALLOW_UNTRACKED_INSTALLATION",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            values.insert(
+                name.into(),
+                value
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("{name} must be valid UTF-8"))?,
+            );
+        }
+    }
+    installation_tracking_from_values(
+        values.get("OSB_INSTALL_LOCK_DIGEST").map(String::as_str),
+        values
+            .get("OSB_ALLOW_UNTRACKED_INSTALLATION")
+            .map(String::as_str),
+        delivery_only,
+    )
+}
+
+fn installation_tracking_from_values(
+    lock_digest: Option<&str>,
+    allow_untracked: Option<&str>,
+    delivery_only: bool,
+) -> Result<InstallationTracking> {
+    let allow_untracked = match allow_untracked {
+        None | Some("") | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            bail!("OSB_ALLOW_UNTRACKED_INSTALLATION must be exactly true or false when non-empty")
+        }
+    };
+    let lock_digest = lock_digest.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(lock_digest) = lock_digest {
+        ensure!(
+            lock_digest.len() == 64
+                && lock_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "OSB_INSTALL_LOCK_DIGEST must be one lowercase SHA-256 digest"
+        );
+        return Ok(InstallationTracking::Tracked(lock_digest.into()));
+    }
+    ensure!(
+        allow_untracked,
+        "OSB_INSTALL_LOCK_DIGEST is required; only a pre-contract source/legacy installation may temporarily set OSB_ALLOW_UNTRACKED_INSTALLATION=true"
+    );
+    ensure!(
+        !delivery_only,
+        "OSB_ALLOW_UNTRACKED_INSTALLATION cannot bypass the installation lock on a delivery-only deployment"
+    );
+    Ok(InstallationTracking::Untracked)
+}
+
 fn verify_installation_contract(
     args: &DoctorArgs,
     config: &DoctorConfig,
     intent_path: &Path,
     lock_path: &Path,
+    expected_digest: Option<&str>,
 ) -> Result<String> {
     ensure_regular_contract_file(intent_path, INSTALL_MANIFEST)?;
     ensure_regular_contract_file(lock_path, INSTALL_LOCK)?;
@@ -3186,6 +3289,12 @@ fn verify_installation_contract(
     let lock =
         InstallationLock::from_json(&fs::read_to_string(lock_path)?).map_err(anyhow::Error::msg)?;
     verify_intent_lock_pair(&intent, &lock)?;
+    if let Some(expected_digest) = expected_digest {
+        ensure!(
+            lock.lock_digest == expected_digest,
+            "OSB_INSTALL_LOCK_DIGEST does not match osb.lock.json"
+        );
+    }
     ensure!(
         intent.site_id == config.server.site_id,
         "site id differs between installation intent and effective config"
@@ -4127,6 +4236,7 @@ mod tests {
             &effective,
             &root.path().join(INSTALL_MANIFEST),
             &root.path().join(INSTALL_LOCK),
+            None,
         )
         .unwrap();
 
@@ -4515,6 +4625,36 @@ mod tests {
                 .status,
             CheckStatus::Pass
         );
+    }
+
+    #[test]
+    fn doctor_installation_tracking_matches_runtime_fail_closed_rules() {
+        let digest = "ab".repeat(32);
+        assert_eq!(
+            installation_tracking_from_values(Some(&digest), Some("false"), false).unwrap(),
+            InstallationTracking::Tracked(digest.clone())
+        );
+        assert_eq!(
+            installation_tracking_from_values(None, Some("true"), false).unwrap(),
+            InstallationTracking::Untracked
+        );
+
+        let missing = installation_tracking_from_values(None, None, false).unwrap_err();
+        assert!(
+            missing
+                .to_string()
+                .contains("OSB_INSTALL_LOCK_DIGEST is required")
+        );
+        let delivery = installation_tracking_from_values(None, Some("true"), true).unwrap_err();
+        assert!(delivery.to_string().contains("delivery-only"));
+
+        for invalid in [" ", "TRUE", "1", "yes", "on", " true ", "false "] {
+            assert!(
+                installation_tracking_from_values(Some(&digest), Some(invalid), false).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        assert!(installation_tracking_from_values(Some(&"AB".repeat(32)), None, false).is_err());
     }
 
     #[test]

@@ -2,8 +2,8 @@
 set -eu
 umask 077
 
-TEST_DIRECTORY=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-REPOSITORY_ROOT=$(CDPATH= cd -- "$TEST_DIRECTORY/../.." && pwd -P)
+TEST_DIRECTORY=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)
+REPOSITORY_ROOT=$(CDPATH='' cd -- "$TEST_DIRECTORY/../.." && pwd -P)
 UPDATER="$REPOSITORY_ROOT/scripts/osb-update.sh"
 SUPPORT="$REPOSITORY_ROOT/scripts/osb-update-support.py"
 
@@ -23,6 +23,8 @@ if grep -En '(curl|wget)[^#]*\|[[:space:]]*(sh|bash)([[:space:]]|$)' "$UPDATER";
     exit 1
 fi
 grep -F 'installation dlc reconcile' "$UPDATER" >/dev/null
+# This assertion intentionally matches literal Compose interpolation syntax.
+# shellcheck disable=SC2016
 grep -F 'name: "${OSB_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-open-soverign-blog}_osb-data}"' \
     "$REPOSITORY_ROOT/compose.yaml" >/dev/null
 
