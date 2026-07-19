@@ -84,6 +84,9 @@
         },
         "intent": { "type": ["object", "null"] },
         "ontology": { "type": ["object", "null"] },
+        "authorship": {
+          "$ref": "content-envelope.v1.schema.json#/$defs/publicAuthorship"
+        },
         "actor": { "$ref": "#/$defs/revisionActor" },
         "idempotencyKey": { "type": ["string", "null"], "maxLength": 200 }
       }

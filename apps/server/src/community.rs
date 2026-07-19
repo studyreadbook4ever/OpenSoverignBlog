@@ -1,4 +1,7 @@
-use std::sync::{Arc, OnceLock};
+use std::{
+    sync::{Arc, OnceLock},
+    time::Duration as StdDuration,
+};
 
 use argon2::{
     Argon2,
@@ -7,7 +10,7 @@ use argon2::{
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -21,24 +24,58 @@ use osb_feature_comments::{
 };
 use osb_kernel::{
     CONTENT_SCHEMA_VERSION, ContentRepository, DocumentSnapshot, EmbedReference, IntentLayer,
-    NewDocument, OntologySidecar, ProposedRevision, RepositoryError, RevisionActor,
-    RevisionActorKind, RevisionSnapshot, content_hash,
+    NewDocument, OntologySidecar, ProposedRevision, PublicAuthorship, RepositoryError,
+    RevisionActor, RevisionActorKind, RevisionSnapshot, content_hash,
 };
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
-    CommentRecord, SessionAuthMethod, SiteMembershipRecord, SiteMembershipRole, SiteRecord,
-    SqliteRepository, ThemeProfile, UserRecord,
+    AdminAuthMode as StoredAdminAuthMode, CommentRecord, SessionAuthMethod, SiteMembershipRecord,
+    SiteMembershipRole, SiteRecord, SqliteRepository, ThemeProfile, UserRecord,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::{AppState, ViewQuery, begin_public_mutation};
+use super::{AppState, ViewQuery, admission::KeyedRateLimiter, begin_public_mutation};
 
 const SESSION_COOKIE: &str = "osb_session";
 const SESSION_LIFETIME_DAYS: i64 = 30;
 const PUBLIC_CACHE: &str = "public, max-age=0, s-maxage=60, stale-while-revalidate=300";
+const MEMBER_AUTH_BODY_LIMIT: usize = 8 * 1024;
+const MEMBER_AUTH_BUCKET_LIMIT: usize = 4_096;
+const MEMBER_AUTH_ATTEMPTS_PER_MINUTE: usize = 10;
+
+#[derive(Clone)]
+pub(super) struct MemberAuthAdmission {
+    attempts: Arc<Mutex<KeyedRateLimiter>>,
+}
+
+impl MemberAuthAdmission {
+    pub(super) fn new() -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(KeyedRateLimiter::new(
+                MEMBER_AUTH_BUCKET_LIMIT,
+                MEMBER_AUTH_ATTEMPTS_PER_MINUTE,
+                StdDuration::from_secs(60),
+            ))),
+        }
+    }
+
+    async fn admit(&self, key: [u8; 32]) -> Result<(), CommunityApiError> {
+        self.attempts
+            .lock()
+            .await
+            .admit(key)
+            .then_some(())
+            .ok_or(CommunityApiError::RateLimited)
+    }
+
+    async fn forget(&self, key: &[u8; 32]) {
+        self.attempts.lock().await.forget(key);
+    }
+}
 
 pub fn routes(state: AppState) -> Router<AppState> {
     let mut public = Router::new()
@@ -68,10 +105,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             get(list_studio_collaborators),
         );
     }
-    let private_reads = private_reads.route_layer(middleware::from_fn(private_no_store));
-
-    let mut mutations = Router::new()
-        .route("/api/v1/auth/logout", post(logout))
+    let mut authenticated_mutations = Router::new()
         .route("/api/v1/blogs", post(create_blog))
         .route("/api/v1/studio/documents", post(create_studio_document))
         .route(
@@ -85,16 +119,24 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/api/v1/studio/preview", post(preview_studio))
         .route("/api/v1/studio/assets", post(upload_studio_asset))
         .route("/api/v1/studio/settings", put(update_studio_settings));
+    if state.features.is_active("home_curation") {
+        public = public.route("/api/v1/home", get(home));
+        private_reads = private_reads.route("/api/v1/admin/home/pins", get(get_home_pins));
+        authenticated_mutations =
+            authenticated_mutations.route("/api/v1/admin/home/pins", put(replace_home_pins));
+    }
+    let mut public_auth_mutations = Router::new().route("/api/v1/auth/logout", post(logout));
     if state.local_auth_enabled {
-        mutations = mutations
+        public_auth_mutations = public_auth_mutations
             .route("/api/v1/auth/register", post(register))
             .route("/api/v1/auth/login", post(login));
     }
     if state.comments_enabled {
-        mutations = mutations.route("/api/v1/posts/{id}/comments", post(create_comment));
+        authenticated_mutations =
+            authenticated_mutations.route("/api/v1/posts/{id}/comments", post(create_comment));
     }
     if state.collaboration_enabled {
-        mutations = mutations
+        authenticated_mutations = authenticated_mutations
             .route(
                 "/api/v1/studio/collaborators",
                 post(add_studio_collaborator),
@@ -104,16 +146,45 @@ pub fn routes(state: AppState) -> Router<AppState> {
                 delete(remove_studio_collaborator),
             );
     }
-    let mutations = mutations
+    let private_reads = private_reads.route_layer(middleware::from_fn(private_no_store));
+    let authenticated_mutations = authenticated_mutations
+        // Reject an absent/invalid session from request parts before Bytes or
+        // Json extractors are allowed to buffer an authenticated mutation.
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            authenticated_user_guard,
+        ))
         // Delivery-only rejection happens before body buffering/JSON parsing.
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             delivery_guard,
         ))
-        .route_layer(middleware::from_fn_with_state(state, origin_guard))
+        .route_layer(middleware::from_fn_with_state(state.clone(), origin_guard))
         .route_layer(middleware::from_fn(private_no_store));
+    let public_auth_mutations = public_auth_mutations
+        .route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            delivery_guard,
+        ))
+        .route_layer(middleware::from_fn_with_state(state, origin_guard))
+        .route_layer(middleware::from_fn(private_no_store))
+        .layer(DefaultBodyLimit::max(MEMBER_AUTH_BODY_LIMIT));
 
-    public.merge(private_reads).merge(mutations)
+    public
+        .merge(private_reads)
+        .merge(public_auth_mutations)
+        .merge(authenticated_mutations)
+}
+
+async fn authenticated_user_guard(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    match require_user(&state, request.headers()).await {
+        Ok(_) => next.run(request).await,
+        Err(error) => error.into_response(),
+    }
 }
 
 async fn origin_guard(
@@ -156,8 +227,8 @@ async fn session(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, CommunityApiError> {
-    let user = resolve_session_user(&state, &headers).await?;
-    let payload = session_payload(&state, user).await?;
+    let session = resolve_session_user(&state, &headers).await?;
+    let payload = session_payload(&state, session).await?;
     Ok(Json(payload).into_response())
 }
 
@@ -170,6 +241,8 @@ async fn register(
         return Err(CommunityApiError::RegistrationClosed);
     }
     let email = validate_email(&input.email)?;
+    let admission_key = member_auth_key("register", &email);
+    state.member_auth_admission.admit(admission_key).await?;
     validate_handle(&input.handle, "user handle")?;
     let display_name = validate_text(&input.display_name, "display name", 80)?;
     validate_password(&input.password)?;
@@ -180,7 +253,9 @@ async fn register(
         repository.create_user(&email, &handle, &display_name, &password_phc)
     })
     .await?;
-    authenticated_response(&state, user, StatusCode::CREATED).await
+    let response = authenticated_response(&state, user, StatusCode::CREATED).await?;
+    state.member_auth_admission.forget(&admission_key).await;
+    Ok(response)
 }
 
 async fn login(
@@ -189,6 +264,8 @@ async fn login(
 ) -> Result<Response, CommunityApiError> {
     ensure_mutable(&state)?;
     let email = validate_email(&input.email)?;
+    let admission_key = member_auth_key("login", &email);
+    state.member_auth_admission.admit(admission_key).await?;
     validate_password_for_login(&input.password)?;
     let repository = Arc::clone(&state.repository);
     let candidate = repository_optional(move || repository.find_user_by_email(&email)).await?;
@@ -202,7 +279,18 @@ async fn login(
     let user = candidate
         .filter(|_| verified)
         .ok_or(CommunityApiError::InvalidLogin)?;
-    authenticated_response(&state, user, StatusCode::OK).await
+    let response = authenticated_response(&state, user, StatusCode::OK).await?;
+    state.member_auth_admission.forget(&admission_key).await;
+    Ok(response)
+}
+
+fn member_auth_key(purpose: &str, normalized_email: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"open-soverign-blog/member-auth-admission/v1\0");
+    digest.update(purpose.as_bytes());
+    digest.update(b"\0");
+    digest.update(normalized_email.as_bytes());
+    digest.finalize().into()
 }
 
 async fn logout(
@@ -247,7 +335,14 @@ pub(super) async fn authenticated_response(
             .map(|_| ())
     })
     .await?;
-    let payload = session_payload(state, Some(user)).await?;
+    let payload = session_payload(
+        state,
+        Some(ResolvedSession {
+            user,
+            instance_administrator: false,
+        }),
+    )
+    .await?;
     let mut response = (status, Json(payload)).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -287,7 +382,14 @@ pub(super) async fn administrator_authenticated_response(
             .map(|_| ())
     })
     .await?;
-    let payload = session_payload(state, Some(user)).await?;
+    let payload = session_payload(
+        state,
+        Some(ResolvedSession {
+            user,
+            instance_administrator: true,
+        }),
+    )
+    .await?;
     let mut response = (status, Json(payload)).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -304,14 +406,17 @@ pub(super) async fn administrator_authenticated_response(
 
 async fn session_payload(
     state: &AppState,
-    user: Option<UserRecord>,
+    session: Option<ResolvedSession>,
 ) -> Result<SessionPayload, CommunityApiError> {
-    if state.delivery_only || user.is_none() {
+    if state.delivery_only || session.is_none() {
         return Ok(SessionPayload::Anonymous {
             registration_open: state.registration_open && !state.delivery_only,
         });
     }
-    let user = user.expect("checked above");
+    let ResolvedSession {
+        user,
+        instance_administrator,
+    } = session.expect("checked above");
     let repository = Arc::clone(&state.repository);
     let user_id = user.id;
     let collaboration_enabled = state.collaboration_enabled;
@@ -342,14 +447,20 @@ async fn session_payload(
             user: user_summary(user),
             blog,
             membership_role,
+            instance_administrator,
         }),
     })
+}
+
+struct ResolvedSession {
+    user: UserRecord,
+    instance_administrator: bool,
 }
 
 async fn resolve_session_user(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<Option<UserRecord>, CommunityApiError> {
+) -> Result<Option<ResolvedSession>, CommunityApiError> {
     if state.delivery_only {
         return Ok(None);
     }
@@ -373,7 +484,11 @@ async fn resolve_session_user(
         if !enabled {
             return Err(RepositoryError::NotFound);
         }
-        repository.get_user_by_id(session.user_id)
+        let user = repository.get_user_by_id(session.user_id)?;
+        Ok(ResolvedSession {
+            user,
+            instance_administrator: session.auth_method != SessionAuthMethod::Legacy,
+        })
     })
     .await
 }
@@ -385,7 +500,38 @@ async fn require_user(
     ensure_mutable(state)?;
     resolve_session_user(state, headers)
         .await?
+        .map(|session| session.user)
         .ok_or(CommunityApiError::Unauthorized)
+}
+
+/// Authorizes the installation-wide administration plane, not merely a blog
+/// membership. Legacy community sessions can therefore never curate the
+/// global home page even if they happen to own a blog.
+async fn require_instance_administrator(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<UserRecord, CommunityApiError> {
+    ensure_mutable(state)?;
+    let token_hash = session_hash_from_headers(headers).ok_or(CommunityApiError::Unauthorized)?;
+    let repository = Arc::clone(&state.repository);
+    repository_task(move || {
+        let session = repository.get_session(&token_hash)?;
+        let control = repository.get_admin_control_plane()?;
+        let expected_method = match control.auth_mode {
+            StoredAdminAuthMode::AccessKey => SessionAuthMethod::AccessKey,
+            StoredAdminAuthMode::External => SessionAuthMethod::External,
+            StoredAdminAuthMode::Disabled => return Err(RepositoryError::NotFound),
+        };
+        if session.user_id != control.owner_user_id || session.auth_method != expected_method {
+            return Err(RepositoryError::NotFound);
+        }
+        repository.get_user_by_id(session.user_id)
+    })
+    .await
+    .map_err(|error| match error {
+        CommunityApiError::NotFound => CommunityApiError::Unauthorized,
+        other => other,
+    })
 }
 
 async fn list_blogs(
@@ -528,6 +674,68 @@ async fn feed(
     public_json(&headers, &FeedResponse { items })
 }
 
+async fn home(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let response = repository_task(move || {
+        let home = repository.home_feed(100)?;
+        let pinned_items = home
+            .pinned
+            .into_iter()
+            .map(|document| feed_item(&repository, document))
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let recent_items = home
+            .recent
+            .into_iter()
+            .map(|document| feed_item(&repository, document))
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
+        Ok(HomeResponse {
+            pinned_items,
+            recent_items,
+        })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn get_home_pins(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<HomePinsResponse>, CommunityApiError> {
+    require_instance_administrator(&state, &headers).await?;
+    let repository = Arc::clone(&state.repository);
+    let document_ids = repository_task(move || {
+        Ok(repository
+            .list_home_pins()?
+            .into_iter()
+            .map(|pin| pin.document_id)
+            .collect())
+    })
+    .await?;
+    Ok(Json(HomePinsResponse { document_ids }))
+}
+
+async fn replace_home_pins(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<HomePinsInput>,
+) -> Result<Json<HomePinsResponse>, CommunityApiError> {
+    let administrator = require_instance_administrator(&state, &headers).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let document_ids = repository_task(move || {
+        Ok(repository
+            .replace_home_pins(administrator.id, &input.document_ids)?
+            .into_iter()
+            .map(|pin| pin.document_id)
+            .collect())
+    })
+    .await?;
+    Ok(Json(HomePinsResponse { document_ids }))
+}
+
 async fn list_blog_posts(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -569,6 +777,7 @@ fn feed_item(
         tags: Vec::new(),
         comment_count,
         has_intent_view: document.revision.intent.is_some(),
+        authorship: document.revision.authorship,
         cover_image_url: None,
     })
 }
@@ -607,6 +816,7 @@ async fn get_blog_post(
         embeds: document.revision.embeds.clone(),
         artifact,
         ontology: document.revision.ontology.clone(),
+        authorship: document.revision.authorship.clone(),
         slug: document.revision.slug,
         excerpt: Some(summarize_markdown(&document.revision.source_markdown, 220)),
         published_at,
@@ -659,6 +869,10 @@ async fn create_studio_document(
 ) -> Result<Response, CommunityApiError> {
     let user = require_user(&state, &headers).await?;
     let access = studio_access(&state, user.id).await?;
+    if state.features.is_active("social_embeds") {
+        super::social_embeds::validate_official_embeds(&input.embeds)
+            .map_err(CommunityApiError::BadRequest)?;
+    }
     let document = new_document(access.site.id, &user, input);
     let repository = Arc::clone(&state.repository);
     let actor_id = user.id;
@@ -676,6 +890,10 @@ async fn create_studio_revision(
 ) -> Result<Response, CommunityApiError> {
     let user = require_user(&state, &headers).await?;
     let access = studio_access(&state, user.id).await?;
+    if state.features.is_active("social_embeds") {
+        super::social_embeds::validate_official_embeds(&input.embeds)
+            .map_err(CommunityApiError::BadRequest)?;
+    }
     let proposal = ProposedRevision {
         document_id,
         base_revision_id: input.base_revision_id,
@@ -685,6 +903,7 @@ async fn create_studio_revision(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        authorship: input.authorship,
         actor: revision_actor(&user),
         idempotency_key: input.idempotency_key,
     };
@@ -730,6 +949,10 @@ async fn preview_studio(
     // Requiring a writable site makes the preview boundary identical to every
     // other Studio handler instead of becoming an unscoped rendering oracle.
     let access = studio_access(&state, user.id).await?;
+    if state.features.is_active("social_embeds") {
+        super::social_embeds::validate_official_embeds(&input.embeds)
+            .map_err(CommunityApiError::BadRequest)?;
+    }
     let input = new_document(access.site.id, &user, input);
     input
         .validate()
@@ -746,6 +969,7 @@ async fn preview_studio(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        authorship: input.authorship,
         actor: input.actor,
         content_hash: String::new(),
         created_at: Utc::now(),
@@ -1016,6 +1240,7 @@ fn new_document(site_id: Uuid, user: &UserRecord, input: StudioDocumentInput) ->
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        authorship: input.authorship,
         actor: revision_actor(user),
     }
 }
@@ -1211,11 +1436,11 @@ async fn hash_password(
     workers: Arc<tokio::sync::Semaphore>,
     password: String,
 ) -> Result<String, CommunityApiError> {
-    let _permit = workers
-        .acquire_owned()
-        .await
-        .map_err(|error| CommunityApiError::Internal(format!("password worker closed: {error}")))?;
+    let permit = workers
+        .try_acquire_owned()
+        .map_err(|_| CommunityApiError::RateLimited)?;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -1233,11 +1458,11 @@ async fn verify_password(
     supplied: String,
     expected_phc: Option<String>,
 ) -> Result<bool, CommunityApiError> {
-    let _permit = workers
-        .acquire_owned()
-        .await
-        .map_err(|error| CommunityApiError::Internal(format!("password worker closed: {error}")))?;
+    let permit = workers
+        .try_acquire_owned()
+        .map_err(|_| CommunityApiError::RateLimited)?;
     tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         static DUMMY_PHC: OnceLock<String> = OnceLock::new();
         let expected = expected_phc.unwrap_or_else(|| {
             DUMMY_PHC
@@ -1461,6 +1686,8 @@ struct StudioDocumentInput {
     intent: Option<IntentLayer>,
     #[serde(default)]
     ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    authorship: PublicAuthorship,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1476,6 +1703,8 @@ struct StudioRevisionInput {
     intent: Option<IntentLayer>,
     #[serde(default)]
     ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    authorship: PublicAuthorship,
     #[serde(default)]
     idempotency_key: Option<String>,
 }
@@ -1517,6 +1746,7 @@ struct AuthenticatedSession {
     blog: Option<BlogSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     membership_role: Option<SiteMembershipRole>,
+    instance_administrator: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1558,6 +1788,25 @@ struct FeedResponse {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct HomeResponse {
+    pinned_items: Vec<FeedPostSummary>,
+    recent_items: Vec<FeedPostSummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HomePinsResponse {
+    document_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HomePinsInput {
+    document_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct FeedPostSummary {
     id: Uuid,
     title: String,
@@ -1570,6 +1819,7 @@ struct FeedPostSummary {
     tags: Vec<String>,
     comment_count: usize,
     has_intent_view: bool,
+    authorship: PublicAuthorship,
     #[serde(skip_serializing_if = "Option::is_none")]
     cover_image_url: Option<String>,
 }
@@ -1587,6 +1837,7 @@ struct BlogPostView {
     artifact: PublishArtifact,
     #[serde(skip_serializing_if = "Option::is_none")]
     ontology: Option<OntologySidecar>,
+    authorship: PublicAuthorship,
     slug: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     excerpt: Option<String>,
@@ -1662,6 +1913,7 @@ pub(super) enum CommunityApiError {
     Unauthorized,
     Forbidden(String),
     InvalidLogin,
+    RateLimited,
     RegistrationClosed,
     ReadOnly,
     NotFound,
@@ -1697,6 +1949,11 @@ impl IntoResponse for CommunityApiError {
                 StatusCode::UNAUTHORIZED,
                 "invalid_login",
                 "email or password is incorrect".to_owned(),
+            ),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "authentication_rate_limited",
+                "try again shortly".to_owned(),
             ),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, "forbidden", message),
             Self::RegistrationClosed => (

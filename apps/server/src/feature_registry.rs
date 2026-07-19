@@ -2,14 +2,38 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-const KNOWN_FEATURES: [&str; 6] = [
+const KNOWN_FEATURES: [&str; 10] = [
     "ads",
+    "ai_authorship",
     "code_runner",
     "comments",
     "external_auth",
+    "home_curation",
     "rbac",
+    "release_check",
     "seo",
+    "social_embeds",
 ];
+
+/// Maps stable installation/DLC identifiers to the runtime composition names
+/// retained by the capabilities API. Unknown third-party DLCs remain locked by
+/// the installation contract, but cannot become executable merely by naming
+/// themselves in a manifest.
+pub fn runtime_feature_for_dlc(id: &str) -> Option<&'static str> {
+    match id {
+        "org.open-soverign-blog.monetization-policy" => Some("ads"),
+        "org.open-soverign-blog.ai-authorship" => Some("ai_authorship"),
+        "org.open-soverign-blog.code-runner-client" => Some("code_runner"),
+        "org.open-soverign-blog.comments" => Some("comments"),
+        "org.open-soverign-blog.external-auth" => Some("external_auth"),
+        "org.open-soverign-blog.home-curation" => Some("home_curation"),
+        "org.open-soverign-blog.rbac" => Some("rbac"),
+        "org.open-soverign-blog.release-check" => Some("release_check"),
+        "org.open-soverign-blog.seo" => Some("seo"),
+        "org.open-soverign-blog.social-embeds" => Some("social_embeds"),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,12 +80,38 @@ impl FeatureRegistry {
             ));
         }
 
-        let mut modules = vec![module(
-            "seo",
-            requested.contains("seo"),
-            true,
-            "canonical URLs, redirect history, robots.txt, and sitemap are mounted",
-        )];
+        let mut modules = vec![
+            module(
+                "seo",
+                requested.contains("seo"),
+                true,
+                "canonical URLs, redirect history, robots.txt, and sitemap are mounted",
+            ),
+            module(
+                "home_curation",
+                requested.contains("home_curation"),
+                true,
+                "the pinned-first home feed and administrator curation routes are mounted",
+            ),
+            module(
+                "ai_authorship",
+                requested.contains("ai_authorship"),
+                true,
+                "portable public revision authorship provenance is enabled",
+            ),
+            module(
+                "social_embeds",
+                requested.contains("social_embeds"),
+                true,
+                "strict YouTube and X provider parsing is enabled without arbitrary embed HTML",
+            ),
+            module(
+                "release_check",
+                requested.contains("release_check"),
+                true,
+                "bounded informational release-channel checks are enabled",
+            ),
+        ];
         for (id, reason) in [
             (
                 "external_auth",

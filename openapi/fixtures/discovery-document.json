@@ -90,6 +90,7 @@
   "operatorIntent": {
     "localAuth": true,
     "oauthRequested": false,
+    "administratorAuth": "disabled",
     "comments": true,
     "collaboration": false,
     "customCss": true,
@@ -101,15 +102,7 @@
       "provider": "redis",
       "role": "discardable_public_derivative_cache",
       "state": "active",
-      "required": true,
-      "topology": "sentinel",
-      "namespace": "osb",
-      "contentRelease": "release-42",
-      "hits": 12,
-      "misses": 3,
-      "errors": 0,
-      "lastSuccessUnix": 1784390400,
-      "lastError": null
+      "required": true
     },
     "sourceOfTruth": ["sqlite", "content_addressed_blobs"]
   },

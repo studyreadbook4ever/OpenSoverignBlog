@@ -1,11 +1,11 @@
 name: open-soverign-blog
 
 x-redis-environment: &redis-environment
-  OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
-  REDISCLI_AUTH: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
+  OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:-}"
+  REDISCLI_AUTH: "${OSB_REDIS_PASSWORD:-}"
 
 x-redis-common: &redis-common
-  image: redis:8.8.0-alpine3.23
+  image: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
   # Commands pass through a shell for environment expansion and Sentinel
   # initialization, so the official entrypoint cannot perform its usual
   # privilege drop. Start directly as the image's redis user instead.
@@ -29,6 +29,7 @@ x-sentinel-common: &sentinel-common
     - -ec
     - |
       umask 0077
+      : "$${OSB_REDIS_PASSWORD:?Redis profile requires OSB_REDIS_PASSWORD}"
       if [ ! -s /data/sentinel.conf ]; then
         cp /bootstrap/sentinel.conf /data/sentinel.conf
       fi
@@ -62,7 +63,7 @@ services:
   osb-storage-init:
     build:
       context: .
-    image: open-soverign-blog:local
+    image: "${OSB_IMAGE:-open-soverign-blog:local}"
     user: "0:0"
     network_mode: "none"
     read_only: true
@@ -115,7 +116,7 @@ services:
   blog:
     build:
       context: .
-    image: open-soverign-blog:local
+    image: "${OSB_IMAGE:-open-soverign-blog:local}"
     restart: unless-stopped
     # Give an in-flight SQLite/blob generation time to finish its atomic rename
     # after the HTTP server receives SIGTERM.
@@ -132,6 +133,14 @@ services:
     environment:
       OSB_BIND: "0.0.0.0:8787"
       OSB_CONFIG: "/config/config.toml"
+      OSB_INSTALL_MANIFEST: "/config/osb.install.toml"
+      OSB_INSTALL_LOCK: "/config/osb.lock.json"
+      OSB_INSTALL_LOCK_DIGEST: "${OSB_INSTALL_LOCK_DIGEST:-}"
+      # Default fail-closed. CI/legacy source checkouts must opt in explicitly;
+      # bootstrap deployments always provide the exact lock digest instead.
+      OSB_ALLOW_UNTRACKED_INSTALLATION: "${OSB_ALLOW_UNTRACKED_INSTALLATION:-false}"
+      OSB_STYLE: "${OSB_STYLE:-}"
+      OSB_CACHE: "${OSB_CACHE:-}"
       OSB_PUBLIC_URL: "${OSB_PUBLIC_URL:-}"
       OSB_ARTICLE_BASE_PATH: "${OSB_ARTICLE_BASE_PATH:-}"
       OSB_SITE_ID: "${OSB_SITE_ID:-}"
@@ -156,19 +165,23 @@ services:
       OSB_CUSTOM_CSS_FILE: "${OSB_CUSTOM_CSS_FILE:-}"
       OSB_AGENT_DISCOVERY: "${OSB_AGENT_DISCOVERY:-}"
       OSB_DELIVERY_ONLY: "${OSB_DELIVERY_ONLY:-}"
-      OSB_ADMIN_TOKEN: "${OSB_ADMIN_TOKEN:-}"
       OSB_FEATURES: "${OSB_FEATURES:-}"
+      OSB_DLC_IDS: "${OSB_DLC_IDS:-}"
+      OSB_REDIS_ENABLED: "${OSB_REDIS_ENABLED:-}"
       OSB_REDIS_TOPOLOGY: "${OSB_REDIS_TOPOLOGY:-}"
       OSB_REDIS_URL: "${OSB_REDIS_URL:-}"
       OSB_REDIS_SENTINELS: "${OSB_REDIS_SENTINELS:-}"
       OSB_REDIS_SENTINEL_MASTER: "${OSB_REDIS_SENTINEL_MASTER:-}"
       OSB_REDIS_NAMESPACE: "${OSB_REDIS_NAMESPACE:-}"
       OSB_REDIS_REQUIRED: "${OSB_REDIS_REQUIRED:-}"
-      OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:?set OSB_REDIS_PASSWORD; osb bootstrap generates it}"
-      OSB_CACHE_SIGNING_KEY: "${OSB_CACHE_SIGNING_KEY:?set OSB_CACHE_SIGNING_KEY; osb bootstrap generates it}"
+      OSB_REDIS_PASSWORD: "${OSB_REDIS_PASSWORD:-}"
+      OSB_CACHE_SIGNING_KEY: "${OSB_CACHE_SIGNING_KEY:-}"
       OSB_CONTENT_RELEASE: "${OSB_CONTENT_RELEASE:-}"
       OSB_REDIS_TTL_SECONDS: "${OSB_REDIS_TTL_SECONDS:-}"
       OSB_REDIS_CONNECT_TIMEOUT_MS: "${OSB_REDIS_CONNECT_TIMEOUT_MS:-}"
+      OSB_UPDATE_CHECKS: "${OSB_UPDATE_CHECKS:-}"
+      OSB_UPDATE_CHANNEL_URL: "${OSB_UPDATE_CHANNEL_URL:-}"
+      OSB_UPDATE_CHECK_INTERVAL_SECONDS: "${OSB_UPDATE_CHECK_INTERVAL_SECONDS:-}"
       OSB_DATABASE_PROFILE: "${OSB_DATABASE_PROFILE:-}"
       OSB_MANAGED_BACKUPS: "${OSB_MANAGED_BACKUPS:-}"
       OSB_BACKUP_DIRECTORY: "${OSB_BACKUP_DIRECTORY:-}"
@@ -194,6 +207,18 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ${OSB_INSTALL_SOURCE:-./osb.install.example.toml}
+        target: /config/osb.install.toml
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OSB_LOCK_SOURCE:-./osb.lock.example.json}
+        target: /config/osb.lock.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${OSB_CUSTOM_CSS_SOURCE:-./deploy/custom.css}
         target: /config/custom.css
         read_only: true
@@ -204,10 +229,16 @@ services:
         condition: service_completed_successfully
       redis-sentinel-1:
         condition: service_healthy
+        required: false
       redis-sentinel-2:
         condition: service_healthy
+        required: false
       redis-sentinel-3:
         condition: service_healthy
+        required: false
+      redis-primary:
+        condition: service_healthy
+        required: false
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/readyz"]
       interval: 10s
@@ -223,7 +254,7 @@ services:
       - maintenance
     build:
       context: .
-    image: open-soverign-blog:local
+    image: "${OSB_IMAGE:-open-soverign-blog:local}"
     user: "65532:65532"
     network_mode: "none"
     read_only: true
@@ -251,13 +282,59 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
+  # Host-owned maintenance path for installations with remote administrator
+  # authentication disabled. Stop `blog` first; its next start rotates the
+  # derivative Redis generation after these canonical SQLite writes.
+  osb-local:
+    profiles:
+      - maintenance
+    build:
+      context: .
+    image: "${OSB_IMAGE:-open-soverign-blog:local}"
+    user: "65532:65532"
+    network_mode: "none"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    entrypoint:
+      - /usr/local/bin/osb
+    environment:
+      OSB_DATABASE: /data/open-soverign-blog.db
+      OSB_BLOB_DIRECTORY: /data/blobs
+      # The CLI reads this immutable semantic boundary before opening SQLite.
+      # A delivery intent/config fails closed even though this maintenance
+      # service necessarily owns a writable data mount on writable origins.
+      OSB_CONFIG: /config/config.toml
+    volumes:
+      - type: volume
+        source: osb-data
+        target: /data
+      - type: bind
+        source: ${OSB_CONFIG_SOURCE:-./config.example.toml}
+        target: /config/config.toml
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      osb-storage-init:
+        condition: service_completed_successfully
+    restart: "no"
+
   redis-primary:
     <<: *redis-common
+    profiles:
+      - redis-standalone
+      - redis-managed
     command:
     - sh
     - -ec
     - |
         umask 0077
+        : "$${OSB_REDIS_PASSWORD:?Redis profile requires OSB_REDIS_PASSWORD}"
         exec redis-server \
           --appendonly yes \
           --appendfsync everysec \
@@ -280,11 +357,14 @@ services:
 
   redis-replica:
     <<: *redis-common
+    profiles:
+      - redis-managed
     command:
     - sh
     - -ec
     - |
         umask 0077
+        : "$${OSB_REDIS_PASSWORD:?Redis profile requires OSB_REDIS_PASSWORD}"
         exec redis-server \
           --replicaof redis-primary 6379 \
           --appendonly yes \
@@ -312,6 +392,8 @@ services:
 
   redis-sentinel-1:
     <<: *sentinel-common
+    profiles:
+      - redis-managed
     environment:
       <<: *redis-environment
       OSB_SENTINEL_ANNOUNCE_HOST: redis-sentinel-1
@@ -326,6 +408,8 @@ services:
 
   redis-sentinel-2:
     <<: *sentinel-common
+    profiles:
+      - redis-managed
     environment:
       <<: *redis-environment
       OSB_SENTINEL_ANNOUNCE_HOST: redis-sentinel-2
@@ -340,6 +424,8 @@ services:
 
   redis-sentinel-3:
     <<: *sentinel-common
+    profiles:
+      - redis-managed
     environment:
       <<: *redis-environment
       OSB_SENTINEL_ANNOUNCE_HOST: redis-sentinel-3
@@ -354,6 +440,11 @@ services:
 
 volumes:
   osb-data:
+    # A stable, explicit name lets the updater restore into a candidate volume
+    # and switch the pointer without ever migrating the last-known-good copy.
+    # Bootstrap emits a deployment-unique value; the fallback preserves the
+    # historical Compose-created volume name for existing source checkouts.
+    name: "${OSB_DATA_VOLUME:-${COMPOSE_PROJECT_NAME:-open-soverign-blog}_osb-data}"
   redis-primary:
   redis-replica:
   redis-sentinel-1:

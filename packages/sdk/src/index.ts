@@ -34,6 +34,17 @@ export interface EmbedReference {
   consentPurposeIds: string[];
 }
 
+export type PublicAuthorshipKind = "human" | "ai_generated" | "ai_assisted" | "imported";
+
+/** Portable public provenance. It intentionally contains no internal actor ID. */
+export type PublicAuthorship =
+  | { kind: "human"; generator?: never; humanReviewed: boolean }
+  | {
+      kind: Exclude<PublicAuthorshipKind, "human">;
+      generator: string;
+      humanReviewed: boolean;
+    };
+
 export interface PublishArtifact {
   view: ViewMode;
   html: string;
@@ -52,6 +63,7 @@ export interface PostSummary {
   updatedAt: string;
   hasIntentView: boolean;
   hasOntology: boolean;
+  authorship: PublicAuthorship;
 }
 
 export type ThemePresetId = "paper" | "ink" | "forest" | "terminal";
@@ -90,6 +102,7 @@ export type Session =
       user: UserSummary;
       blog?: BlogSummary;
       membershipRole?: SiteMembershipRole;
+      instanceAdministrator: boolean;
     };
 
 export type SiteMembershipRole = "owner" | "editor" | "writer";
@@ -158,11 +171,21 @@ export interface FeedPostSummary {
   tags: string[];
   commentCount: number;
   hasIntentView: boolean;
+  authorship: PublicAuthorship;
   coverImageUrl?: string;
 }
 
 export interface FeedResponse {
   items: FeedPostSummary[];
+}
+
+export interface HomeResponse {
+  pinnedItems: FeedPostSummary[];
+  recentItems: FeedPostSummary[];
+}
+
+export interface HomePinsResponse {
+  documentIds: string[];
 }
 
 export interface PostView {
@@ -175,6 +198,7 @@ export interface PostView {
   embeds: EmbedReference[];
   artifact: PublishArtifact;
   ontology?: OntologySidecar;
+  authorship: PublicAuthorship;
 }
 
 export interface BlogPostView extends PostView {
@@ -214,8 +238,8 @@ export interface Capabilities {
   features: string[];
   modules: ModuleDescriptor[];
   unavailableByDefault: string[];
-  mutationMechanisms: Array<"session" | "owner_token">;
-  mutationMode: "read_only" | "single_owner_token" | "authenticated_members";
+  mutationMechanisms: Array<"session">;
+  mutationMode: "read_only" | "authenticated_members";
   /** Present on the v2 capability contract. Public reads remain anonymous in every profile. */
   publicAccess?: "anonymous_read";
   /**
@@ -271,20 +295,21 @@ export interface DiscoveryEndpoint {
   available: boolean;
 }
 
-export interface DiscoveryCacheDependency {
+export interface RedisCacheDependency {
   provider: "redis";
   state: "active" | "degraded" | "connecting" | "misconfigured";
-  role?: "discardable_public_derivative_cache";
-  required?: boolean;
-  topology?: "standalone" | "sentinel";
-  namespace?: string;
-  contentRelease?: string;
-  hits?: number;
-  misses?: number;
-  errors?: number;
-  lastSuccessUnix?: number | null;
-  lastError?: string | null;
+  role: "discardable_public_derivative_cache";
+  required: boolean;
 }
+
+export interface DisabledCacheDependency {
+  provider: "none";
+  state: "disabled";
+  required: false;
+}
+
+export type DiscoveryCacheDependency = RedisCacheDependency | DisabledCacheDependency;
+export type AdministratorAuthMode = "disabled" | "access_key" | "external";
 
 export interface DiscoveryDocument {
   specVersion: "1.0";
@@ -298,6 +323,7 @@ export interface DiscoveryDocument {
     blogs: DiscoveryEndpoint;
     publishedContent: DiscoveryEndpoint;
     comments: DiscoveryEndpoint;
+    commentSubmission: DiscoveryEndpoint;
     proposeRevision: DiscoveryEndpoint;
     uploadFirstPartyAsset: DiscoveryEndpoint;
     runnerProfiles: DiscoveryEndpoint;
@@ -309,6 +335,7 @@ export interface DiscoveryDocument {
   operatorIntent: {
     localAuth: boolean;
     oauthRequested: boolean;
+    administratorAuth: AdministratorAuthMode;
     comments: boolean;
     collaboration: boolean;
     customCss: boolean;
@@ -392,6 +419,7 @@ export interface CreatePostInput {
   embeds?: EmbedReference[];
   intent?: IntentLayer;
   ontology?: OntologySidecar;
+  authorship?: PublicAuthorship;
 }
 
 export interface StudioPreviewResponse {
@@ -421,6 +449,7 @@ export interface RevisionSnapshot {
   embeds: EmbedReference[];
   intent?: IntentLayer;
   ontology?: OntologySidecar;
+  authorship: PublicAuthorship;
   actor: RevisionActor;
   contentHash: string;
   createdAt: string;
@@ -452,9 +481,50 @@ export interface AssetUploadResponse {
   url: string;
 }
 
+export interface VersionInfo {
+  currentVersion: string;
+  currentReleaseDate: string | null;
+  latestVersion: string | null;
+  latestReleaseDate: string | null;
+  channel: string;
+  updateAvailable: boolean;
+  checkedAt: string | null;
+  status: "disabled" | "offline" | "no_release" | "update_available" | "current";
+  repositoryUrl: string;
+  developerUrl: string;
+  license: "Unlicense";
+  licenseHref: "/UNLICENSE";
+}
+
+export type HealthBackupDependency =
+  | {
+      state: "not_applicable" | "externally_managed" | "unknown";
+    }
+  | {
+      state: "waiting" | "running" | "healthy" | "degraded";
+      intervalMinutes: number;
+      retention: number;
+      lastStartedAt: string | null;
+      lastCompletedAt: string | null;
+      lastGenerationAvailable: boolean;
+      lastError: "backup_failed" | null;
+    };
+
+export interface Health {
+  status: "ok" | "degraded";
+  version: string;
+  dependencies: {
+    cache: DiscoveryCacheDependency;
+    backups: HealthBackupDependency;
+  };
+  dataBoundary: {
+    authoritative: ["sqlite", "content_addressed_blobs"];
+    redisRole: "discardable_public_derivative_cache" | "disabled_by_installation";
+  };
+}
+
 export interface ClientOptions {
   baseUrl?: string;
-  getAdminToken?: () => string | undefined;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -471,12 +541,10 @@ export class OpenSoverignBlogError extends Error {
 export class OpenSoverignBlogClient {
   readonly #baseUrl: string;
   readonly #fetch: typeof globalThis.fetch;
-  readonly #getAdminToken: (() => string | undefined) | undefined;
 
   constructor(options: ClientOptions = {}) {
     this.#baseUrl = (options.baseUrl ?? "").replace(/\/$/, "");
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
-    this.#getAdminToken = options.getAdminToken;
   }
 
   async discovery(signal?: AbortSignal): Promise<DiscoveryDocument> {
@@ -484,6 +552,10 @@ export class OpenSoverignBlogClient {
       "/.well-known/open-soverign-blog.json",
       withSignal(signal),
     );
+  }
+
+  async health(signal?: AbortSignal): Promise<Health> {
+    return this.#request("/healthz", withSignal(signal));
   }
 
   async agentCompatibilityIndex(signal?: AbortSignal): Promise<string> {
@@ -514,7 +586,6 @@ export class OpenSoverignBlogClient {
         body: JSON.stringify({ profileId, source }),
         ...withSignal(signal),
       },
-      true,
     );
   }
 
@@ -522,7 +593,6 @@ export class OpenSoverignBlogClient {
     return this.#request(
       `/api/v1/code-runner/runs/${encodeURIComponent(jobId)}`,
       withSignal(signal),
-      true,
     );
   }
 
@@ -590,6 +660,29 @@ export class OpenSoverignBlogClient {
 
   async feed(signal?: AbortSignal): Promise<FeedResponse> {
     return this.#request("/api/v1/feed", withSignal(signal));
+  }
+
+  async home(signal?: AbortSignal): Promise<HomeResponse> {
+    return this.#request("/api/v1/home", withSignal(signal));
+  }
+
+  async getHomePins(signal?: AbortSignal): Promise<HomePinsResponse> {
+    return this.#request("/api/v1/admin/home/pins", withSignal(signal));
+  }
+
+  async replaceHomePins(
+    documentIds: string[],
+    signal?: AbortSignal,
+  ): Promise<HomePinsResponse> {
+    return this.#request("/api/v1/admin/home/pins", {
+      method: "PUT",
+      body: JSON.stringify({ documentIds }),
+      ...withSignal(signal),
+    });
+  }
+
+  async version(signal?: AbortSignal): Promise<VersionInfo> {
+    return this.#request("/api/v1/version", withSignal(signal));
   }
 
   async listBlogs(signal?: AbortSignal): Promise<BlogSummary[]> {
@@ -774,7 +867,7 @@ export class OpenSoverignBlogClient {
   }
 
   async listAdminDocuments(signal?: AbortSignal): Promise<DocumentSnapshot[]> {
-    return this.#request("/api/v1/admin/documents", withSignal(signal), true);
+    return this.#request("/api/v1/admin/documents", withSignal(signal));
   }
 
   async getAdminDocument(
@@ -784,7 +877,6 @@ export class OpenSoverignBlogClient {
     return this.#request(
       `/api/v1/admin/documents/${encodeURIComponent(documentId)}`,
       withSignal(signal),
-      true,
     );
   }
 
@@ -795,7 +887,6 @@ export class OpenSoverignBlogClient {
     return this.#request(
       `/api/v1/admin/documents/${encodeURIComponent(documentId)}/revisions`,
       withSignal(signal),
-      true,
     );
   }
 
@@ -816,7 +907,6 @@ export class OpenSoverignBlogClient {
         body: JSON.stringify(input),
         ...withSignal(signal),
       },
-      true,
     );
   }
 
@@ -832,7 +922,6 @@ export class OpenSoverignBlogClient {
         body: JSON.stringify(input),
         ...withSignal(signal),
       },
-      true,
     );
   }
 
@@ -848,7 +937,6 @@ export class OpenSoverignBlogClient {
         body: JSON.stringify({ revisionId }),
         ...withSignal(signal),
       },
-      true,
     );
   }
 
@@ -868,19 +956,14 @@ export class OpenSoverignBlogClient {
         },
         ...withSignal(signal),
       },
-      true,
     );
   }
 
-  async #request<T>(path: string, init: RequestInit = {}, authenticated = false): Promise<T> {
+  async #request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers);
     headers.set("Accept", "application/json");
     if (init.body !== undefined && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
-    }
-    if (authenticated) {
-      const token = this.#getAdminToken?.();
-      if (token) headers.set("Authorization", `Bearer ${token}`);
     }
     const response = await this.#fetch(`${this.#baseUrl}${path}`, {
       ...init,

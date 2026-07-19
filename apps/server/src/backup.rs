@@ -36,11 +36,9 @@ enum BackupState {
     Degraded,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 struct BackupStatus {
     state: BackupState,
-    directory: String,
     interval_minutes: u64,
     retention: usize,
     last_started_at: Option<DateTime<Utc>>,
@@ -73,7 +71,6 @@ impl BackupService {
         let service = Self {
             status: Arc::new(RwLock::new(BackupStatus {
                 state: BackupState::Waiting,
-                directory: settings.backup_directory.display().to_string(),
                 interval_minutes: settings.backup_interval_minutes,
                 retention: settings.backup_retention,
                 last_started_at: None,
@@ -103,8 +100,16 @@ impl BackupService {
     }
 
     pub async fn snapshot(&self) -> serde_json::Value {
-        serde_json::to_value(self.status.read().await.clone())
-            .unwrap_or_else(|_| serde_json::json!({"state": "unknown"}))
+        let status = self.status.read().await.clone();
+        serde_json::json!({
+            "state": status.state,
+            "intervalMinutes": status.interval_minutes,
+            "retention": status.retention,
+            "lastStartedAt": status.last_started_at,
+            "lastCompletedAt": status.last_completed_at,
+            "lastGenerationAvailable": status.last_generation.is_some(),
+            "lastError": status.last_error.as_ref().map(|_| "backup_failed")
+        })
     }
 
     async fn run_once(
@@ -610,6 +615,31 @@ impl Drop for StagingGuard {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn public_snapshot_redacts_paths_generation_ids_and_internal_errors() {
+        let service = BackupService {
+            status: Arc::new(RwLock::new(BackupStatus {
+                state: BackupState::Degraded,
+                interval_minutes: 60,
+                retention: 7,
+                last_started_at: Some(Utc::now()),
+                last_completed_at: None,
+                last_generation: Some("generation-secret-identifier".into()),
+                last_error: Some("permission denied: /private/backups/operator".into()),
+            })),
+        };
+
+        let snapshot = service.snapshot().await;
+        assert_eq!(snapshot["state"], "degraded");
+        assert_eq!(snapshot["lastGenerationAvailable"], true);
+        assert_eq!(snapshot["lastError"], "backup_failed");
+        assert!(snapshot.get("directory").is_none());
+        assert!(snapshot.get("lastGeneration").is_none());
+        let encoded = snapshot.to_string();
+        assert!(!encoded.contains("generation-secret-identifier"));
+        assert!(!encoded.contains("/private/backups/operator"));
+    }
 
     #[test]
     fn generation_contains_a_verified_database_and_blob_manifest() {

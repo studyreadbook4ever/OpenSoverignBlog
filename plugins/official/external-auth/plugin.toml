@@ -5,6 +5,7 @@ name = "External authentication bridge"
 version = "0.1.0"
 license = "Unlicense"
 pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["auth-provider"]
 description = "Maps identities from an operator-approved external authentication adapter."
 permissions = [

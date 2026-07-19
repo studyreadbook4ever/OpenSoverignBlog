@@ -16,7 +16,8 @@ use chrono::{DateTime, Utc};
 use osb_kernel::{
     AI_PROPOSAL_AUDIT_SCHEMA_VERSION, Ai2AiEnvelope, AiProposalAuditRecord, CONTENT_SCHEMA_VERSION,
     ContentRepository, DocumentSnapshot, DocumentStatus, NewDocument, ProposedRevision,
-    RepositoryError, RevisionActorKind, RevisionSnapshot, content_hash,
+    PublicAuthorship, PublicAuthorshipKind, RepositoryError, RevisionActorKind, RevisionSnapshot,
+    content_hash,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -24,6 +25,9 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
+
+/// Latest schema version required by both mutable and delivery-only runtimes.
+pub const DATABASE_SCHEMA_VERSION: u64 = 7;
 
 pub struct SqliteRepository {
     connection: Mutex<Connection>,
@@ -199,6 +203,22 @@ pub struct PrimaryOwnerSession {
     pub session: SessionRecord,
     pub user: UserRecord,
     pub site: SiteRecord,
+}
+
+/// One globally curated home-page position. Pins reference documents rather
+/// than revisions so a deliberate republish updates the visible pinned item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HomePinRecord {
+    pub slot: u8,
+    pub document_id: Uuid,
+    pub pinned_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeFeedRecords {
+    pub pinned: Vec<DocumentSnapshot>,
+    pub recent: Vec<DocumentSnapshot>,
 }
 
 /// Operator intent for SQLite's local WAL durability/latency trade-off.
@@ -448,17 +468,17 @@ impl SqliteRepository {
         // it must never self-migrate a read-only deployment artifact.
         let migrated = connection
             .query_row(
-                "SELECT 1 FROM schema_migrations WHERE version = 6",
-                [],
+                "SELECT 1 FROM schema_migrations WHERE version = ?1",
+                [DATABASE_SCHEMA_VERSION as i64],
                 |_| Ok(()),
             )
             .optional()
             .map_err(storage_error)?
             .is_some();
         if !migrated {
-            return Err(RepositoryError::Storage(
-                "delivery-only database must be migrated through schema version 6".into(),
-            ));
+            return Err(RepositoryError::Storage(format!(
+                "delivery-only database must be migrated through schema version {DATABASE_SCHEMA_VERSION}"
+            )));
         }
         Ok(Self {
             connection: Mutex::new(connection),
@@ -506,6 +526,20 @@ impl SqliteRepository {
         if !has_migration_6 {
             transaction
                 .execute_batch(MIGRATION_6)
+                .map_err(storage_error)?;
+        }
+        let has_migration_7 = transaction
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version = 7",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .is_some();
+        if !has_migration_7 {
+            transaction
+                .execute_batch(MIGRATION_7)
                 .map_err(storage_error)?;
         }
         transaction.commit().map_err(storage_error)
@@ -1822,6 +1856,143 @@ impl SqliteRepository {
     }
 }
 
+impl SqliteRepository {
+    /// Atomically replaces the complete, ordered global home curation set.
+    /// The caller is responsible for authenticating an installation
+    /// administrator; repository validation keeps the invariant true for every
+    /// adapter and future CLI using the same port.
+    pub fn replace_home_pins(
+        &self,
+        administrator_user_id: Uuid,
+        document_ids: &[Uuid],
+    ) -> Result<Vec<HomePinRecord>, RepositoryError> {
+        if document_ids.len() > 3
+            || document_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != document_ids.len()
+        {
+            return Err(RepositoryError::Validation(
+                "home pins must contain at most three unique document ids".into(),
+            ));
+        }
+
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let control = load_admin_control_plane(&transaction)?;
+        if control.owner_user_id != administrator_user_id {
+            return Err(RepositoryError::NotFound);
+        }
+        for document_id in document_ids {
+            let published = transaction
+                .query_row(
+                    "SELECT 1 FROM documents
+                     WHERE id = ?1
+                       AND published_revision_id IS NOT NULL
+                       AND status != 'archived'",
+                    params![document_id.to_string()],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(storage_error)?
+                .is_some();
+            if !published {
+                return Err(RepositoryError::Validation(
+                    "only currently published documents can be pinned".into(),
+                ));
+            }
+        }
+
+        transaction
+            .execute("DELETE FROM home_pins", [])
+            .map_err(storage_error)?;
+        let now = Utc::now();
+        for (index, document_id) in document_ids.iter().enumerate() {
+            transaction
+                .execute(
+                    "INSERT INTO home_pins (
+                        slot, document_id, pinned_by_user_id, pinned_at
+                     ) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        (index + 1) as i64,
+                        document_id.to_string(),
+                        administrator_user_id.to_string(),
+                        now.to_rfc3339(),
+                    ],
+                )
+                .map_err(map_constraint_error)?;
+        }
+        let pins = load_home_pins(&transaction)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(pins)
+    }
+
+    pub fn list_home_pins(&self) -> Result<Vec<HomePinRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        load_home_pins(&connection)
+    }
+
+    /// Returns a coherent public home snapshot: curated documents in slot
+    /// order and then newest published documents with every pin removed.
+    pub fn home_feed(&self, recent_limit: usize) -> Result<HomeFeedRecords, RepositoryError> {
+        let connection = self.lock()?;
+        let pins = load_home_pins(&connection)?;
+        let mut pinned = Vec::with_capacity(pins.len());
+        let mut pinned_ids = std::collections::BTreeSet::new();
+        for pin in pins {
+            match load_document(&connection, pin.document_id, RevisionSelector::Published) {
+                Ok(document) if document.status != DocumentStatus::Archived => {
+                    pinned_ids.insert(document.id);
+                    pinned.push(document);
+                }
+                Ok(_) | Err(RepositoryError::NotFound) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        let recent = list_documents_with_selector(
+            &connection,
+            None,
+            recent_limit.saturating_add(pinned_ids.len()).min(500),
+            RevisionSelector::Published,
+        )?
+        .into_iter()
+        .filter(|document| !pinned_ids.contains(&document.id))
+        .take(recent_limit.min(500))
+        .collect();
+        Ok(HomeFeedRecords { pinned, recent })
+    }
+}
+
+fn load_home_pins(connection: &Connection) -> Result<Vec<HomePinRecord>, RepositoryError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT slot, document_id, pinned_at
+             FROM home_pins ORDER BY slot ASC",
+        )
+        .map_err(storage_error)?;
+    statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(storage_error)?
+        .map(|row| {
+            let (slot, document_id, pinned_at) = row.map_err(storage_error)?;
+            Ok(HomePinRecord {
+                slot: u8::try_from(slot).map_err(storage_error)?,
+                document_id: parse_uuid(&document_id)?,
+                pinned_at: parse_datetime(&pinned_at)?,
+            })
+        })
+        .collect()
+}
+
 impl ContentRepository for SqliteRepository {
     fn create_document(&self, input: NewDocument) -> Result<DocumentSnapshot, RepositoryError> {
         input
@@ -1988,7 +2159,22 @@ impl ContentRepository for SqliteRepository {
         proposal.actor.kind = RevisionActorKind::Agent;
         proposal.actor.id.clone_from(&envelope.actor.id);
         proposal.actor.display_name = None;
+        proposal.authorship = PublicAuthorship {
+            kind: PublicAuthorshipKind::AiGenerated,
+            generator: Some(
+                envelope
+                    .actor
+                    .model
+                    .clone()
+                    .or_else(|| envelope.actor.provider.clone())
+                    .unwrap_or_else(|| "ai2ai".into()),
+            ),
+            human_reviewed: false,
+        };
         proposal.idempotency_key = Some(envelope.idempotency_key.clone());
+        proposal
+            .validate()
+            .map_err(|error| RepositoryError::Validation(error.to_string()))?;
 
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
@@ -2050,6 +2236,7 @@ fn create_document_in_transaction(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        authorship: input.authorship,
         actor: input.actor,
         content_hash: String::new(),
         created_at: now,
@@ -2180,6 +2367,7 @@ fn append_revision_in_transaction(
         embeds,
         intent,
         ontology,
+        authorship,
         actor,
         idempotency_key,
     } = input;
@@ -2211,6 +2399,7 @@ fn append_revision_in_transaction(
         embeds,
         intent,
         ontology,
+        authorship,
         actor,
         content_hash: String::new(),
         created_at: now,
@@ -3916,6 +4105,20 @@ INSERT INTO schema_migrations(version, applied_at)
 VALUES (6, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#;
 
+const MIGRATION_7: &str = r#"
+CREATE TABLE home_pins (
+  slot INTEGER PRIMARY KEY CHECK (slot BETWEEN 1 AND 3),
+  document_id TEXT NOT NULL UNIQUE,
+  pinned_by_user_id TEXT NOT NULL,
+  pinned_at TEXT NOT NULL,
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (pinned_by_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"#;
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -3966,6 +4169,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
                 idempotency_key: None,
             },
@@ -4042,6 +4246,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            authorship: Default::default(),
             actor: actor(),
         }
     }
@@ -4069,6 +4274,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            authorship: Default::default(),
             actor: actor(),
             content_hash: String::new(),
             created_at: now,
@@ -4294,12 +4500,12 @@ mod tests {
         let connection = repository.lock().unwrap();
         let migration_count: i64 = connection
             .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 6",
+                "SELECT COUNT(*) FROM schema_migrations WHERE version IN (6, 7)",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
         let columns = connection
             .prepare("PRAGMA table_info(sessions)")
             .unwrap()
@@ -4976,6 +5182,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: Default::default(),
                     actor: actor(),
                     idempotency_key: None,
                 },
@@ -5051,6 +5258,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            authorship: Default::default(),
             actor: actor(),
             idempotency_key: None,
         };
@@ -5182,6 +5390,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: Default::default(),
                     actor: actor(),
                     idempotency_key: Some("private-rewrite".into()),
                 },
@@ -5318,6 +5527,71 @@ mod tests {
     }
 
     #[test]
+    fn global_home_curation_is_atomic_bounded_and_excludes_pins_from_recent() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[7; 32],
+            )
+            .unwrap();
+        let mut published = Vec::new();
+        for index in 0..4 {
+            let document = repository
+                .create_document_in_owned_site(
+                    control.owner_user_id,
+                    new_document(site_id, &format!("Post {index}"), &format!("post-{index}")),
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap();
+            published.push(document.id);
+        }
+
+        let ordered = [published[1], published[0], published[2]];
+        let pins = repository
+            .replace_home_pins(control.owner_user_id, &ordered)
+            .unwrap();
+        assert_eq!(
+            pins.iter().map(|pin| pin.document_id).collect::<Vec<_>>(),
+            ordered
+        );
+        let home = repository.home_feed(100).unwrap();
+        assert_eq!(
+            home.pinned.iter().map(|item| item.id).collect::<Vec<_>>(),
+            ordered
+        );
+        assert_eq!(home.recent.len(), 1);
+        assert_eq!(home.recent[0].id, published[3]);
+
+        assert!(matches!(
+            repository.replace_home_pins(control.owner_user_id, &[published[0], published[0]]),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert_eq!(repository.list_home_pins().unwrap(), pins);
+
+        let draft = repository
+            .create_document_in_owned_site(
+                control.owner_user_id,
+                new_document(site_id, "Draft", "draft-only"),
+            )
+            .unwrap();
+        assert!(matches!(
+            repository.replace_home_pins(control.owner_user_id, &[draft.id]),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert_eq!(repository.list_home_pins().unwrap(), pins);
+    }
+
+    #[test]
     fn create_revise_publish_and_resolve_old_route() {
         let repository = SqliteRepository::open_in_memory().unwrap();
         let site_id = Uuid::now_v7();
@@ -5330,6 +5604,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
             })
             .unwrap();
@@ -5352,6 +5627,7 @@ mod tests {
                     provenance: None,
                 }),
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
                 idempotency_key: Some("rename-1".into()),
             })
@@ -5405,6 +5681,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
             })
             .unwrap();
@@ -5417,6 +5694,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            authorship: Default::default(),
             actor: actor(),
             idempotency_key: None,
         };
@@ -5453,6 +5731,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
             })
             .unwrap();
@@ -5466,6 +5745,11 @@ mod tests {
         let revision = repository.append_ai_proposal(envelope.clone()).unwrap();
         assert_eq!(revision.actor.kind, RevisionActorKind::Agent);
         assert_eq!(revision.actor.id, envelope.actor.id);
+        assert_eq!(revision.authorship.kind, PublicAuthorshipKind::AiGenerated);
+        assert_eq!(
+            revision.authorship.generator.as_deref(),
+            Some("small-writer-v1")
+        );
         let records = repository.list_ai_proposals(document.id, 10).unwrap();
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].schema_version, AI_PROPOSAL_AUDIT_SCHEMA_VERSION);
@@ -5490,6 +5774,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
             })
             .unwrap();
@@ -5535,6 +5820,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: actor(),
             })
             .unwrap();
@@ -5576,6 +5862,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: Default::default(),
                     actor: actor(),
                 })
                 .unwrap();

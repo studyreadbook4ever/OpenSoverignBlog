@@ -127,9 +127,9 @@ advanced controls rather than competing with basic writing.
 The reference composition supports three explicit profiles:
 
 - `delivery_only`: public, cacheable reads with no mutation surface;
-- `single_owner_token`: the original operator-token workflow;
-- `authenticated_members`: sessions, per-blog membership, Studio, themes, and
-  comments.
+- administrator sessions: access-key or external identity for the on-premise
+  owner, without enabling public member accounts;
+- `authenticated_members`: sessions, per-blog membership, Studio, themes, and comments.
 
 Capabilities describe only a profile that is actually configured and
 operational. Hiding a control in the browser is never treated as an

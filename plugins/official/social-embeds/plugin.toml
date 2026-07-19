@@ -1,0 +1,24 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.social-embeds"
+name = "Privacy-first social embeds"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
+kinds = ["render-extension"]
+description = "Optional semantic YouTube and X facades; core content stays an inert canonical link when absent."
+permissions = [
+  { capability = "content.read", scope = "published", reason = "Resolve typed embed references from a published revision." },
+  { capability = "render.slot", resources = ["article.embed"], reason = "Render click-to-load YouTube facades and first-party X cards." },
+  { capability = "network.connect", resources = ["www.youtube-nocookie.com"], reason = "Load a privacy-enhanced player only after a reader clicks the facade." }
+]
+metadata = { bundled = true }
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-server"
+extension = "social_embeds"

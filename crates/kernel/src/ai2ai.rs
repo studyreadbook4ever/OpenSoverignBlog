@@ -308,6 +308,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: RevisionActor {
                     kind: RevisionActorKind::Agent,
                     id: "writer-agent".into(),

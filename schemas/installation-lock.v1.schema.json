@@ -1,0 +1,481 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:open-soverign-blog:schemas:installation-lock:v1",
+  "title": "OpenSoverignBlog exact installation lock v1",
+  "description": "Machine-generated exact engine and DLC installation state. lockDigest is verified separately over canonical JSON with lockDigest set to an empty string.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "installationId",
+    "engine",
+    "selection",
+    "dlcs",
+    "lockDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "open-soverign-blog-lock/1"
+    },
+    "installationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "engine": {
+      "$ref": "#/$defs/engine"
+    },
+    "selection": {
+      "$ref": "#/$defs/selection"
+    },
+    "dlcs": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/installedDlc"
+      }
+    },
+    "retainedDlcs": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/retainedDlc"
+      },
+      "default": []
+    },
+    "history": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/historyRecord"
+      },
+      "default": []
+    },
+    "lockDigest": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "versionRequirement": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?:[<>=~^]{0,2} *(?:\\*|[xX]|0|[1-9][0-9]*)(?:\\.(?:\\*|[xX]|0|[1-9][0-9]*)){0,2}(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?)(?: *, *(?:[<>=~^]{0,2} *(?:\\*|[xX]|0|[1-9][0-9]*)(?:\\.(?:\\*|[xX]|0|[1-9][0-9]*)){0,2}(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?))*$",
+      "description": "A bounded semver::VersionReq-compatible comparator list. Exact range matching is enforced by the Rust contract."
+    },
+    "pluginId": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 190,
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){2,}$"
+    },
+    "safeRelativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._@+-]+(?:/[A-Za-z0-9._@+-]+)*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "trimmedText128": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^\\S(?:[^\\u0000-\\u001F\\u007F]*\\S)?$"
+    },
+    "trimmedText512": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^\\S(?:[^\\u0000-\\u001F\\u007F]*\\S)?$"
+    },
+    "trimmedText2048": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^\\S(?:[^\\u0000-\\u001F\\u007F]*\\S)?$"
+    },
+    "style": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind"],
+          "properties": {
+            "kind": {
+              "const": "none"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": {
+              "const": "builtin"
+            },
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "file", "sha256"],
+          "properties": {
+            "kind": {
+              "const": "custom"
+            },
+            "file": {
+              "$ref": "#/$defs/safeRelativePath"
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["admin_auth", "style", "cache"],
+      "properties": {
+        "admin_auth": {
+          "enum": ["access_key", "external", "disabled"]
+        },
+        "style": {
+          "$ref": "#/$defs/style"
+        },
+        "cache": {
+          "enum": ["none", "redis_standalone", "redis_managed"]
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "configSchemaVersion",
+        "databaseSchemaVersion",
+        "pluginApi",
+        "source"
+      ],
+      "properties": {
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "configSchemaVersion": {
+          "$ref": "#/$defs/trimmedText128"
+        },
+        "databaseSchemaVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pluginApi": {
+          "const": "1"
+        },
+        "source": {
+          "$ref": "#/$defs/trimmedText2048"
+        },
+        "artifactSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "capability": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^(?=.*\\.)[a-z0-9._-]+$"
+    },
+    "qualifiedName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z][a-z0-9_.-]{0,127}$"
+    },
+    "installedDlc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "requestedVersion",
+        "version",
+        "coreCompatibility",
+        "manifestVersion",
+        "pluginApi",
+        "sourceKind",
+        "source",
+        "manifestSha256",
+        "enabled"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/pluginId"
+        },
+        "requestedVersion": {
+          "$ref": "#/$defs/versionRequirement"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "coreCompatibility": {
+          "$ref": "#/$defs/versionRequirement"
+        },
+        "manifestVersion": {
+          "const": 1
+        },
+        "pluginApi": {
+          "const": "1"
+        },
+        "sourceKind": {
+          "enum": ["bundled", "file", "https"]
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifactSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "approvedCapabilities": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "default": []
+        },
+        "configSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "stateVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "appliedMigrations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/qualifiedName"
+          },
+          "default": []
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sourceKind": {
+                "const": "bundled"
+              }
+            },
+            "required": ["sourceKind"]
+          },
+          "then": {
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/trimmedText512"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sourceKind": {
+                "const": "file"
+              }
+            },
+            "required": ["sourceKind"]
+          },
+          "then": {
+            "required": ["artifactSha256"],
+            "properties": {
+              "artifactSha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "source": {
+                "$ref": "#/$defs/safeRelativePath"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sourceKind": {
+                "const": "https"
+              }
+            },
+            "required": ["sourceKind"]
+          },
+          "then": {
+            "required": ["artifactSha256"],
+            "properties": {
+              "artifactSha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "source": {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https://(?![^/?#]*@)[^/?#]+(?:[/?][^#]*)?$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "retainedDlc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "removedVersion"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/pluginId"
+        },
+        "removedVersion": {
+          "$ref": "#/$defs/semver"
+        },
+        "stateVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "appliedMigrations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/qualifiedName"
+          },
+          "default": []
+        }
+      }
+    },
+    "historyRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sequence", "action", "dlcId", "engineVersion"],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action": {
+          "enum": ["installed", "enabled", "disabled", "upgraded", "removed"]
+        },
+        "dlcId": {
+          "$ref": "#/$defs/pluginId"
+        },
+        "fromVersion": {
+          "$ref": "#/$defs/semver"
+        },
+        "toVersion": {
+          "$ref": "#/$defs/semver"
+        },
+        "engineVersion": {
+          "$ref": "#/$defs/semver"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "installed"
+              }
+            },
+            "required": ["action"]
+          },
+          "then": {
+            "required": ["toVersion"],
+            "properties": {
+              "fromVersion": {
+                "$ref": "#/$defs/semver"
+              },
+              "toVersion": {
+                "$ref": "#/$defs/semver"
+              }
+            },
+            "not": {
+              "required": ["fromVersion"],
+              "properties": {
+                "fromVersion": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "enum": ["enabled", "disabled", "upgraded"]
+              }
+            },
+            "required": ["action"]
+          },
+          "then": {
+            "required": ["fromVersion", "toVersion"],
+            "properties": {
+              "fromVersion": {
+                "$ref": "#/$defs/semver"
+              },
+              "toVersion": {
+                "$ref": "#/$defs/semver"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "action": {
+                "const": "removed"
+              }
+            },
+            "required": ["action"]
+          },
+          "then": {
+            "required": ["fromVersion"],
+            "properties": {
+              "fromVersion": {
+                "$ref": "#/$defs/semver"
+              },
+              "toVersion": {
+                "$ref": "#/$defs/semver"
+              }
+            },
+            "not": {
+              "required": ["toVersion"],
+              "properties": {
+                "toVersion": true
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

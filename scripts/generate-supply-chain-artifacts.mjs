@@ -18,6 +18,10 @@ const outputPaths = {
   licenses: path.join(repositoryRoot, "THIRD_PARTY_LICENSES.txt"),
 };
 const noticesPath = path.join(repositoryRoot, "THIRD_PARTY_NOTICES.md");
+const releaseMetadata = parseReleaseMetadata(
+  fs.readFileSync(path.join(repositoryRoot, "release.toml"), "utf8"),
+);
+verifyPinnedContainerReferences();
 
 const reviewedNpmLicenses = new Set([
   "(MPL-2.0 OR Apache-2.0)",
@@ -126,8 +130,8 @@ const inventory = {
   schemaVersion: "open-soverign-blog-dependency-inventory/1",
   project: {
     name: "OpenSoverignBlog",
-    version: "0.1.0",
-    licenseExpression: "Unlicense",
+    version: releaseMetadata.version,
+    licenseExpression: releaseMetadata.license,
   },
   scope: {
     cargo: "Complete resolved third-party Cargo graph from cargo metadata --locked --all-features.",
@@ -146,10 +150,10 @@ const sbom = {
   metadata: {
     component: {
       type: "application",
-      "bom-ref": "pkg:generic/open-soverign-blog@0.1.0",
+      "bom-ref": `pkg:generic/open-soverign-blog@${releaseMetadata.version}`,
       name: "OpenSoverignBlog",
-      version: "0.1.0",
-      licenses: [{ license: { id: "Unlicense" } }],
+      version: releaseMetadata.version,
+      licenses: [{ license: { id: releaseMetadata.license } }],
     },
     properties: [
       { name: "osb:scope", value: "application-dependencies" },
@@ -201,6 +205,131 @@ function parseCargoLock(source) {
     }
   }
   return packages;
+}
+
+function verifyPinnedContainerReferences() {
+  const dockerfilePath = path.join(repositoryRoot, "Dockerfile");
+  const dockerfile = fs.readFileSync(dockerfilePath, "utf8");
+  const syntaxLines = dockerfile
+    .split(/\r?\n/)
+    .filter((line) => /^#\s*syntax=/.test(line));
+  if (syntaxLines.length !== 1) {
+    throw new Error("Dockerfile must contain exactly one pinned BuildKit syntax directive");
+  }
+  const syntax = syntaxLines[0].match(/^#\s*syntax=([^\s]+)$/)?.[1];
+  assertTaggedDigest(syntax, "Dockerfile BuildKit syntax image");
+
+  const fromLines = dockerfile
+    .split(/\r?\n/)
+    .filter((line) => /^FROM\b/i.test(line));
+  if (fromLines.length === 0) throw new Error("Dockerfile does not contain a FROM instruction");
+  for (const [index, line] of fromLines.entries()) {
+    const reference = line.match(
+      /^FROM\s+(?:--platform=[^\s]+\s+)?([^\s]+)(?:\s+AS\s+[A-Za-z0-9._-]+)?\s*$/i,
+    )?.[1];
+    assertTaggedDigest(reference, `Dockerfile FROM ${index + 1}`);
+  }
+
+  const composePath = path.join(repositoryRoot, "compose.yaml");
+  const compose = fs.readFileSync(composePath, "utf8");
+  const imageLines = compose
+    .split(/\r?\n/)
+    .filter((line) => /^\s+image:/.test(line));
+  if (imageLines.length === 0) throw new Error("compose.yaml does not contain an image reference");
+  const localApplicationImage = "${OSB_IMAGE:-open-soverign-blog:local}";
+  for (const [index, line] of imageLines.entries()) {
+    const match = line.match(
+      /^\s+image:\s*(?:"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s#]+))\s*(?:#.*)?$/,
+    );
+    if (!match) throw new Error(`compose.yaml image ${index + 1} is not a simple scalar`);
+    const reference = match[1] ?? match[2] ?? match[3];
+    if (reference === localApplicationImage) continue;
+    if (reference.includes("${")) {
+      throw new Error(`compose.yaml image ${index + 1} uses an unapproved variable reference`);
+    }
+    assertTaggedDigest(reference, `compose.yaml image ${index + 1}`);
+  }
+  verifyPinnedAptInputs(dockerfile);
+}
+
+function assertTaggedDigest(reference, label) {
+  const match = reference?.match(/^([^@\s]+)@sha256:([a-f0-9]{64})$/);
+  if (!match || !match[1].split("/").at(-1).includes(":")) {
+    throw new Error(`${label} must use an explicit tag plus immutable sha256 digest`);
+  }
+}
+
+function verifyPinnedAptInputs(dockerfile) {
+  const snapshot = "20260719T000000Z";
+  const snapshotReferences = [
+    `http://snapshot.debian.org/archive/debian/${snapshot}/`,
+    `http://snapshot.debian.org/archive/debian-security/${snapshot}/`,
+  ];
+  const actualSnapshots = [...dockerfile.matchAll(/'URIs: ([^'\r\n]+)'/g)].map(
+    (match) => match[1],
+  );
+  if (
+    actualSnapshots.length !== snapshotReferences.length ||
+    snapshotReferences.some(
+      (reference) => actualSnapshots.filter((actual) => actual === reference).length !== 1,
+    )
+  ) {
+    throw new Error(`Dockerfile APT sources must use only Debian snapshot ${snapshot}`);
+  }
+  if (dockerfile.includes("ARG DEBIAN_SNAPSHOT") || dockerfile.includes("${DEBIAN_SNAPSHOT}")) {
+    throw new Error("Dockerfile Debian snapshot timestamp must not be build-argument overrideable");
+  }
+
+  const requiredSourceFields = new Map([
+    ["'Suites: bookworm bookworm-updates'", 1],
+    ["'Suites: bookworm-security'", 1],
+    ["'Check-Valid-Until: no'", 2],
+    ["'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg'", 2],
+  ]);
+  for (const [field, expectedCount] of requiredSourceFields) {
+    const actualCount = dockerfile.split(field).length - 1;
+    if (actualCount !== expectedCount) {
+      throw new Error(
+        `Dockerfile pinned APT source field ${field} must occur ${expectedCount} time(s)`,
+      );
+    }
+  }
+
+  const normalized = dockerfile.replace(/\\\r?\n\s*/g, " ").replace(/\s+/g, " ");
+  const removeSources = "rm -f /etc/apt/sources.list /etc/apt/sources.list.d/*";
+  const update = "apt-get update";
+  const install =
+    "apt-get install --yes --no-install-recommends ca-certificates=20230311+deb12u1 curl=7.88.1-10+deb12u15";
+  const removeIndex = normalized.indexOf(removeSources);
+  const firstSnapshotIndex = normalized.indexOf(snapshotReferences[0]);
+  const updateIndex = normalized.indexOf(update);
+  const installIndex = normalized.indexOf(install);
+  if (
+    removeIndex < 0 ||
+    firstSnapshotIndex <= removeIndex ||
+    updateIndex <= firstSnapshotIndex ||
+    installIndex <= updateIndex
+  ) {
+    throw new Error(
+      "Dockerfile must remove default APT sources, write the pinned snapshot, update, then install exact direct versions",
+    );
+  }
+  if ((normalized.match(/apt-get install\b/g) ?? []).length !== 1) {
+    throw new Error("Dockerfile must contain exactly one audited apt-get install command");
+  }
+}
+
+function parseReleaseMetadata(source) {
+  const version = uniqueTopLevelTomlString(source, "version");
+  const license = uniqueTopLevelTomlString(source, "license");
+  if (!version || !license) throw new Error("release.toml must declare version and license");
+  return { version, license };
+}
+
+function uniqueTopLevelTomlString(source, key) {
+  const matches = [...source.matchAll(new RegExp(`^${key} = "([^"\\r\\n]+)"$`, "gm"))];
+  if (matches.length !== 1) throw new Error(`release.toml must contain exactly one ${key}`);
+  return matches[0][1];
 }
 
 function tomlString(section, key) {

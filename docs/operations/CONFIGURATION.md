@@ -18,7 +18,7 @@ osb bootstrap \
   --custom-css enabled \
   --seo enabled \
   --agent-discovery enabled \
-  --redis-topology managed \
+  --cache redis-managed \
   --database-profile durable
 ```
 
@@ -27,23 +27,68 @@ CLI (and recorded in `osb.intent.json`). They include the source bundle,
 deployment `.env`, and a unique Compose project name, so multiple writable or
 delivery deployments can safely share one host.
 
-Compose keeps Redis and Sentinel private, so the online doctor belongs inside
-the blog container. A host-side source deployment may run `osb doctor`
-directly; it applies the same non-empty `OSB_*` environment overrides as the
-server. Use `--offline` when only the TOML/filesystem contract is reachable.
+When a Redis profile is selected, Compose keeps Redis and Sentinel private, so
+the online doctor belongs inside the blog container. A `cache=none` deployment
+has no Redis process to probe and reads directly from SQLite/blobs. A host-side
+source deployment may run `osb doctor` directly; it applies the same non-empty
+`OSB_*` environment overrides as the server. Use `--offline` when only the
+TOML/filesystem and installation contracts are reachable.
 
 `bootstrap` creates these non-overwriting files:
 
 - `config.toml`: authoritative, versioned runtime intent;
+- `osb.install.toml`: secret-free, long-lived structural intent, including the
+  chosen administrator module, style, cache mode, and requested official DLCs;
+- `osb.lock.json`: machine-generated exact engine/DLC versions, compatibility
+  tuple, manifest digests, state/migration record, contiguous lifecycle history,
+  and canonical lock digest; do not hand-edit it;
 - `.env`: mode-0600 Compose settings and secrets;
 - `.gitignore`: in a fresh directory, excludes `.env`, `admin-access-key.txt`,
-  and local backups; an existing operator file is preserved only when it already
-  has exact `.env` and `admin-access-key.txt` entries (leading `/` is accepted),
-  otherwise bootstrap fails before generating secrets;
+  local backups, and `.osb-update/`; an existing operator file is preserved only
+  when it already has exact `.env`, `admin-access-key.txt`, `.osb-backups/`, and
+  `.osb-update/` entries (leading `/` is accepted), otherwise bootstrap fails
+  before generating secrets. A later `!` pattern that may re-include any of
+  those paths is also rejected; put exact protections after broad negations.
+  Backup/update directories must remain ignored because they can contain
+  canonical content, `.env`, and the administrator key;
 - `custom.css`: harmless first-party template; the feature flag decides whether it is served;
-- `osb.intent.json`: secret-free AI handoff and next commands;
+- `osb.intent.json`: secret-free stable topology, paths, and next commands;
 - `admin-access-key.txt`: mode-0600 plaintext credential, created only for the
   `access_key` administrator module.
+
+The installation manifest expresses what the operator wants; the lock records
+exactly what this engine resolved. `OSB_INSTALL_LOCK_DIGEST` binds `.env` to that
+lock at startup, while `OSB_DLC_IDS` and `OSB_FEATURES` are its enabled runtime
+projection. Verify the intent/lock pair, canonical digest, and bundled manifest
+bytes with:
+
+```sh
+osb installation verify --intent osb.install.toml --lock osb.lock.json
+```
+
+That command does not read `.env`. Verify the runtime projection separately
+with `osb doctor --offline --config config.toml --env-file .env`. The stable
+`osb.intent.json` handoff deliberately omits the mutable lock digest and DLC set;
+read their current exact values from `osb.lock.json`.
+
+Maintain DLCs with `osb installation dlc list|add|enable|disable|upgrade|remove`.
+Aliases and full reverse-domain IDs resolve only to official manifests bundled
+inside the installed CLI; paths, URLs, and arbitrary remote code are rejected.
+The personal default selects `seo`, `home-curation`, `ai-authorship`,
+`social-embeds`, and `release-check`; `--dlc none` is the explicit empty escape
+hatch, while `--seo disabled` also excludes the SEO DLC. A module required by
+enabled comments, collaboration, or external auth cannot be disabled first.
+Each mutation stages and fsyncs the intent, lock, and `.env`, with backups and
+byte-for-byte rollback for errors reported by that process. The three renames
+are not a filesystem-wide atomic commit. Serialize lifecycle and updater
+commands; after interruption, restore one matching control-file set from the
+protected updater snapshot or adjacent backups before retrying. Disable/remove
+does not delete module state, blog content, or its host-owned migration ledger;
+re-adding the same DLC restores that ledger. The Linux updater uses the same
+typed `dlc reconcile` boundary against the candidate engine before switching
+the live service. After a manual lifecycle mutation, rerun the exact bootstrap
+start and doctor commands so the process loads the new lock. See
+[Verified on-premise updates](UPDATES.md).
 
 ## Intent and feature matrix
 
@@ -53,15 +98,20 @@ server. Use `--offline` when only the TOML/filesystem contract is reachable.
 | `admin.auth` | `OSB_ADMIN_AUTH` | Administrator control plane: `access_key`, `external`, or `disabled` |
 | `admin.session_days` | `OSB_ADMIN_SESSION_DAYS` | Opaque administrator session lifetime, 1–365 days |
 | environment only | `OSB_ADMIN_ACCESS_KEY_PHC_B64` | Standard Base64 of an Argon2id PHC; required only for `access_key`, never plaintext |
-| environment only | `OSB_ADMIN_AUTH_ROTATE` | One-shot `true` switch for an intentional administrator key/provider/mode change; reset to `false` immediately after a successful start |
+| environment only | `OSB_ADMIN_AUTH_ROTATE` | One-shot `true` switch for an intentional same-module key/provider-binding change; reset to `false` immediately after a successful start |
 | `community.auth` | `OSB_AUTH_MODE` | `local`, `oauth`, `local_and_oauth`, `disabled` |
 | `community.registration_open` | `OSB_REGISTRATION_OPEN` | Allow new local accounts; existing accounts can sign in when closed |
 | `community.comments` | `OSB_COMMENTS` | Mount or remove authenticated comment routes |
 | `community.collaboration` | `OSB_COLLABORATION` | Request invited co-author policy; remains off in the simple owner profile |
 | `appearance.custom_css` | `OSB_CUSTOM_CSS` | Serve the configured first-party owner stylesheet |
 | `appearance.custom_css_file` | `OSB_CUSTOM_CSS_FILE` | Local CSS file, capped at 256 KiB |
+| installation style | `OSB_STYLE` | Exact `none`, `builtin:ID`, or `custom:SHA256` selection recorded in the install/lock pair |
 | `discovery.agent_txt` | `OSB_AGENT_DISCOVERY` | Publish `agents.txt`, `agent.txt`, and `llms.txt` under the configured public URL |
-| `features.seo` | `OSB_FEATURES` | Canonical search discovery, robots, and sitemap (`none` means an empty request set) |
+| `features.*` | `OSB_FEATURES` | Enabled runtime aliases projected from the DLC lock; `none` means an empty request set |
+| installation DLCs | `OSB_DLC_IDS` | Sorted enabled official DLC IDs projected from `osb.lock.json` |
+| installation lock | `OSB_INSTALL_LOCK_DIGEST` | Canonical SHA-256 binding the runtime environment to the exact lock |
+| environment only | `OSB_ALLOW_UNTRACKED_INSTALLATION` | Exact `true`/`false`; default and bootstrap value is `false`. Temporary opt-in only for a pre-contract writable source/legacy checkout; forbidden for delivery nodes |
+| `redis.enabled` and installation cache | `OSB_CACHE`, `OSB_REDIS_ENABLED` | `none`, `redis_standalone`, or `redis_managed`; Redis credentials are absent in `none` mode |
 | `deployment.delivery_only` | `OSB_DELIVERY_ONLY` | Open a pre-migrated SQLite artifact immutable/read-only and reject mutations |
 
 `delivery` intent requires `delivery_only=true`, `admin.auth=disabled`, and
@@ -70,6 +120,14 @@ writable node require an operational local member-auth mode. Member OAuth-only
 is rejected until a member adapter exists; `local_and_oauth` continues through
 local auth while reporting member OAuth as requested but unavailable. These are
 validated relationships, not documentation-only conventions.
+
+Server startup fails when `OSB_INSTALL_LOCK_DIGEST` is empty or absent. The
+only exception is an explicitly untracked, writable pre-contract checkout with
+`OSB_ALLOW_UNTRACKED_INSTALLATION=true`; values such as `1`, `yes`, or `TRUE`
+are rejected, while an empty value behaves as `false`. Use that exception only
+long enough to run `osb installation adopt` or a fresh bootstrap, then install
+the emitted digest and restore the flag to `false`. It can never bypass a
+delivery-only installation lock.
 
 A delivery bootstrap additionally requires `--site-id` copied from the
 writable node and a generation-specific `--content-release`. Its handoff lists
@@ -123,52 +181,95 @@ reader/member signup and login. The modes are mutually exclusive:
   has no remote web control plane. Delivery nodes require this mode and
   additionally enforce read-only storage.
 
+For a writable origin with administrator auth disabled, use the networkless
+`osb-local` maintenance service instead of temporarily enabling a remote token.
+Start the server once to initialize the primary site, then use the exact Compose
+project, `.env`, and Compose file recorded by bootstrap:
+
+```sh
+docker compose -p <compose-project> --env-file /srv/osb/blog/.env \
+  -f /path/to/OpenSoverignBlog/compose.yaml stop blog
+
+docker compose -p <compose-project> --env-file /srv/osb/blog/.env \
+  -f /path/to/OpenSoverignBlog/compose.yaml \
+  --profile maintenance run --rm -T osb-local \
+  local publish --title "Post title" --slug post-title --markdown - < post.md
+```
+
+Never run `blog` and `osb-local` as concurrent SQLite writers. After the local
+command succeeds, rerun the exact start command saved in `osb.intent.json`, then
+run the printed in-container doctor command. That restart reopens the canonical
+store and rotates any selected Redis derivative generation. `osb local setup`
+handles one-time metadata and `osb local list` prints document IDs; the complete
+flow is also shown in the [deployment guide](../../deploy/README.md). The
+maintenance container validates the mounted semantic config and rejects a
+delivery-only deployment before opening SQLite.
+
 The typed shared secret is an **administrator access key**, not a WebAuthn
 Passkey: there is no platform authenticator, public-key credential, or WebAuthn
 ceremony. Use HTTPS outside loopback, keep the plaintext file in a secret store,
-and keep a recoverable protected copy. A key, external issuer/subject binding, or
-mode change normally conflicts with the persisted control-plane fingerprint and
-fails startup. To approve it, set `OSB_ADMIN_AUTH_ROTATE=true` for one coordinated
-restart. The server atomically advances `auth_epoch`, invalidates existing admin
-sessions, clears the prior external identity binding when applicable, and applies
-the selected module. As soon as startup succeeds, write
+and keep a recoverable protected copy. A key or same-module external
+issuer/subject binding change normally conflicts with the persisted
+control-plane fingerprint and fails startup. To approve it, set
+`OSB_ADMIN_AUTH_ROTATE=true` for one coordinated restart. The server atomically
+advances `auth_epoch`, invalidates existing admin sessions, clears the prior
+external identity binding when applicable, and applies the selected module. As
+soon as startup succeeds, write
 `OSB_ADMIN_AUTH_ROTATE=false` back to the environment before any later restart or
 rollout. Reusing the same target is idempotent, but leaving the one-shot switch
 armed weakens the operator confirmation boundary.
+
+Switching among `access_key`, `external`, and `disabled` changes the tracked
+installation selection before that fingerprint rotation runs. This preview has
+no typed in-place auth-mode migration; bootstrap a replacement deployment
+contract and restore the owned canonical data rather than editing the intent or
+lock by hand.
 
 The external adapter currently accepts one exact OIDC issuer/subject owner.
 Firebase ID-token verification, email verification, and additional provider
 policies are future second-party modules that should produce the same verified
 identity boundary; they are not silently treated as generic OIDC today.
 
-## Redis: required speed, disposable data
+## Cache modes: none, standalone, or managed Redis
 
-Redis is a core runtime dependency, not an optional plugin. It stores only
-public derivative responses. Sessions, authorization, drafts, revisions,
-canonical Markdown, and blobs remain in SQLite/local storage.
+Redis is an optional derivative accelerator, never the authoritative database.
+Sessions, authorization, drafts, revisions, canonical Markdown, and blobs remain
+in SQLite/local storage in every mode. Bootstrap records one structural choice
+in `osb.install.toml` and its exact lock:
+
+| Bootstrap choice | Compose profile | Runtime behavior |
+| --- | --- | --- |
+| `--cache none` | no Redis profile | No Redis containers or cache credentials; public reads use SQLite/blobs and readiness reports the authoritative origin path healthy |
+| `--cache redis-standalone` | `redis-standalone` | One authenticated Redis primary provides disposable signed response derivatives |
+| `--cache redis-managed` | `redis-managed` | Authenticated primary, replica, and three Sentinel voters provide same-host process failover |
+
+Use the exact profile-bearing start command printed by bootstrap. Do not start a
+Redis profile that contradicts `OSB_CACHE` and the installation lock.
 
 | TOML | Environment | Meaning |
 | --- | --- | --- |
+| `redis.enabled` | `OSB_REDIS_ENABLED` | `false` only for cache `none`; `true` for either Redis mode |
 | `redis.topology` | `OSB_REDIS_TOPOLOGY` | `standalone` or `sentinel` |
 | `redis.url` | `OSB_REDIS_URL` | Direct node settings and Redis credentials/TLS policy |
 | `redis.sentinel_urls` | `OSB_REDIS_SENTINELS` | Comma-separated Sentinel control endpoints |
 | `redis.sentinel_master` | `OSB_REDIS_SENTINEL_MASTER` | Monitored master name |
 | `redis.namespace` | `OSB_REDIS_NAMESPACE` | Deployment key namespace |
 | `redis.content_release` | `OSB_CONTENT_RELEASE` | Immutable delivery generation/cache isolation identifier |
-| `redis.required` | `OSB_REDIS_REQUIRED` | Missing initial PING fails startup; keep `true` in supported profiles |
-| `redis.password` | `OSB_REDIS_PASSWORD` | 32–128 URL-safe characters; bootstrap generates 64 random hex characters in mode-0600 `.env` |
-| environment only | `OSB_CACHE_SIGNING_KEY` | 64 hex characters; authenticates cached public bodies with an application-only HMAC key that Redis never receives |
+| `redis.required` | `OSB_REDIS_REQUIRED` | `false` with cache `none`; bootstrap sets `true` for selected Redis profiles so a missing initial PING fails startup |
+| `redis.password` | `OSB_REDIS_PASSWORD` | Empty in `none`; otherwise 32–128 URL-safe characters, with bootstrap generating 64 random hex characters in mode-0600 `.env` |
+| environment only | `OSB_CACHE_SIGNING_KEY` | Empty in `none`; otherwise 64 hex characters authenticating cached public bodies with an application-only HMAC key that Redis never receives |
 | `redis.response_ttl_seconds` | `OSB_REDIS_TTL_SECONDS` | Expiration/reclamation window for generation-scoped response derivatives |
 
-The middleware caches only public successful GET responses. Private/session,
-Studio, auth, mutation, media, and error responses bypass it. A public mutation
-holds a cancellation-safe guard that suspends cache reads, then rotates a
-non-repeating Redis generation after the canonical attempt. A miss records the
-generation before rendering and stores only if it is still current, so an old
-render cannot enter a new generation. Signed envelopes bind route, generation,
-headers, and body to the application-only key. Runtime Redis failure drops to
-SQLite/FS origin, marks health degraded, and re-discovers the Sentinel master
-on the next attempt.
+With Redis selected, the middleware caches only public successful GET responses.
+Private/session, Studio, auth, mutation, media, and error responses bypass it. A
+public mutation holds a cancellation-safe guard that suspends cache reads, then
+rotates a non-repeating Redis generation after the canonical attempt. A miss
+records the generation before rendering and stores only if it is still current,
+so an old render cannot enter a new generation. Signed envelopes bind route,
+generation, headers, and body to the application-only key. Runtime Redis failure
+drops to SQLite/FS origin, marks health degraded, and re-discovers the Sentinel
+master on the next attempt in managed mode. Cache `none` bypasses this derivative
+path entirely and requires no periodic memory load/reload loop.
 
 The bundled managed profile uses one authenticated Redis primary, one replica,
 and three authenticated Sentinels with AOF/every-second sync plus native RDB
@@ -236,14 +337,17 @@ hash.
 | `server.no_index` | `OSB_NO_INDEX` | Emit `noindex` and omit sitemap while leaving pages crawlable enough to observe it |
 | `storage.database` | `OSB_DATABASE` | Local SQLite file |
 | `storage.blob_directory` | `OSB_BLOB_DIRECTORY` | First-party content-addressed passive assets |
-| `security.admin_token` | `OSB_ADMIN_TOKEN` | Migration-only legacy owner Bearer; schema v2 rejects it, while schema v1/schema-less configurations retain temporary compatibility |
+| `security.admin_token` | `OSB_ADMIN_TOKEN` | Rejected in every schema because a legacy owner Bearer would bypass the selected administrator authentication module |
 
 Environment variables override TOML only when non-empty. `OSB_FEATURES=none`
 is the explicit empty feature request. `/api/v1/capabilities` reports requested
 versus operational modules, while `/livez`, `/readyz`, and `/healthz` separate
-process liveness, required Redis readiness, and degraded dependency detail.
-The schema-v1/schema-less legacy owner token is API migration compatibility only:
-the new Web Studio intentionally provides no browser Bearer input or storage.
+process liveness, readiness for the selected origin/cache profile, and degraded
+dependency detail. Redis-free installations are ready without Redis; a selected
+required Redis profile must pass its initial connection contract.
+Schema-v1 and schema-less deployments must remove the obsolete owner token and
+select an administrator module before starting this version. Web Studio has no
+browser Bearer input or storage.
 
 The isolated code-runner settings from the previous configuration contract
 remain supported. They are intentionally omitted from bootstrap; add a vetted
@@ -275,6 +379,6 @@ global static content credential rather than per-client issuance or independent
 scopes. Rotate it by changing the value in both the server and MCP client secret
 environment and restarting every application/MCP replica. Remove it from the
 server environment and restart every application replica for global revocation.
-Never substitute an administrator access key, legacy owner token,
-external-provider token, or browser session cookie. See
+Never substitute an administrator access key, external-provider token, or
+browser session cookie. See
 [the adapter guide](../../apps/mcp/README.md).

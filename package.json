@@ -14,6 +14,8 @@
     "supply-chain:generate": "node scripts/generate-supply-chain-artifacts.mjs",
     "supply-chain:check": "node scripts/generate-supply-chain-artifacts.mjs --check",
     "test": "npm run test --workspaces --if-present",
+    "test:updater": "sh scripts/tests/osb-update-self-test.sh",
+    "validate:release": "node scripts/validate-release.mjs",
     "validate:contracts": "node scripts/validate-contracts.mjs"
   },
   "devDependencies": {

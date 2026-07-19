@@ -13,7 +13,7 @@ use url::Url;
 use uuid::Uuid;
 
 const DEFAULT_SITE_ID: &str = "00000000-0000-7000-8000-000000000001";
-const CONFIG_SCHEMA_VERSION: &str = "open-soverign-blog/2";
+pub(crate) const CONFIG_SCHEMA_VERSION: &str = "open-soverign-blog/2";
 const LEGACY_CONFIG_SCHEMA_VERSION: &str = "open-soverign-blog/1";
 
 pub struct RuntimeConfig {
@@ -24,8 +24,6 @@ pub struct RuntimeConfig {
     pub site_id: Uuid,
     pub database: PathBuf,
     pub blob_directory: PathBuf,
-    /// Legacy per-request Bearer credential. New deployments use `admin_auth`.
-    pub admin_token: Option<String>,
     /// Dedicated, static MCP content credential loaded only from the environment.
     pub mcp_token: Option<McpToken>,
     pub admin_auth: AdminAuthSettings,
@@ -42,7 +40,9 @@ pub struct RuntimeConfig {
     pub agent_discovery_enabled: bool,
     pub delivery_only: bool,
     pub secure_session_cookie: bool,
-    pub redis: RedisSettings,
+    /// Optional derivative cache. SQLite and blobs remain the source of truth
+    /// when Redis is deliberately disabled by the installation profile.
+    pub redis: Option<RedisSettings>,
     pub operations: OperationsSettings,
     pub runner: Option<RunnerSettings>,
 }
@@ -67,10 +67,6 @@ impl McpToken {
 
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
-    }
-
-    fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -268,15 +264,12 @@ impl RuntimeConfig {
                 .or(file.storage.blob_directory)
                 .unwrap_or_else(|| ".data/blobs".into()),
         );
-        let admin_token = env_value("OSB_ADMIN_TOKEN")
+        let legacy_admin_token_present = env_value("OSB_ADMIN_TOKEN")
             .or(file.security.admin_token)
-            .filter(|value| !value.trim().is_empty());
-        if let Some(token) = &admin_token {
-            validate_secret("security.admin_token/OSB_ADMIN_TOKEN", token)?;
-        }
+            .is_some();
         validate_legacy_admin_token_policy(
             config_schema_version.as_deref(),
-            admin_token.is_some(),
+            legacy_admin_token_present,
         )?;
         let mcp_token = env_value("OSB_MCP_TOKEN")
             .map(McpToken::parse)
@@ -445,12 +438,7 @@ impl RuntimeConfig {
                 "OSB_ADMIN_AUTH_ROTATE cannot run on a delivery-only read-only deployment"
             );
         }
-        validate_mcp_token_policy(
-            mcp_token.as_ref(),
-            admin_token.as_deref(),
-            delivery_only,
-            admin_auth.mode,
-        )?;
+        validate_mcp_token_policy(mcp_token.as_ref(), delivery_only, admin_auth.mode)?;
         if !delivery_only && matches!(auth_mode, AuthMode::Oauth) {
             anyhow::bail!(
                 "oauth-only control planes are unavailable until a verified adapter is composed; use local or local_and_oauth"
@@ -489,7 +477,6 @@ impl RuntimeConfig {
             site_id,
             database,
             blob_directory,
-            admin_token,
             mcp_token,
             admin_auth,
             admin_auth_rotate,
@@ -514,21 +501,17 @@ impl RuntimeConfig {
 
 fn validate_mcp_token_policy(
     mcp_token: Option<&McpToken>,
-    legacy_admin_token: Option<&str>,
     delivery_only: bool,
     admin_auth_mode: AdminAuthMode,
 ) -> Result<()> {
-    let Some(mcp_token) = mcp_token else {
+    if mcp_token.is_none() {
         return Ok(());
-    };
+    }
     if delivery_only {
         anyhow::bail!("OSB_MCP_TOKEN cannot be enabled on a delivery-only deployment");
     }
     if admin_auth_mode == AdminAuthMode::Disabled {
         anyhow::bail!("OSB_MCP_TOKEN requires an active administrator authentication module");
-    }
-    if legacy_admin_token.is_some_and(|legacy| legacy == mcp_token.as_str()) {
-        anyhow::bail!("OSB_MCP_TOKEN must be distinct from the legacy OSB_ADMIN_TOKEN");
     }
     Ok(())
 }
@@ -578,22 +561,15 @@ fn parse_admin_auth_mode(name: &str, value: &str) -> Result<AdminAuthMode> {
 }
 
 fn validate_legacy_admin_token_policy(
-    schema_version: Option<&str>,
+    _schema_version: Option<&str>,
     token_present: bool,
 ) -> Result<()> {
     if !token_present {
         return Ok(());
     }
-    if schema_version == Some(CONFIG_SCHEMA_VERSION) {
-        anyhow::bail!(
-            "schema v2 rejects security.admin_token/OSB_ADMIN_TOKEN because it bypasses the selected administrator authentication module"
-        );
-    }
-    tracing::warn!(
-        schema_version = schema_version.unwrap_or("missing"),
-        "legacy configuration is temporarily retaining OSB_ADMIN_TOKEN compatibility; migrate to schema v2 administrator authentication"
-    );
-    Ok(())
+    anyhow::bail!(
+        "security.admin_token/OSB_ADMIN_TOKEN is no longer accepted because it bypasses the selected access_key, external, or disabled administrator authentication module"
+    )
 }
 
 fn decode_access_key_phc(encoded: &str) -> Result<String> {
@@ -874,6 +850,7 @@ struct StorageConfig {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RedisFileConfig {
+    enabled: Option<bool>,
     topology: Option<RedisTopology>,
     url: Option<String>,
     password: Option<String>,
@@ -887,7 +864,16 @@ struct RedisFileConfig {
 }
 
 impl RedisSettings {
-    fn resolve(file: RedisFileConfig) -> Result<Self> {
+    fn resolve(file: RedisFileConfig) -> Result<Option<Self>> {
+        let enabled = env_bool("OSB_REDIS_ENABLED")?
+            .or(file.enabled)
+            .unwrap_or(true);
+        if !enabled {
+            if env_bool("OSB_REDIS_REQUIRED")?.unwrap_or(false) {
+                anyhow::bail!("OSB_REDIS_REQUIRED=true contradicts OSB_REDIS_ENABLED=false");
+            }
+            return Ok(None);
+        }
         let topology = env_value("OSB_REDIS_TOPOLOGY")
             .map(|value| match value.to_ascii_lowercase().as_str() {
                 "standalone" => Ok(RedisTopology::Standalone),
@@ -975,7 +961,7 @@ impl RedisSettings {
         if !(100..=60_000).contains(&connect_timeout_ms) {
             anyhow::bail!("Redis connect timeout must be between 100 and 60000 milliseconds");
         }
-        Ok(Self {
+        Ok(Some(Self {
             topology,
             url,
             sentinel_urls,
@@ -985,7 +971,7 @@ impl RedisSettings {
             required,
             response_ttl_seconds,
             connect_timeout_ms,
-        })
+        }))
     }
 }
 
@@ -1274,6 +1260,12 @@ mod tests {
     }
 
     #[test]
+    fn redis_can_be_structurally_disabled() {
+        let config: FileConfig = toml::from_str("[redis]\nenabled = false").unwrap();
+        assert_eq!(config.redis.enabled, Some(false));
+    }
+
+    #[test]
     fn checked_in_example_is_accepted_by_the_runtime_parser() {
         toml::from_str::<FileConfig>(include_str!("../../../config.example.toml"))
             .expect("config.example.toml must not drift from RuntimeConfig");
@@ -1354,38 +1346,21 @@ mod tests {
     }
 
     #[test]
-    fn mcp_token_requires_writable_active_admin_and_a_distinct_secret() {
+    fn mcp_token_requires_a_writable_active_admin_module() {
         let token = McpToken::parse(URL_SAFE_NO_PAD.encode([0x6b; 32])).unwrap();
-        assert!(
-            validate_mcp_token_policy(Some(&token), None, false, AdminAuthMode::AccessKey).is_ok()
-        );
-        assert!(
-            validate_mcp_token_policy(Some(&token), None, false, AdminAuthMode::External).is_ok()
-        );
-        assert!(
-            validate_mcp_token_policy(Some(&token), None, false, AdminAuthMode::Disabled).is_err()
-        );
-        assert!(
-            validate_mcp_token_policy(Some(&token), None, true, AdminAuthMode::AccessKey).is_err()
-        );
-        assert!(
-            validate_mcp_token_policy(
-                Some(&token),
-                Some(token.as_str()),
-                false,
-                AdminAuthMode::AccessKey
-            )
-            .is_err()
-        );
+        assert!(validate_mcp_token_policy(Some(&token), false, AdminAuthMode::AccessKey).is_ok());
+        assert!(validate_mcp_token_policy(Some(&token), false, AdminAuthMode::External).is_ok());
+        assert!(validate_mcp_token_policy(Some(&token), false, AdminAuthMode::Disabled).is_err());
+        assert!(validate_mcp_token_policy(Some(&token), true, AdminAuthMode::AccessKey).is_err());
     }
 
     #[test]
-    fn schema_v2_rejects_the_legacy_owner_token_bypass() {
+    fn every_schema_rejects_the_legacy_owner_token_bypass() {
         assert!(validate_legacy_admin_token_policy(Some(CONFIG_SCHEMA_VERSION), true).is_err());
         assert!(
-            validate_legacy_admin_token_policy(Some(LEGACY_CONFIG_SCHEMA_VERSION), true).is_ok()
+            validate_legacy_admin_token_policy(Some(LEGACY_CONFIG_SCHEMA_VERSION), true).is_err()
         );
-        assert!(validate_legacy_admin_token_policy(None, true).is_ok());
+        assert!(validate_legacy_admin_token_policy(None, true).is_err());
         assert!(validate_legacy_admin_token_policy(Some(CONFIG_SCHEMA_VERSION), false).is_ok());
     }
 

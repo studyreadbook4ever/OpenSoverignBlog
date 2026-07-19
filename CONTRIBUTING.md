@@ -1,9 +1,10 @@
 # Contributing
 
-Contributions are welcome under the Unlicense. By submitting a contribution,
-you certify that you have the right to release it under that license and that it
-does not copy code, CSS, assets, test fixtures, or documentation from a project
-whose notice or license would be incompatible with that claim.
+Contributions are welcome under the [Unlicense](UNLICENSE). By submitting a
+contribution, you certify that you have the right to release it under that
+license and that it does not copy code, CSS, assets, test fixtures, or
+documentation from a project whose notice or license would be incompatible with
+that claim.
 
 Architecture changes should preserve these boundaries:
 

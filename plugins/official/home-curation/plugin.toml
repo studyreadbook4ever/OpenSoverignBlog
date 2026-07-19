@@ -1,0 +1,26 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.home-curation"
+name = "Home curation"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
+kinds = ["render-extension"]
+description = "Optional installation-wide home pins and a read-only curated feed projection."
+permissions = [
+  { capability = "content.read", scope = "published", reason = "Build the public home projection from published revisions." },
+  { capability = "route.public", resources = ["home.feed"], reason = "Expose the cacheable read-only home projection." },
+  { capability = "route.admin", resources = ["home.pins"], reason = "Let the authenticated installation administrator replace up to three pins." },
+  { capability = "state.read", scope = "all" },
+  { capability = "state.write", scope = "all" }
+]
+metadata = { bundled = true }
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-server"
+extension = "home_curation"

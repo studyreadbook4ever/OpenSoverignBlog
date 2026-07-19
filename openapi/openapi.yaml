@@ -61,6 +61,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/Health"
 
+  /api/v1/version:
+    get:
+      tags: [Discovery]
+      operationId: getPublicVersion
+      summary: Read bounded informational release metadata
+      description: Never installs or executes an update. Remote check failures retain the last validated metadata.
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Current and latest known release metadata for the public footer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicVersion" }
+
   /.well-known/open-soverign-blog.json:
     get:
       tags: [Discovery]
@@ -385,6 +399,25 @@ paths:
                 $ref: "#/components/schemas/Session"
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /api/v1/home:
+    get:
+      tags: [Content]
+      operationId: getCuratedHome
+      summary: Read the optional pinned-first global home projection
+      description: Mounted only when the bundled home-curation DLC is active. Pinned posts never repeat in recentItems.
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable public home projection.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HomeResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/feed:
     get:
       tags: [Content]
@@ -522,6 +555,46 @@ paths:
               schema: { $ref: "#/components/schemas/BlogPostView" }
         "304": { description: The supplied ETag still matches. }
         "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/admin/home/pins:
+    get:
+      tags: [Studio]
+      operationId: getHomePins
+      summary: Read the ordered global home pins as the installation administrator
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Ordered published document identifiers, with at most three entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HomePins" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    put:
+      tags: [Studio]
+      operationId: replaceHomePins
+      summary: Atomically replace all global home pins
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/HomePins" }
+      responses:
+        "200":
+          description: The committed ordered pin identifiers.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HomePins" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/studio/documents:
     get:
@@ -859,11 +932,11 @@ paths:
       tags: [Administration]
       operationId: createPost
       summary: Create a draft document and its first immutable revision
+      description: Browser administrator sessions may omit authorship to select human provenance; MCP credentials must send it explicitly.
       x-osb-route-source: true
       security:
         - SessionCookie: []
         - McpBearer: []
-        - OwnerBearer: []
       requestBody:
         required: true
         content:
@@ -946,7 +1019,6 @@ paths:
       security:
         - SessionCookie: []
         - McpBearer: []
-        - OwnerBearer: []
       responses:
         "200":
           description: Current snapshots for the configured site.
@@ -972,7 +1044,6 @@ paths:
       security:
         - SessionCookie: []
         - McpBearer: []
-        - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
       responses:
@@ -1002,7 +1073,6 @@ paths:
       security:
         - SessionCookie: []
         - McpBearer: []
-        - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
       responses:
@@ -1030,12 +1100,11 @@ paths:
       tags: [Administration]
       operationId: proposeHumanRevision
       summary: Append an immutable human revision
-      description: The server derives `documentId` from the path and creates the human owner actor.
+      description: The server derives `documentId` from the path and records a human or MCP agent actor from the authenticated principal. Browser administrator sessions may omit authorship to select human provenance; MCP credentials must send it explicitly.
       x-osb-route-source: true
       security:
         - SessionCookie: []
         - McpBearer: []
-        - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
       requestBody:
@@ -1079,7 +1148,6 @@ paths:
       security:
         - SessionCookie: []
         - McpBearer: []
-        - OwnerBearer: []
       parameters:
         - $ref: "#/components/parameters/DocumentId"
       requestBody:
@@ -1123,7 +1191,6 @@ paths:
       x-osb-route-source: true
       security:
         - SessionCookie: []
-        - OwnerBearer: []
       requestBody:
         required: true
         content:
@@ -1169,7 +1236,6 @@ paths:
       x-osb-route-source: true
       security:
         - SessionCookie: []
-        - OwnerBearer: []
       parameters:
         - name: X-OSB-Filename
           in: header
@@ -1297,7 +1363,6 @@ paths:
       x-osb-route-source: true
       security:
         - SessionCookie: []
-        - OwnerBearer: []
       requestBody:
         required: true
         content:
@@ -1343,7 +1408,6 @@ paths:
       x-osb-route-source: true
       security:
         - SessionCookie: []
-        - OwnerBearer: []
       parameters:
         - name: id
           in: path
@@ -1419,11 +1483,6 @@ components:
         administrator auth, AI2AI proposals, assets, runner operations, Studio
         settings, or member APIs. Change the environment value and restart every
         application replica to rotate or globally revoke it.
-    OwnerBearer:
-      type: http
-      scheme: bearer
-      bearerFormat: opaque owner token
-      description: Legacy per-request token configured by `server.admin_token` or `OSB_ADMIN_TOKEN`; browser administrator access keys are never sent through this scheme.
     SessionCookie:
       type: apiKey
       in: cookie
@@ -1476,7 +1535,7 @@ components:
 
   responses:
     Unauthorized:
-      description: The administrator credential, legacy owner bearer, or browser session is missing, malformed, untrusted, expired, or invalid.
+      description: The administrator session or route-scoped MCP credential is missing, malformed, untrusted, expired, or invalid.
       content:
         application/json:
           schema:
@@ -1567,13 +1626,102 @@ components:
     Health:
       type: object
       additionalProperties: false
-      required: [status, version]
+      required: [status, version, dependencies, dataBoundary]
       properties:
         status:
           type: string
-          const: ok
+          enum: [ok, degraded]
         version:
           type: string
+        dependencies:
+          type: object
+          additionalProperties: false
+          required: [cache, backups]
+          properties:
+            cache:
+              $ref: "#/components/schemas/DiscoveryCacheDependency"
+            backups:
+              $ref: "#/components/schemas/HealthBackupDependency"
+        dataBoundary:
+          type: object
+          additionalProperties: false
+          required: [authoritative, redisRole]
+          properties:
+            authoritative:
+              type: array
+              minItems: 2
+              maxItems: 2
+              prefixItems:
+                - { type: string, const: sqlite }
+                - { type: string, const: content_addressed_blobs }
+              items: false
+            redisRole:
+              type: string
+              enum: [discardable_public_derivative_cache, disabled_by_installation]
+
+    HealthBackupDependency:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [state]
+          properties:
+            state:
+              type: string
+              enum: [not_applicable, externally_managed, unknown]
+        - type: object
+          additionalProperties: false
+          required:
+            - state
+            - intervalMinutes
+            - retention
+            - lastStartedAt
+            - lastCompletedAt
+            - lastGenerationAvailable
+            - lastError
+          properties:
+            state:
+              type: string
+              enum: [waiting, running, healthy, degraded]
+            intervalMinutes: { type: integer, minimum: 1 }
+            retention: { type: integer, minimum: 1 }
+            lastStartedAt: { type: [string, "null"], format: date-time }
+            lastCompletedAt: { type: [string, "null"], format: date-time }
+            lastGenerationAvailable: { type: boolean }
+            lastError:
+              type: [string, "null"]
+              enum: [backup_failed, null]
+
+    PublicVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - currentVersion
+        - currentReleaseDate
+        - latestVersion
+        - latestReleaseDate
+        - channel
+        - updateAvailable
+        - checkedAt
+        - status
+        - repositoryUrl
+        - developerUrl
+        - license
+        - licenseHref
+      properties:
+        currentVersion: { type: string }
+        currentReleaseDate: { type: [string, "null"], format: date }
+        latestVersion: { type: [string, "null"] }
+        latestReleaseDate: { type: [string, "null"], format: date }
+        channel: { type: string }
+        updateAvailable: { type: boolean }
+        checkedAt: { type: [string, "null"], format: date-time }
+        status:
+          type: string
+          enum: [disabled, offline, no_release, update_available, current]
+        repositoryUrl: { type: string, format: uri }
+        developerUrl: { type: string, format: uri }
+        license: { type: string, const: Unlicense }
+        licenseHref: { type: string, const: /UNLICENSE }
 
     ErrorBody:
       type: object
@@ -1667,7 +1815,7 @@ components:
         studioAccess:
           type: string
           enum: [disabled, admin_only, members]
-          description: Authoritative v2 control-plane policy; clients should prefer this over the legacy `mutationMode` field.
+          description: Authoritative control-plane policy for rendering Studio access.
         auth:
           $ref: "#/components/schemas/AdminAuthCapabilities"
         views:
@@ -1690,14 +1838,14 @@ components:
         mutationMechanisms:
           type: array
           uniqueItems: true
-          description: Compatibility field retained from v1; `session` now also covers access-key and external administrator sessions.
+          description: Active browser mutation transports. Administrator access-key and external authentication both terminate in a session.
           items:
             type: string
-            enum: [session, owner_token]
+            const: session
         mutationMode:
           type: string
-          enum: [authenticated_members, single_owner_token, read_only]
-          description: Coarse v1 compatibility field. Use `studioAccess` and `auth` to render v2 administrator controls.
+          enum: [authenticated_members, read_only]
+          description: Coarse compatibility field. Use `studioAccess` and `auth` to render administrator controls.
 
     AdminAuthCapabilities:
       type: object
@@ -1783,6 +1931,7 @@ components:
       required:
         - localAuth
         - oauthRequested
+        - administratorAuth
         - comments
         - collaboration
         - customCss
@@ -1791,6 +1940,9 @@ components:
       properties:
         localAuth: { type: boolean }
         oauthRequested: { type: boolean }
+        administratorAuth:
+          type: string
+          enum: [disabled, access_key, external]
         comments: { type: boolean }
         collaboration: { type: boolean }
         customCss: { type: boolean }
@@ -1798,29 +1950,24 @@ components:
         deliveryOnly: { type: boolean }
 
     DiscoveryCacheDependency:
-      type: object
-      additionalProperties: false
-      required: [provider, state]
-      properties:
-        provider: { type: string, const: redis }
-        role: { type: string, const: discardable_public_derivative_cache }
-        state:
-          type: string
-          enum: [active, degraded, connecting, misconfigured]
-        required: { type: boolean }
-        topology:
-          type: string
-          enum: [standalone, sentinel]
-        namespace: { type: string }
-        contentRelease: { type: string }
-        hits: { type: integer, minimum: 0 }
-        misses: { type: integer, minimum: 0 }
-        errors: { type: integer, minimum: 0 }
-        lastSuccessUnix:
-          type: [integer, "null"]
-          minimum: 0
-        lastError:
-          type: [string, "null"]
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [provider, state, required]
+          properties:
+            provider: { type: string, const: none }
+            state: { type: string, const: disabled }
+            required: { type: boolean, const: false }
+        - type: object
+          additionalProperties: false
+          required: [provider, role, state, required]
+          properties:
+            provider: { type: string, const: redis }
+            role: { type: string, const: discardable_public_derivative_cache }
+            state:
+              type: string
+              enum: [active, degraded, connecting, misconfigured]
+            required: { type: boolean }
 
     DiscoveryDependencies:
       type: object
@@ -1925,7 +2072,7 @@ components:
     PostSummary:
       type: object
       additionalProperties: false
-      required: [id, title, slug, updatedAt, hasIntentView, hasOntology]
+      required: [id, title, slug, updatedAt, hasIntentView, hasOntology, authorship]
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -1933,6 +2080,7 @@ components:
         updatedAt: { type: string, format: date-time }
         hasIntentView: { type: boolean }
         hasOntology: { type: boolean }
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
 
     UserSummary:
       type: object
@@ -1986,7 +2134,7 @@ components:
     AuthenticatedSession:
       type: object
       additionalProperties: false
-      required: [state, registrationOpen, user]
+      required: [state, registrationOpen, user, instanceAdministrator]
       properties:
         state: { type: string, const: authenticated }
         registrationOpen: { type: boolean }
@@ -1994,6 +2142,7 @@ components:
         blog: { $ref: "#/components/schemas/BlogSummary" }
         membershipRole:
           $ref: "#/components/schemas/SiteMembershipRole"
+        instanceAdministrator: { type: boolean }
 
     Session:
       oneOf:
@@ -2121,6 +2270,36 @@ components:
           maxLength: 65536
           description: Omit to preserve; null or an empty string clears. Rejected when custom CSS is disabled.
 
+    PublicAuthorship:
+      type: object
+      additionalProperties: false
+      required: [kind, humanReviewed]
+      properties:
+        kind:
+          type: string
+          enum: [human, ai_generated, ai_assisted, imported]
+        generator:
+          type: string
+          minLength: 1
+          maxLength: 300
+          description: Portable provider/model label; never an internal actor, session, or agent ID.
+        humanReviewed: { type: boolean }
+      allOf:
+        - if:
+            properties:
+              kind: { const: human }
+            required: [kind]
+          then:
+            properties:
+              generator: false
+        - if:
+            properties:
+              kind:
+                enum: [ai_generated, ai_assisted, imported]
+            required: [kind]
+          then:
+            required: [generator]
+
     FeedPostSummary:
       type: object
       additionalProperties: false
@@ -2136,6 +2315,7 @@ components:
         - tags
         - commentCount
         - hasIntentView
+        - authorship
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -2150,6 +2330,7 @@ components:
           items: { type: string }
         commentCount: { type: integer, minimum: 0 }
         hasIntentView: { type: boolean }
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
         coverImageUrl: { type: string, format: uri-reference }
 
     FeedResponse:
@@ -2160,6 +2341,30 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/FeedPostSummary" }
+
+    HomeResponse:
+      type: object
+      additionalProperties: false
+      required: [pinnedItems, recentItems]
+      properties:
+        pinnedItems:
+          type: array
+          maxItems: 3
+          items: { $ref: "#/components/schemas/FeedPostSummary" }
+        recentItems:
+          type: array
+          items: { $ref: "#/components/schemas/FeedPostSummary" }
+
+    HomePins:
+      type: object
+      additionalProperties: false
+      required: [documentIds]
+      properties:
+        documentIds:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          items: { type: string, format: uuid }
 
     BlogPostView:
       type: object
@@ -2173,6 +2378,7 @@ components:
         - markdown
         - embeds
         - artifact
+        - authorship
         - slug
         - publishedAt
         - updatedAt
@@ -2191,6 +2397,7 @@ components:
           items: { $ref: "#/components/schemas/EmbedReference" }
         artifact: { $ref: "#/components/schemas/PublishArtifact" }
         ontology: { $ref: "#/components/schemas/OntologySidecar" }
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
         slug: { type: string }
         excerpt: { type: string }
         publishedAt: { type: string, format: date-time }
@@ -2356,6 +2563,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/OntologySidecar"
             - type: "null"
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
       description: Unknown JSON fields are currently ignored by this request type.
 
     ProposedRevision:
@@ -2380,6 +2588,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/OntologySidecar"
             - type: "null"
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
         actor:
           $ref: "#/components/schemas/RevisionActor"
         idempotencyKey:
@@ -2409,6 +2618,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/OntologySidecar"
             - type: "null"
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
         idempotencyKey:
           type: [string, "null"]
           maxLength: 200
@@ -2425,6 +2635,7 @@ components:
         - slug
         - sourceMarkdown
         - embeds
+        - authorship
         - actor
         - contentHash
         - createdAt
@@ -2445,6 +2656,8 @@ components:
           $ref: "#/components/schemas/IntentLayer"
         ontology:
           $ref: "#/components/schemas/OntologySidecar"
+        authorship:
+          $ref: "#/components/schemas/PublicAuthorship"
         actor:
           $ref: "#/components/schemas/RevisionActor"
         contentHash:
@@ -2527,6 +2740,7 @@ components:
         - markdown
         - embeds
         - artifact
+        - authorship
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
@@ -2542,6 +2756,8 @@ components:
           $ref: "#/components/schemas/PublishArtifact"
         ontology:
           $ref: "#/components/schemas/OntologySidecar"
+        authorship:
+          $ref: "#/components/schemas/PublicAuthorship"
 
     AiActor:
       type: object

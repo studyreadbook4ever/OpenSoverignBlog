@@ -1,0 +1,18 @@
+schema_version = "open-soverign-blog-install/1"
+installation_id = "019f7979-723a-75c0-8e97-11c3b13b004d"
+site_id = "00000000-0000-7000-8000-000000000001"
+created_with = "0.1.0"
+
+[selection]
+admin_auth = "access_key"
+cache = "redis_managed"
+
+[selection.style]
+kind = "custom"
+file = "custom.css"
+sha256 = "3d3be91eb7558e73a33c525d4aee26e25f996c8f91e27317f177e992e6fececc"
+
+[[dlcs]]
+id = "org.open-soverign-blog.seo"
+version = "=0.1.0"
+enabled = true

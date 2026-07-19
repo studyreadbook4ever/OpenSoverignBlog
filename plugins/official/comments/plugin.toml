@@ -5,6 +5,7 @@ name = "Comments"
 version = "0.1.0"
 license = "Unlicense"
 pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["comments", "render-extension"]
 description = "Optional comment submission, moderation, and article rendering."
 permissions = [

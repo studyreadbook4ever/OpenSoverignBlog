@@ -5,6 +5,7 @@ name = "Isolated code runner client"
 version = "0.1.0"
 license = "Unlicense"
 pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["code-runner-client", "render-extension"]
 description = "Submits bounded snippets to a separately operated runner; never executes inside the CMS."
 permissions = [

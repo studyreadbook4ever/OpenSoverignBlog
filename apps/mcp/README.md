@@ -13,9 +13,11 @@ It implements the MCP 2025-11-25 lifecycle and tool contract and exposes:
 - `osb_content_publish` (write mode)
 
 Create and revise only produce private immutable revisions. Publishing remains
-a separate tool so an MCP host can ask the human for confirmation. Content is
-always complete portable Markdown; inert macro fences, if any, are just content
-for an external AI/script to construct.
+a separate tool so an MCP host can ask the human for confirmation. Both write
+tools require explicit portable `authorship`: `human` forbids a generator,
+while `ai_generated`, `ai_assisted`, and `imported` require a bounded public
+generator/source label. Content is always complete portable Markdown; inert
+macro fences, if any, are just content for an external AI/script to construct.
 
 ## Build and run
 
@@ -47,7 +49,7 @@ This is one global static content credential, not a per-client token issuer or a
 general administrator credential. To rotate it, update the protected environment
 of the server and every MCP process, then restart every application and MCP
 replica. To revoke all MCP writes, remove it from every server replica and restart
-them. A browser administrator access key, legacy owner token, Passkey, OAuth/OIDC
+them. A browser administrator access key, Passkey, OAuth/OIDC
 token, or browser session must never be copied into an AI process.
 
 If the blog is mounted below a base path, include it in `--base-url`; for

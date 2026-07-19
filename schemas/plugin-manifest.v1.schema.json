@@ -72,7 +72,6 @@
           "seo",
           "ad-provider",
           "render-extension",
-          "macro",
           "ai-provider",
           "ai-agent",
           "ai-tool",
@@ -150,14 +149,6 @@
       "uniqueItems": true,
       "items": {
         "$ref": "#/$defs/renderSlot"
-      }
-    },
-    "macros": {
-      "type": "array",
-      "maxItems": 64,
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/$defs/macro"
       }
     },
     "ui": {
@@ -646,59 +637,6 @@
             "site"
           ],
           "default": "revision"
-        }
-      }
-    },
-    "macro": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "id",
-        "handler",
-        "inputSchema",
-        "outputSchema",
-        "phases"
-      ],
-      "properties": {
-        "id": {
-          "$ref": "#/$defs/qualifiedName"
-        },
-        "handler": {
-          "$ref": "#/$defs/handlerName"
-        },
-        "inputSchema": {
-          "$ref": "#/$defs/schemaReference"
-        },
-        "outputSchema": {
-          "$ref": "#/$defs/schemaReference"
-        },
-        "phases": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "draft",
-              "publish",
-              "request"
-            ]
-          }
-        },
-        "deterministic": {
-          "type": "boolean",
-          "default": false
-        },
-        "cache": {
-          "enum": [
-            "none",
-            "inputs",
-            "revision"
-          ],
-          "default": "inputs"
-        },
-        "requiresReview": {
-          "type": "boolean",
-          "default": true
         }
       }
     },

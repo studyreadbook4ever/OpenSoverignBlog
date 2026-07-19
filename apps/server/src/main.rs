@@ -1,3 +1,6 @@
+#[cfg(not(target_os = "linux"))]
+compile_error!("osb-server currently supports Linux deployments only");
+
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
@@ -8,7 +11,7 @@ use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, Path, Query, State},
+    extract::{DefaultBodyLimit, Extension, Path, Query, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
@@ -23,7 +26,8 @@ use osb_feature_code_runner_client::{
 use osb_feature_seo::SeoPolicy;
 use osb_kernel::{
     AI2AI_SPEC_VERSION, Ai2AiEnvelope, ContentRepository, IntentLayer, NewDocument,
-    OntologySidecar, ProposedRevision, RepositoryError, RevisionActor, RevisionActorKind,
+    OntologySidecar, ProposedRevision, PublicAuthorship, PublicAuthorshipKind, RepositoryError,
+    RevisionActor, RevisionActorKind,
 };
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
@@ -46,36 +50,57 @@ use url::Url;
 use uuid::Uuid;
 
 mod admin_auth;
+mod admission;
 mod backup;
 mod cache;
 mod community;
 mod config;
 mod feature_registry;
+mod installation;
+mod social_embeds;
+mod version;
 
 use admin_auth::AdminAuthRuntime;
 use backup::BackupService;
 use cache::SemanticCache;
 use config::{AdminAuthMode, AuthMode, DatabaseProfile, RuntimeConfig};
 use feature_registry::{FeatureRegistry, ModuleDescriptor, ModuleStatus};
+use installation::InstallationRuntime;
+use version::VersionService;
 
 #[cfg(test)]
 const DEFAULT_SITE_ID: &str = "00000000-0000-7000-8000-000000000001";
 #[cfg(test)]
 const TEST_SOURCE_WEB_INDEX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/index.html");
 
-const SECURITY_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'";
+const SECURITY_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src https://www.youtube-nocookie.com; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'";
 const BUILD_WEB_DIST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/dist");
 const PASSWORD_WORKER_LIMIT: usize = 4;
 const CACHE_FILL_LIMIT: usize = 64;
 const SITEMAP_URL_LIMIT: usize = 50_000;
 const PUBLIC_HTML_CACHE: &str = "public, max-age=0, s-maxage=60, stale-while-revalidate=300";
 
+fn ensure_same_admin_module_rotation(
+    persisted: StoredAdminAuthMode,
+    requested: StoredAdminAuthMode,
+) -> Result<()> {
+    if persisted != requested {
+        anyhow::bail!(
+            "OSB_ADMIN_AUTH_ROTATE only rotates a key or provider binding within the persisted '{}' administrator module; changing auth mode to '{}' requires a new installation contract and rebootstrap",
+            persisted.as_str(),
+            requested.as_str()
+        );
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 struct AppState {
     repository: Arc<SqliteRepository>,
     site_id: Uuid,
     seo_policy: Arc<SeoPolicy>,
-    admin_token_hash: Option<[u8; 32]>,
+    #[cfg(test)]
+    test_owner_bearer_hash: Option<[u8; 32]>,
     mcp_token_hash: Option<[u8; 32]>,
     admin_auth: AdminAuthRuntime,
     features: Arc<FeatureRegistry>,
@@ -96,7 +121,45 @@ struct AppState {
     agent_discovery_enabled: bool,
     delivery_only: bool,
     secure_session_cookie: bool,
+    member_auth_admission: community::MemberAuthAdmission,
     password_workers: Arc<tokio::sync::Semaphore>,
+    version: VersionService,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MutationPrincipal {
+    HumanOwner,
+    McpAgent,
+}
+
+impl MutationPrincipal {
+    fn revision_actor(self) -> RevisionActor {
+        match self {
+            Self::HumanOwner => RevisionActor {
+                kind: RevisionActorKind::Human,
+                id: "owner".into(),
+                display_name: None,
+            },
+            Self::McpAgent => RevisionActor {
+                kind: RevisionActorKind::Agent,
+                id: "osb-mcp".into(),
+                display_name: None,
+            },
+        }
+    }
+
+    fn resolve_authorship(
+        self,
+        authorship: Option<PublicAuthorship>,
+    ) -> Result<PublicAuthorship, ApiError> {
+        match (self, authorship) {
+            (Self::McpAgent, None) => Err(ApiError::BadRequest(
+                "MCP create and revise requests require explicit public authorship".into(),
+            )),
+            (_, Some(authorship)) => Ok(authorship),
+            (Self::HumanOwner, None) => Ok(PublicAuthorship::default()),
+        }
+    }
 }
 
 #[tokio::main]
@@ -106,12 +169,25 @@ async fn main() -> Result<()> {
         .init();
 
     let config = RuntimeConfig::load()?;
+    let installation = InstallationRuntime::load(&config)?;
+    let initial_theme = installation
+        .as_ref()
+        .map(InstallationRuntime::initial_theme_profile)
+        .transpose()?
+        .unwrap_or(ThemeProfile::Paper);
+    let release_check_enabled = installation.as_ref().is_none_or(|installation| {
+        installation.is_dlc_enabled("org.open-soverign-blog.release-check")
+    });
+    let version = VersionService::start_from_environment(release_check_enabled)?;
+    let redis_enabled = config.redis.is_some();
     let cache_signing_key = config.cache_signing_key.unwrap_or_else(|| {
         let mut key = [0_u8; 32];
         OsRng.fill_bytes(&mut key);
-        tracing::warn!(
-            "OSB_CACHE_SIGNING_KEY is absent; cache integrity is process-local and horizontally scaled application replicas will not share hits"
-        );
+        if redis_enabled {
+            tracing::warn!(
+                "OSB_CACHE_SIGNING_KEY is absent; cache integrity is process-local and horizontally scaled application replicas will not share hits"
+            );
+        }
         key
     });
     let bind = config.bind;
@@ -124,9 +200,17 @@ async fn main() -> Result<()> {
         .validate()
         .map_err(anyhow::Error::msg)
         .context("SEO/URL policy is invalid")?;
-    let cache = SemanticCache::connect(config.redis.clone())
-        .await
-        .context("failed to initialize the required semantic Redis cache")?;
+    let cache = match config.redis.clone() {
+        Some(settings) => Some(
+            SemanticCache::connect(settings)
+                .await
+                .context("failed to initialize the selected semantic Redis cache")?,
+        ),
+        None => {
+            tracing::info!("Redis is disabled; serving public reads from the authoritative origin");
+            None
+        }
+    };
     let site_id = config.site_id;
     let delivery_only = config.delivery_only;
     let admin_auth_rotate = config.admin_auth_rotate;
@@ -137,7 +221,7 @@ async fn main() -> Result<()> {
         intent = ?config.deployment_intent,
         member_auth = ?config.auth_mode,
         admin_auth = ?config.admin_auth.mode,
-        redis_topology = ?config.redis.topology,
+        redis_topology = ?config.redis.as_ref().map(|settings| settings.topology),
         database_profile = ?config.operations.database_profile,
         managed_backups = config.operations.managed_backups,
         backup_directory = %config.operations.backup_directory.display(),
@@ -171,28 +255,27 @@ async fn main() -> Result<()> {
             .context("failed to apply the semantic SQLite durability profile")?;
     }
     if !delivery_only {
+        let compact = site_id.simple().to_string();
+        let bootstrap = PrimaryOwnerBootstrap {
+            site_id,
+            site_handle: format!("blog-{}", &compact[..12]),
+            site_title: "My blog".into(),
+            site_description: Some("This blog is owned by this OpenSoverignBlog instance.".into()),
+            owner_display_name: "Owner".into(),
+            theme_profile: initial_theme,
+        };
         match admin_auth.mode() {
             AdminAuthMode::AccessKey | AdminAuthMode::External => {
-                let compact = site_id.simple().to_string();
                 let stored_mode = match admin_auth.mode() {
                     AdminAuthMode::AccessKey => StoredAdminAuthMode::AccessKey,
                     AdminAuthMode::External => StoredAdminAuthMode::External,
                     AdminAuthMode::Disabled => unreachable!("matched active mode"),
                 };
                 let binding_fingerprint = admin_auth.binding_fingerprint();
-                let bootstrap = PrimaryOwnerBootstrap {
-                    site_id,
-                    site_handle: format!("blog-{}", &compact[..12]),
-                    site_title: "My blog".into(),
-                    site_description: Some(
-                        "This blog is owned by this OpenSoverignBlog instance.".into(),
-                    ),
-                    owner_display_name: "Owner".into(),
-                    theme_profile: ThemeProfile::Paper,
-                };
                 if admin_auth_rotate {
                     match repository.get_admin_control_plane() {
                         Ok(control) => {
+                            ensure_same_admin_module_rotation(control.auth_mode, stored_mode)?;
                             let previous_epoch = control.auth_epoch;
                             let rotated = repository
                                 .rotate_admin_control_plane(
@@ -232,13 +315,17 @@ async fn main() -> Result<()> {
                         )
                         .map_err(anyhow::Error::msg)
                         .context(
-                            "failed to provision/reconcile the primary owner; another replica may have contradictory admin authentication configuration",
+                            "failed to provision/reconcile the primary owner; use OSB_ADMIN_AUTH_ROTATE=true only for a same-module key/provider-binding change, while an auth-mode change requires a new installation contract and rebootstrap",
                         )?;
                 }
             }
             AdminAuthMode::Disabled => match repository.get_admin_control_plane() {
                 Ok(control) => {
                     if admin_auth_rotate {
+                        ensure_same_admin_module_rotation(
+                            control.auth_mode,
+                            StoredAdminAuthMode::Disabled,
+                        )?;
                         let rotated = repository
                             .rotate_admin_control_plane(
                                 control.primary_site_id,
@@ -264,11 +351,22 @@ async fn main() -> Result<()> {
                             .map(|_| ())
                             .map_err(anyhow::Error::msg)
                             .context(
-                                "refusing to start with disabled admin auth while persisted owner sessions use another mode; set OSB_ADMIN_AUTH_ROTATE=true for one explicit rotation",
+                                "refusing to start with disabled admin auth while the persisted control plane uses another module; changing auth mode requires a new installation contract and rebootstrap",
                             )?;
                     }
                 }
-                Err(RepositoryError::NotFound) => {}
+                Err(RepositoryError::NotFound) => {
+                    repository
+                        .provision_primary_owner_site(
+                            &bootstrap,
+                            StoredAdminAuthMode::Disabled,
+                            &admin_auth.binding_fingerprint(),
+                        )
+                        .map_err(anyhow::Error::msg)
+                        .context(
+                            "failed to provision the server-local primary site while remote administration is disabled",
+                        )?;
+                }
                 Err(error) => return Err(anyhow::Error::msg(error.to_string())),
             },
         }
@@ -294,18 +392,26 @@ async fn main() -> Result<()> {
     } else {
         None
     };
-    let admin_token_hash = config
-        .admin_token
-        .map(|value| Sha256::digest(value.as_bytes()).into());
     let mcp_token_hash = config
         .mcp_token
         .map(|value| Sha256::digest(value.as_bytes()).into());
-    if admin_token_hash.is_none() {
-        tracing::warn!(
-            "OSB_ADMIN_TOKEN is absent; legacy owner-token mutations are disabled while community mutations follow the account policy"
+    let requested_features = installation
+        .as_ref()
+        .map(|installation| {
+            installation
+                .enabled_dlc_ids()
+                .filter_map(feature_registry::runtime_feature_for_dlc)
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_else(|| config.requested_features.clone());
+    if let Some(installation) = &installation {
+        tracing::info!(
+            installation_id = installation.installation_id(),
+            "runtime features are sourced from the verified DLC lock"
         );
     }
-    let mut features = FeatureRegistry::from_requested(&config.requested_features)
+    let mut features = FeatureRegistry::from_requested(&requested_features)
         .map_err(anyhow::Error::msg)
         .context("configured features are invalid")?;
     if config.collaboration_enabled {
@@ -385,14 +491,15 @@ async fn main() -> Result<()> {
         repository,
         site_id,
         seo_policy: Arc::new(seo_policy),
-        admin_token_hash,
+        #[cfg(test)]
+        test_owner_bearer_hash: None,
         mcp_token_hash,
         admin_auth,
         features: Arc::new(features),
         runner,
         runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         assets,
-        cache: Some(cache),
+        cache,
         cache_signing_key: Arc::new(cache_signing_key),
         cache_fill_slots: Arc::new(tokio::sync::Semaphore::new(CACHE_FILL_LIMIT)),
         backup,
@@ -406,7 +513,9 @@ async fn main() -> Result<()> {
         agent_discovery_enabled: config.agent_discovery_enabled,
         delivery_only,
         secure_session_cookie: config.secure_session_cookie,
+        member_auth_admission: community::MemberAuthAdmission::new(),
         password_workers: Arc::new(tokio::sync::Semaphore::new(PASSWORD_WORKER_LIMIT)),
+        version,
     };
     let app = app(state);
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -476,6 +585,8 @@ fn app(state: AppState) -> Router {
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .route("/healthz", get(health))
+        .route("/api/v1/version", get(public_version))
+        .route("/UNLICENSE", get(unlicense))
         .route("/openapi/openapi.yaml", get(openapi_contract))
         .route("/.well-known/open-soverign-blog.json", get(ai2ai_discovery))
         .route("/.well-known/agent-card.json", get(a2a_unavailable))
@@ -553,14 +664,12 @@ async fn livez() -> Json<serde_json::Value> {
 
 async fn readyz(State(state): State<AppState>) -> Response {
     let Some(cache) = &state.cache else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "status": "not_ready",
-                "reason": "required Redis dependency is not composed"
-            })),
-        )
-            .into_response();
+        return Json(serde_json::json!({
+            "status": "ready",
+            "version": env!("CARGO_PKG_VERSION"),
+            "cache": "disabled"
+        }))
+        .into_response();
     };
     match cache.ping().await {
         Ok(()) => Json(serde_json::json!({
@@ -568,31 +677,33 @@ async fn readyz(State(state): State<AppState>) -> Response {
             "version": env!("CARGO_PKG_VERSION")
         }))
         .into_response(),
-        Err(error) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "status": "not_ready",
-                "dependency": "redis",
-                "reason": error.to_string()
-            })),
-        )
-            .into_response(),
+        Err(error) => {
+            tracing::warn!(%error, "readiness cache check failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "not_ready",
+                    "dependency": "redis",
+                    "reason": "dependency_unavailable"
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let cache = match &state.cache {
-        Some(cache) => serde_json::to_value(cache.snapshot().await)
-            .unwrap_or_else(|_| serde_json::json!({"state": "unknown"})),
-        None => serde_json::json!({"state": "misconfigured", "provider": "redis"}),
-    };
+    let cache = public_cache_snapshot(state.cache.as_ref()).await;
     let backups = match &state.backup {
         Some(backup) => backup.snapshot().await,
         None => serde_json::json!({
             "state": if state.delivery_only { "not_applicable" } else { "externally_managed" }
         }),
     };
-    let cache_healthy = cache.get("state") == Some(&serde_json::Value::String("active".into()));
+    let cache_healthy = matches!(
+        cache.get("state").and_then(serde_json::Value::as_str),
+        Some("active" | "disabled")
+    );
     let backup_degraded =
         backups.get("state") == Some(&serde_json::Value::String("degraded".into()));
     let status = if cache_healthy && !backup_degraded {
@@ -606,9 +717,39 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
         "dependencies": { "cache": cache, "backups": backups },
         "dataBoundary": {
             "authoritative": ["sqlite", "content_addressed_blobs"],
-            "redisRole": "discardable_public_derivative_cache"
+            "redisRole": if state.cache.is_some() {
+                "discardable_public_derivative_cache"
+            } else {
+                "disabled_by_installation"
+            }
         }
     }))
+}
+
+async fn public_cache_snapshot(cache: Option<&SemanticCache>) -> serde_json::Value {
+    let Some(cache) = cache else {
+        return serde_json::json!({"state": "disabled", "provider": "none", "required": false});
+    };
+    let snapshot = cache.snapshot().await;
+    serde_json::json!({
+        "provider": snapshot.provider,
+        "role": snapshot.role,
+        "state": snapshot.state,
+        "required": snapshot.required
+    })
+}
+
+async fn public_version(State(state): State<AppState>) -> Json<version::PublicVersionStatus> {
+    Json(state.version.public_status().await)
+}
+
+async fn unlicense(headers: HeaderMap) -> Result<Response, ApiError> {
+    public_cached_response(
+        Method::GET,
+        &headers,
+        include_bytes!("../../../UNLICENSE").to_vec(),
+        "text/plain; charset=utf-8",
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -879,6 +1020,7 @@ fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
 
 fn public_cache_path(state: &AppState, path: &str) -> bool {
     path.starts_with("/@")
+        || path == "/api/v1/home"
         || path == "/api/v1/feed"
         || path == "/api/v1/blogs"
         || path.starts_with("/api/v1/blogs/")
@@ -930,6 +1072,7 @@ fn mutation_changes_public(method: &Method, path: &str) -> bool {
     }
     path == "/api/v1/blogs"
         || path == "/api/v1/posts"
+        || path == "/api/v1/admin/home/pins"
         || path == "/api/v1/studio/settings"
         || path.ends_with("/publish")
         || (path.starts_with("/api/v1/posts/") && path.ends_with("/comments"))
@@ -1099,7 +1242,12 @@ async fn openapi_contract(State(state): State<AppState>) -> Response {
 
 async fn custom_css(State(state): State<AppState>) -> Response {
     if !state.custom_css_enabled {
-        return StatusCode::NO_CONTENT.into_response();
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/css; charset=utf-8"),
+        );
+        return response;
     }
     match tokio::fs::read(state.custom_css_file.as_ref()).await {
         Ok(bytes) if bytes.len() <= 256 * 1024 => {
@@ -1166,8 +1314,13 @@ async fn llms_txt(State(state): State<AppState>, headers: HeaderMap) -> Result<R
     if !state.agent_discovery_enabled {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
+    let cache_note = if state.cache.is_some() {
+        "Redis accelerates public derivatives; SQLite and first-party blobs remain authoritative."
+    } else {
+        "Redis is disabled for this installation; SQLite and first-party blobs remain authoritative."
+    };
     let source = format!(
-        "# OpenSoverignBlog\n\n> A self-owned on-premise Markdown publishing engine.\n\n## Public reading\n\n- [Published feed]({feed})\n- [Blogs]({blogs})\n- [Sitemap]({sitemap})\n\n## Agent integration\n\n- [Machine manifest]({manifest})\n- [Capabilities]({capabilities})\n- [OpenAPI]({openapi})\n- [AI2AI safety contract]({instructions})\n\nRedis accelerates public derivatives; SQLite and first-party blobs remain authoritative.\n",
+        "# OpenSoverignBlog\n\n> A self-owned on-premise Markdown publishing engine.\n\n## Public reading\n\n- [Published feed]({feed})\n- [Blogs]({blogs})\n- [Sitemap]({sitemap})\n\n## Agent integration\n\n- [Machine manifest]({manifest})\n- [Capabilities]({capabilities})\n- [OpenAPI]({openapi})\n- [AI2AI safety contract]({instructions})\n\n{cache_note}\n",
         feed = absolute_public_url(&state.seo_policy, "/api/v1/feed")?,
         blogs = absolute_public_url(&state.seo_policy, "/api/v1/blogs")?,
         sitemap = absolute_public_url(&state.seo_policy, "/sitemap.xml")?,
@@ -1175,6 +1328,7 @@ async fn llms_txt(State(state): State<AppState>, headers: HeaderMap) -> Result<R
         capabilities = absolute_public_url(&state.seo_policy, "/api/v1/capabilities")?,
         openapi = absolute_public_url(&state.seo_policy, "/openapi/openapi.yaml")?,
         instructions = absolute_public_url(&state.seo_policy, "/AI2AI.md")?,
+        cache_note = cache_note,
     );
     public_cached_response(
         Method::GET,
@@ -1187,21 +1341,13 @@ async fn llms_txt(State(state): State<AppState>, headers: HeaderMap) -> Result<R
 async fn ai2ai_discovery(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let cache = match &state.cache {
-        Some(cache) => serde_json::to_value(cache.snapshot().await)
-            .unwrap_or_else(|_| serde_json::json!({"state": "unknown"})),
-        None => serde_json::json!({"provider": "redis", "state": "misconfigured"}),
-    };
+    let cache = public_cache_snapshot(state.cache.as_ref()).await;
     let comments_href =
         absolute_public_url(&state.seo_policy, "/api/v1/posts/__post_id__/comments")?
             .replace("__post_id__", "{postId}");
-    let admin_available = !state.delivery_only
-        && (state.admin_auth.mode() != AdminAuthMode::Disabled || state.admin_token_hash.is_some());
-    let admin_transport = if state.admin_auth.mode() != AdminAuthMode::Disabled {
-        "session"
-    } else {
-        "owner"
-    };
+    let admin_available =
+        !state.delivery_only && state.admin_auth.mode() != AdminAuthMode::Disabled;
+    let admin_transport = "session";
     Ok(Json(serde_json::json!({
         "specVersion": "1.0",
         "name": "OpenSoverignBlog",
@@ -1215,7 +1361,7 @@ async fn ai2ai_discovery(
             "publishedContent": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/posts")?, &["GET"], "none", false, true),
             "comments": endpoint_descriptor(comments_href.clone(), &["GET"], "none", false, state.comments_enabled),
             "commentSubmission": endpoint_descriptor(comments_href, &["POST"], "session", true, state.comments_enabled && state.local_auth_enabled && !state.delivery_only),
-            "proposeRevision": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/ai2ai/proposals")?, &["POST"], admin_transport, true, admin_available),
+            "proposeRevision": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/ai2ai/proposals")?, &["POST"], admin_transport, true, admin_available && state.features.is_active("ai_authorship")),
             "uploadFirstPartyAsset": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/assets")?, &["POST"], admin_transport, true, admin_available),
             "runnerProfiles": endpoint_descriptor(absolute_public_url(&state.seo_policy, "/api/v1/code-runner/profiles")?, &["GET"], "none", false, state.features.is_active("code_runner") && state.runner.is_some())
         },
@@ -1303,13 +1449,10 @@ async fn capabilities(State(state): State<AppState>) -> Json<Capabilities> {
         .map(|module| module.id)
         .collect();
     let mut mutation_mechanisms = Vec::new();
-    if !state.delivery_only {
-        if state.local_auth_enabled || state.admin_auth.mode() != AdminAuthMode::Disabled {
-            mutation_mechanisms.push("session");
-        }
-        if state.admin_token_hash.is_some() {
-            mutation_mechanisms.push("owner_token");
-        }
+    if !state.delivery_only
+        && (state.local_auth_enabled || state.admin_auth.mode() != AdminAuthMode::Disabled)
+    {
+        mutation_mechanisms.push("session");
     }
     let mut auth_methods = Vec::new();
     if !state.delivery_only {
@@ -1368,8 +1511,6 @@ async fn capabilities(State(state): State<AppState>) -> Json<Capabilities> {
             "read_only"
         } else if state.local_auth_enabled || has_admin_session {
             "authenticated_members"
-        } else if state.admin_token_hash.is_some() {
-            "single_owner_token"
         } else {
             "read_only"
         },
@@ -1497,6 +1638,7 @@ async fn list_posts(State(state): State<AppState>) -> Result<Json<Vec<PostSummar
                 updated_at: document.updated_at.to_rfc3339(),
                 has_intent_view: document.revision.intent.is_some(),
                 has_ontology: document.revision.ontology.is_some(),
+                authorship: document.revision.authorship,
             })
             .collect(),
     ))
@@ -1571,6 +1713,7 @@ async fn get_post(
         embeds: document.revision.embeds,
         artifact,
         ontology: document.revision.ontology,
+        authorship: document.revision.authorship,
     }))
 }
 
@@ -1648,8 +1791,13 @@ async fn get_asset(
 
 async fn create_post(
     State(state): State<AppState>,
+    Extension(principal): Extension<MutationPrincipal>,
     Json(input): Json<CreatePostRequest>,
 ) -> Result<(StatusCode, Json<osb_kernel::DocumentSnapshot>), ApiError> {
+    if state.features.is_active("social_embeds") {
+        social_embeds::validate_official_embeds(&input.embeds).map_err(ApiError::BadRequest)?;
+    }
+    let authorship = principal.resolve_authorship(input.authorship)?;
     let repository = Arc::clone(&state.repository);
     let new_document = NewDocument {
         site_id: state.site_id,
@@ -1659,11 +1807,8 @@ async fn create_post(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
-        actor: RevisionActor {
-            kind: RevisionActorKind::Human,
-            id: "owner".into(),
-            display_name: None,
-        },
+        authorship,
+        actor: principal.revision_actor(),
     };
     let _cache_mutation = begin_public_mutation(&state);
     let document = repository_task(move || {
@@ -1676,9 +1821,14 @@ async fn create_post(
 
 async fn propose_revision(
     State(state): State<AppState>,
+    Extension(principal): Extension<MutationPrincipal>,
     Path(document_id): Path<Uuid>,
     Json(input): Json<ProposeRevisionRequest>,
 ) -> Result<(StatusCode, Json<osb_kernel::RevisionSnapshot>), ApiError> {
+    if state.features.is_active("social_embeds") {
+        social_embeds::validate_official_embeds(&input.embeds).map_err(ApiError::BadRequest)?;
+    }
+    let authorship = principal.resolve_authorship(input.authorship)?;
     let input = ProposedRevision {
         document_id,
         base_revision_id: input.base_revision_id,
@@ -1688,11 +1838,8 @@ async fn propose_revision(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
-        actor: RevisionActor {
-            kind: RevisionActorKind::Human,
-            id: "owner".into(),
-            display_name: None,
-        },
+        authorship,
+        actor: principal.revision_actor(),
         idempotency_key: input.idempotency_key,
     };
     let repository = Arc::clone(&state.repository);
@@ -1711,9 +1858,16 @@ async fn ai2ai_proposal(
     State(state): State<AppState>,
     Json(envelope): Json<Ai2AiEnvelope>,
 ) -> Result<(StatusCode, Json<osb_kernel::RevisionSnapshot>), ApiError> {
+    if !state.features.is_active("ai_authorship") {
+        return Err(RepositoryError::NotFound.into());
+    }
     envelope
         .validate()
         .map_err(|error| ApiError::BadRequest(error.to_string()))?;
+    if state.features.is_active("social_embeds") {
+        social_embeds::validate_official_embeds(&envelope.proposal.embeds)
+            .map_err(ApiError::BadRequest)?;
+    }
     let document_id = envelope.proposal.document_id;
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
@@ -1780,14 +1934,18 @@ async fn public_community_blog(
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{}의 공개 블로그", owner.display_name));
     let page_title = format!("{} (@{}) · OpenSoverignBlog", site.title, site.handle);
-    let mut head = community_meta_head(
-        &page_title,
-        &description,
-        &canonical,
-        "website",
-        state.seo_policy.no_index,
-        None,
-    );
+    let mut head = if state.features.is_active("seo") {
+        community_meta_head(
+            &page_title,
+            &description,
+            &canonical,
+            "website",
+            state.seo_policy.no_index,
+            None,
+        )
+    } else {
+        basic_page_head(&page_title)
+    };
     head.push_str(&community_custom_css_head(&state, &site)?);
     let mut archive = String::new();
     for (index, post) in posts.iter().enumerate() {
@@ -1796,12 +1954,13 @@ async fn public_community_blog(
         let excerpt = summarize_markdown(&post.revision.source_markdown, 220);
         archive.push_str(&format!(
             "<article class=\"blog-list-item\"><span class=\"post-order\" aria-hidden=\"true\">{:02}</span>\
-             <div><div class=\"post-card-meta\"><time datetime=\"{}\">{}</time></div>\
+             <div><div class=\"post-card-meta\"><time datetime=\"{}\">{}</time>{}</div>\
              <h3><a href=\"{}\">{}</a></h3><p>{}</p></div>\
              <span class=\"list-arrow\" aria-hidden=\"true\">↗</span></article>",
             index + 1,
             escape_attribute(&post.revision.created_at.to_rfc3339()),
             escape_xml(&post.revision.created_at.format("%Y. %m. %d.").to_string()),
+            authorship_badge(&post.revision.authorship),
             escape_attribute(post_url.as_str()),
             escape_xml(&post.revision.title),
             escape_xml(&excerpt),
@@ -1814,7 +1973,7 @@ async fn public_community_blog(
     }
     let root = format!(
         "<main class=\"route-main\" id=\"main-content\"><div class=\"osb-site-frame\"><div class=\"blog-page osb-site-theme\" data-site-id=\"{}\" data-theme=\"{}\">\
-         <section class=\"blog-profile\"><div><p class=\"blog-handle\">@{}</p>\
+         <section class=\"blog-profile\"><span class=\"blog-monogram\" aria-hidden=\"true\">{}</span><div><p class=\"blog-handle\">@{}</p>\
          <h1>{}</h1><p>{}</p><div class=\"blog-owner\"><span><strong>{}</strong>\
          <small>이 블로그의 작성자</small></span></div></div></section>\
          <section class=\"blog-posts\" aria-labelledby=\"blog-posts-title\"><div class=\"section-heading\">\
@@ -1823,6 +1982,7 @@ async fn public_community_blog(
          </section></div></div></main>",
         site.id,
         site.theme_profile.as_str(),
+        escape_xml(&display_initials(&site.title)),
         escape_xml(&site.handle),
         escape_xml(&site.title),
         escape_xml(&description),
@@ -1840,30 +2000,36 @@ async fn public_community_post(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
     let lookup_handle = handle.clone();
     let lookup_slug = slug.clone();
     let result = repository_task(move || {
         let site = repository.get_site_by_handle(&lookup_handle)?;
         let owner = repository.get_user_by_id(site.owner_user_id)?;
         let document = repository.get_published_by_slug(site.id, &lookup_slug)?;
-        Ok((site, owner, document))
+        let primary_uses_community_route =
+            site.id == primary_site_id && has_provisioned_primary(&repository, primary_site_id)?;
+        Ok((site, owner, document, primary_uses_community_route))
     })
     .await;
-    let (site, owner, document) = match result {
+    let (site, owner, document, primary_uses_community_route) = match result {
         Ok(value) => value,
         Err(ApiError::Repository(RepositoryError::NotFound)) => {
             return Ok(serve_spa_not_found(method, &state.seo_policy).await);
         }
         Err(error) => return Err(error),
     };
-    // The compatibility site participates in community data APIs, but its HTML
-    // publication has one canonical identity under the configured article path.
-    if site.id == state.site_id {
+    let view = query.view.unwrap_or(ViewMode::Intent);
+    // Databases that predate the explicit installation control plane retain the
+    // configured legacy article route. A provisioned primary site has a real,
+    // owner-selected handle, so its community URL is the canonical identity.
+    if site.id == state.site_id && !primary_uses_community_route {
         let canonical = state
             .seo_policy
             .canonical_article_url(&document.revision.slug)
             .map_err(|error| ApiError::Internal(error.to_string()))?;
-        return Ok(public_permanent_redirect(canonical.as_str()));
+        let location = public_projection_url(canonical, view);
+        return Ok(public_permanent_redirect(location.as_str()));
     }
     let canonical = community_public_url(
         &state.seo_policy,
@@ -1871,21 +2037,25 @@ async fn public_community_post(
         Some(&document.revision.slug),
     )?;
     if handle != site.handle || slug != document.revision.slug {
-        return Ok(public_permanent_redirect(canonical.as_str()));
+        let location = public_projection_url(canonical, view);
+        return Ok(public_permanent_redirect(location.as_str()));
     }
 
-    let view = query.view.unwrap_or(ViewMode::Intent);
     let artifact = render_revision(&document.revision, view);
     let description = summarize_markdown(&document.revision.source_markdown, 180);
     let page_title = format!("{} · {}", document.revision.title, site.title);
-    let mut head = community_meta_head(
-        &page_title,
-        &description,
-        &canonical,
-        "article",
-        state.seo_policy.no_index,
-        Some(document.revision.created_at.to_rfc3339().as_str()),
-    );
+    let mut head = if state.features.is_active("seo") {
+        community_meta_head(
+            &page_title,
+            &description,
+            &canonical,
+            "article",
+            state.seo_policy.no_index,
+            Some(document.revision.created_at.to_rfc3339().as_str()),
+        )
+    } else {
+        basic_page_head(&page_title)
+    };
     head.push_str(&community_custom_css_head(&state, &site)?);
     let intent_current = if view == ViewMode::Intent {
         " aria-current=\"page\""
@@ -1901,7 +2071,7 @@ async fn public_community_post(
         "<main class=\"route-main\" id=\"main-content\"><div class=\"osb-site-frame\"><div class=\"article-page osb-site-theme\" data-site-id=\"{}\" data-theme=\"{}\">\
          <article class=\"article-shell\"><header class=\"article-header\"><div class=\"article-kicker\">\
          <a href=\"{}\">@{}</a><span aria-hidden=\"true\">/</span>\
-         <time datetime=\"{}\">{}</time></div><h1>{}</h1><p class=\"article-deck\">{}</p>\
+         <time datetime=\"{}\">{}</time>{}</div><h1>{}</h1><p class=\"article-deck\">{}</p>\
          <div class=\"article-author-row\"><div><strong>{}</strong><span>글쓴이</span></div></div>\
          <nav class=\"projection-switcher\" aria-label=\"콘텐츠 보기 방식\">\
          <a href=\"{}?view=intent\"{intent_current}>작성자 보기</a>\
@@ -1919,6 +2089,7 @@ async fn public_community_post(
                 .format("%Y. %m. %d.")
                 .to_string()
         ),
+        authorship_badge(&document.revision.authorship),
         escape_xml(&document.revision.title),
         escape_xml(&description),
         escape_xml(&owner.display_name),
@@ -1928,6 +2099,58 @@ async fn public_community_post(
         artifact.html,
     );
     render_spa_document(method, &headers, &state.seo_policy, &head, &root).await
+}
+
+fn basic_page_head(title: &str) -> String {
+    format!("<title>{}</title>", escape_xml(title))
+}
+
+fn display_initials(value: &str) -> String {
+    let words = value.split_whitespace().collect::<Vec<_>>();
+    if words.len() > 1 {
+        words
+            .iter()
+            .take(2)
+            .filter_map(|word| word.chars().next())
+            .collect::<String>()
+            .to_uppercase()
+    } else {
+        value
+            .trim()
+            .chars()
+            .take(2)
+            .collect::<String>()
+            .to_uppercase()
+    }
+}
+
+fn authorship_badge(authorship: &PublicAuthorship) -> String {
+    let (class_name, mut label) = match authorship.kind {
+        PublicAuthorshipKind::Human => ("human", "사람이 작성".to_owned()),
+        PublicAuthorshipKind::AiGenerated => ("ai_generated", "AI 생성".to_owned()),
+        PublicAuthorshipKind::AiAssisted => ("ai_assisted", "AI 보조".to_owned()),
+        PublicAuthorshipKind::Imported => ("imported", "가져온 글".to_owned()),
+    };
+    if matches!(
+        authorship.kind,
+        PublicAuthorshipKind::AiGenerated | PublicAuthorshipKind::AiAssisted
+    ) && let Some(generator) = authorship
+        .generator
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        label.push_str(" · ");
+        label.push_str(generator);
+    }
+    if authorship.human_reviewed && authorship.kind != PublicAuthorshipKind::Human {
+        label.push_str(" · 사람 검토");
+    }
+    format!(
+        "<span class=\"authorship-badge authorship-{}\">{}</span>",
+        class_name,
+        escape_xml(&label)
+    )
 }
 
 fn community_meta_head(
@@ -2013,6 +2236,40 @@ fn community_public_url(
     }
     drop(segments);
     Ok(url)
+}
+
+fn provisioned_primary_handle(
+    repository: &SqliteRepository,
+    primary_site_id: Uuid,
+) -> Result<Option<String>, RepositoryError> {
+    if !has_provisioned_primary(repository, primary_site_id)? {
+        return Ok(None);
+    }
+    Ok(Some(repository.get_site_by_id(primary_site_id)?.handle))
+}
+
+fn has_provisioned_primary(
+    repository: &SqliteRepository,
+    primary_site_id: Uuid,
+) -> Result<bool, RepositoryError> {
+    match repository.get_admin_control_plane() {
+        Ok(control) if control.primary_site_id == primary_site_id => Ok(true),
+        Ok(_) => Err(RepositoryError::Storage(
+            "administrator control plane points at a different primary site".into(),
+        )),
+        Err(RepositoryError::NotFound) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn public_projection_url(mut url: Url, view: ViewMode) -> Url {
+    let view = match view {
+        ViewMode::Intent => return url,
+        ViewMode::Markdown => "markdown",
+        ViewMode::MarkdownSource => "markdown_source",
+    };
+    url.query_pairs_mut().append_pair("view", view);
+    url
 }
 
 async fn render_spa_document(
@@ -2127,30 +2384,44 @@ async fn public_post(
     let site_id = state.site_id;
     let lookup_slug = slug.clone();
     let view = query.view.unwrap_or(ViewMode::Intent);
-    let (document, artifact) = repository_task(move || {
+    let (document, primary_handle) = repository_task(move || {
         let document = repository.get_published_by_slug(site_id, &lookup_slug)?;
-        let artifact = render_revision(&document.revision, view);
-        Ok((document, artifact))
+        let primary_handle = provisioned_primary_handle(&repository, site_id)?;
+        Ok((document, primary_handle))
     })
     .await?;
+    if let Some(handle) = primary_handle {
+        let canonical =
+            community_public_url(&state.seo_policy, &handle, Some(&document.revision.slug))?;
+        let location = public_projection_url(canonical, view);
+        return Ok(public_permanent_redirect(location.as_str()));
+    }
     if slug != document.revision.slug {
         let canonical = state
             .seo_policy
             .canonical_article_url(&document.revision.slug)
             .map_err(|error| ApiError::Internal(error.to_string()))?;
-        return Ok(Redirect::permanent(canonical.as_str()).into_response());
+        let location = public_projection_url(canonical, view);
+        return Ok(public_permanent_redirect(location.as_str()));
     }
-    let title = escape_attribute(&document.revision.title);
+    let artifact = render_revision(&document.revision, view);
+    let page_title = document.revision.title.clone();
     let canonical = state
         .seo_policy
         .canonical_article_url(&document.revision.slug)
         .map_err(|error| ApiError::Internal(error.to_string()))?;
-    let description =
-        escape_attribute(&summarize_markdown(&document.revision.source_markdown, 180));
-    let robots_meta = if state.seo_policy.no_index {
-        "<meta name=\"robots\" content=\"noindex,nofollow\">"
+    let description = summarize_markdown(&document.revision.source_markdown, 180);
+    let seo_head = if state.features.is_active("seo") {
+        community_meta_head(
+            &page_title,
+            &description,
+            &canonical,
+            "article",
+            state.seo_policy.no_index,
+            Some(document.revision.created_at.to_rfc3339().as_str()),
+        )
     } else {
-        ""
+        basic_page_head(&page_title)
     };
     let intent_selected = if view == ViewMode::Intent {
         " aria-current=\"page\""
@@ -2170,21 +2441,19 @@ async fn public_post(
     let body = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-         <title>{title}</title><meta name=\"description\" content=\"{description}\">\
-         <meta property=\"og:type\" content=\"article\"><meta property=\"og:title\" content=\"{title}\">\
-         <meta property=\"og:description\" content=\"{description}\"><meta property=\"og:url\" content=\"{canonical}\">\
-         <meta name=\"twitter:card\" content=\"summary\">{robots_meta}\
-         <link rel=\"canonical\" href=\"{canonical}\">\
+         {seo_head}\
          <link rel=\"stylesheet\" href=\"{content_css}\">\
          <link rel=\"stylesheet\" href=\"{custom_css}\">\
          <link rel=\"stylesheet\" href=\"{katex_css}\">\
          <script defer src=\"{katex_js}\"></script>\
          <script defer src=\"{content_js}\"></script></head>\
-         <body><header class=\"osb-view-switcher\">\
+         <body>{authorship}<header class=\"osb-view-switcher\">\
          <a href=\"?view=intent\"{intent_selected}>Author intent</a>\
          <a href=\"?view=markdown_source\"{markdown_selected}>Markdown</a></header>\
          <main><article data-revision=\"{}\">{}</article></main></body></html>",
-        document.revision.id, artifact.html
+        document.revision.id,
+        artifact.html,
+        authorship = authorship_badge(&document.revision.authorship),
     );
     let mut response = Html(body).into_response();
     response.headers_mut().insert(
@@ -2232,15 +2501,17 @@ async fn sitemap(
     }
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
-    let (legacy_posts, community_posts) = repository_task(move || {
-        let legacy_posts = repository.list_published(site_id, SITEMAP_URL_LIMIT.min(500))?;
-        let mut remaining = SITEMAP_URL_LIMIT.saturating_sub(legacy_posts.len());
+    let (primary_posts, primary_handle, community_posts) = repository_task(move || {
+        let primary_posts = repository.list_published(site_id, SITEMAP_URL_LIMIT.min(500))?;
+        let primary_handle = provisioned_primary_handle(&repository, site_id)?;
+        let mut remaining = SITEMAP_URL_LIMIT.saturating_sub(primary_posts.len());
         let mut community_posts = Vec::new();
         for site in repository.list_sites(500)? {
             if remaining == 0 {
                 break;
             }
-            // This site was already emitted through the legacy article route.
+            // This site is emitted separately through either its provisioned
+            // community route or the retained legacy article route.
             if site.id == site_id {
                 continue;
             }
@@ -2250,15 +2521,19 @@ async fn sitemap(
                 community_posts.push((site.handle.clone(), post));
             }
         }
-        Ok((legacy_posts, community_posts))
+        Ok((primary_posts, primary_handle, community_posts))
     })
     .await?;
     let mut urls = BTreeMap::new();
-    for post in legacy_posts {
-        let url = state
-            .seo_policy
-            .canonical_article_url(&post.revision.slug)
-            .map_err(|error| ApiError::Internal(error.to_string()))?;
+    for post in primary_posts {
+        let url = if let Some(handle) = primary_handle.as_deref() {
+            community_public_url(&state.seo_policy, handle, Some(&post.revision.slug))?
+        } else {
+            state
+                .seo_policy
+                .canonical_article_url(&post.revision.slug)
+                .map_err(|error| ApiError::Internal(error.to_string()))?
+        };
         urls.insert(url.to_string(), post.updated_at);
     }
     for (handle, post) in community_posts {
@@ -2300,12 +2575,17 @@ async fn require_admin(
     headers: &HeaderMap,
     method: &Method,
     path: &str,
-) -> Result<(), ApiError> {
+) -> Result<MutationPrincipal, ApiError> {
     if state.delivery_only {
         return Err(ApiError::ReadOnly);
     }
-    if state.admin_auth.mode() == AdminAuthMode::Disabled && state.admin_token_hash.is_none() {
+    if state.admin_auth.mode() == AdminAuthMode::Disabled {
+        #[cfg(not(test))]
         return Err(ApiError::ReadOnly);
+        #[cfg(test)]
+        if state.test_owner_bearer_hash.is_none() {
+            return Err(ApiError::ReadOnly);
+        }
     }
     if state.admin_auth.mode() != AdminAuthMode::Disabled
         && let Some(token_hash) = community::session_hash_from_headers(headers)
@@ -2317,21 +2597,23 @@ async fn require_admin(
         .await
         .map_err(|error| ApiError::Internal(format!("session worker failed: {error}")))?;
         if authenticated {
-            return Ok(());
+            return Ok(MutationPrincipal::HumanOwner);
         }
     }
     if let Some(provided) = bearer_token_hash(headers) {
-        if let Some(expected) = state.admin_token_hash
+        #[cfg(test)]
+        if state.admin_auth.mode() == AdminAuthMode::Disabled
+            && let Some(expected) = state.test_owner_bearer_hash
             && bool::from(provided.ct_eq(&expected))
         {
-            return Ok(());
+            return Ok(MutationPrincipal::HumanOwner);
         }
         if state.admin_auth.mode() != AdminAuthMode::Disabled
             && mcp_content_route(method, path)
             && let Some(expected) = state.mcp_token_hash
             && bool::from(provided.ct_eq(&expected))
         {
-            return Ok(());
+            return Ok(MutationPrincipal::McpAgent);
         }
     }
     Err(ApiError::Unauthorized)
@@ -2373,7 +2655,7 @@ fn uuid_path(path: &str, prefix: &str, suffix: &str) -> bool {
 
 async fn admin_guard(
     State(state): State<AppState>,
-    request: Request<axum::body::Body>,
+    mut request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
     if !matches!(
@@ -2391,7 +2673,10 @@ async fn admin_guard(
     )
     .await
     {
-        Ok(()) => next.run(request).await,
+        Ok(principal) => {
+            request.extensions_mut().insert(principal);
+            next.run(request).await
+        }
         Err(error) => error.into_response(),
     }
 }
@@ -2464,6 +2749,7 @@ struct PostSummary {
     updated_at: String,
     has_intent_view: bool,
     has_ontology: bool,
+    authorship: PublicAuthorship,
 }
 
 #[derive(Debug, Serialize)]
@@ -2479,6 +2765,7 @@ struct PostView {
     artifact: PublishArtifact,
     #[serde(skip_serializing_if = "Option::is_none")]
     ontology: Option<OntologySidecar>,
+    authorship: PublicAuthorship,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2514,6 +2801,8 @@ struct CreatePostRequest {
     intent: Option<IntentLayer>,
     #[serde(default)]
     ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    authorship: Option<PublicAuthorship>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2529,6 +2818,8 @@ struct ProposeRevisionRequest {
     intent: Option<IntentLayer>,
     #[serde(default)]
     ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    authorship: Option<PublicAuthorship>,
     #[serde(default)]
     idempotency_key: Option<String>,
 }
@@ -2713,6 +3004,23 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn admin_rotation_cannot_change_the_persisted_module() {
+        ensure_same_admin_module_rotation(
+            StoredAdminAuthMode::AccessKey,
+            StoredAdminAuthMode::AccessKey,
+        )
+        .unwrap();
+
+        let error = ensure_same_admin_module_rotation(
+            StoredAdminAuthMode::AccessKey,
+            StoredAdminAuthMode::Disabled,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("new installation contract"));
+        assert!(error.to_string().contains("rebootstrap"));
+    }
+
     fn test_state(token: Option<&str>) -> AppState {
         let mut features = FeatureRegistry::from_requested("seo").unwrap();
         features
@@ -2729,7 +3037,7 @@ mod tests {
                 article_base_path: "blog".into(),
                 no_index: false,
             }),
-            admin_token_hash: token.map(|value| Sha256::digest(value.as_bytes()).into()),
+            test_owner_bearer_hash: token.map(|value| Sha256::digest(value.as_bytes()).into()),
             mcp_token_hash: None,
             admin_auth: AdminAuthRuntime::Disabled,
             features: Arc::new(features),
@@ -2755,7 +3063,9 @@ mod tests {
             agent_discovery_enabled: true,
             delivery_only: false,
             secure_session_cookie: true,
+            member_auth_admission: community::MemberAuthAdmission::new(),
             password_workers: Arc::new(tokio::sync::Semaphore::new(PASSWORD_WORKER_LIMIT)),
+            version: VersionService::bundled_for_tests(),
         }
     }
 
@@ -2899,6 +3209,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: Default::default(),
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: user.id.to_string(),
@@ -2916,6 +3227,136 @@ mod tests {
                 document.current_revision_id,
             )
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn redis_free_installations_are_ready_and_report_the_origin_path() {
+        let router = app(test_state(None));
+        let ready = router
+            .clone()
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        assert_eq!(json(ready).await["cache"], "disabled");
+
+        let health = router
+            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let health = json(health).await;
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["dependencies"]["cache"]["provider"], "none");
+        assert_eq!(
+            health["dataBoundary"]["redisRole"],
+            "disabled_by_installation"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_version_and_unlicense_are_available_without_a_release_check() {
+        let router = app(test_state(None));
+        let response = router
+            .clone()
+            .oneshot(Request::get("/api/v1/version").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = json(response).await;
+        assert_eq!(status["currentVersion"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(status["latestVersion"], serde_json::Value::Null);
+        assert_eq!(status["status"], "disabled");
+        assert_eq!(
+            status["repositoryUrl"],
+            "https://github.com/studyreadbook4ever/OpenSoverignBlog"
+        );
+        assert_eq!(status["developerUrl"], "https://eff0rtchung.kr");
+        assert_eq!(status["licenseHref"], "/UNLICENSE");
+
+        let response = router
+            .oneshot(Request::get("/UNLICENSE").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "text/plain; charset=utf-8"
+        );
+        let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert!(body.starts_with(b"This is free and unencumbered software"));
+    }
+
+    #[tokio::test]
+    async fn curated_home_is_feature_gated_admin_only_and_has_no_recent_duplicates() {
+        let inactive = app(test_state(None))
+            .oneshot(Request::get("/api/v1/home").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(inactive.status(), StatusCode::NOT_FOUND);
+
+        let mut state = access_key_state("home-curation-access-key-with-enough-entropy");
+        let mut features = FeatureRegistry::from_requested("seo,home_curation").unwrap();
+        features
+            .activate_composed("rbac", "test owner memberships")
+            .unwrap();
+        features
+            .activate_composed("comments", "test comment routes")
+            .unwrap();
+        state.features = Arc::new(features);
+        let first = seed_community_post(&state, "curator-a", "curator-a-blog", "Pinned", "pinned");
+        let second = seed_community_post(&state, "curator-b", "curator-b-blog", "Recent", "recent");
+
+        let raw_token = [0x42_u8; 32];
+        let token_hash: [u8; 32] = Sha256::digest(raw_token).into();
+        state
+            .repository
+            .create_primary_owner_session(
+                &token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::AccessKey,
+                &state.admin_auth.binding_fingerprint(),
+            )
+            .unwrap();
+        let cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_token));
+        let router = app(state);
+
+        let anonymous_write = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(format!(r#"{{"documentIds":["{}"]}}"#, first.id)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous_write.status(), StatusCode::UNAUTHORIZED);
+
+        let replace = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(format!(r#"{{"documentIds":["{}"]}}"#, first.id)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replace.status(), StatusCode::OK);
+
+        let home = router
+            .oneshot(Request::get("/api/v1/home").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(home.status(), StatusCode::OK);
+        assert!(home.headers().contains_key(header::ETAG));
+        let payload = json(home).await;
+        assert_eq!(payload["pinnedItems"][0]["id"], first.id.to_string());
+        assert_eq!(payload["recentItems"][0]["id"], second.id.to_string());
+        assert_eq!(payload["recentItems"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["pinnedItems"][0]["authorship"]["kind"], "human");
     }
 
     #[tokio::test]
@@ -3067,6 +3508,7 @@ mod tests {
         assert!(!cookie.contains(access_key));
         let payload = json(login).await;
         assert_eq!(payload["state"], "authenticated");
+        assert_eq!(payload["instanceAdministrator"], true);
         assert!(payload["blog"].is_null());
         assert!(payload["membershipRole"].is_null());
 
@@ -3140,6 +3582,86 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(legacy_admin_route.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn selected_admin_auth_module_ignores_the_test_only_owner_bearer() {
+        let mut state = access_key_state("correct-administrator-access-key-with-enough-entropy");
+        state.test_owner_bearer_hash = Some(Sha256::digest(b"test-owner-token").into());
+        let response = app(state)
+            .oneshot(
+                Request::get("/api/v1/admin/documents")
+                    .header(header::AUTHORIZATION, "Bearer test-owner-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json(response).await["error"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn anonymous_authenticated_mutation_is_rejected_before_body_extraction() {
+        let body_size = 12 * 1024 * 1024 + 1;
+        let response = app(test_state(None))
+            .oneshot(
+                Request::post("/api/v1/studio/assets")
+                    .header(header::CONTENT_TYPE, "image/png")
+                    .header(header::CONTENT_LENGTH, body_size)
+                    .body(Body::from(vec![0_u8; body_size]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(json(response).await["error"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn saturated_password_workers_do_not_reveal_account_existence() {
+        let state = test_state(None);
+        let salt = SaltString::generate(&mut OsRng);
+        let phc = Argon2::default()
+            .hash_password(b"correct horse battery staple", &salt)
+            .unwrap()
+            .to_string();
+        state
+            .repository
+            .create_user("known@example.test", "known", "Known", &phc)
+            .unwrap();
+        let _all_workers = Arc::clone(&state.password_workers)
+            .acquire_many_owned(PASSWORD_WORKER_LIMIT as u32)
+            .await
+            .unwrap();
+        let router = app(state);
+
+        let known = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"email":"known@example.test","password":"wrong but sufficiently long"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let unknown = router
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"email":"unknown@example.test","password":"wrong but sufficiently long"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(known.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(unknown.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(json(known).await, json(unknown).await);
     }
 
     #[tokio::test]
@@ -3266,6 +3788,21 @@ mod tests {
             .unwrap();
         assert_eq!(list.status(), StatusCode::OK);
 
+        let implicit_human = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/posts")
+                    .header(header::AUTHORIZATION, &authorization)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r##"{"title":"Missing provenance","slug":"missing-provenance","sourceMarkdown":"# Missing"}"##,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(implicit_human.status(), StatusCode::BAD_REQUEST);
+
         let created = router
             .clone()
             .oneshot(
@@ -3273,7 +3810,7 @@ mod tests {
                     .header(header::AUTHORIZATION, &authorization)
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(
-                        r##"{"title":"MCP draft","slug":"mcp-draft","sourceMarkdown":"# MCP"}"##,
+                        r##"{"title":"MCP draft","slug":"mcp-draft","sourceMarkdown":"# MCP","authorship":{"kind":"ai_generated","generator":"local/model-v1","humanReviewed":false}}"##,
                     ))
                     .unwrap(),
             )
@@ -3281,6 +3818,9 @@ mod tests {
             .unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
         let created = json(created).await;
+        assert_eq!(created["revision"]["actor"]["kind"], "agent");
+        assert_eq!(created["revision"]["actor"]["id"], "osb-mcp");
+        assert_eq!(created["revision"]["authorship"]["kind"], "ai_generated");
         let document_id = created["id"].as_str().unwrap();
         let base_revision_id = created["currentRevisionId"].as_str().unwrap();
 
@@ -3313,6 +3853,11 @@ mod tests {
                             "title": "MCP revision",
                             "slug": "mcp-draft",
                             "sourceMarkdown": "# Revised by MCP",
+                            "authorship": {
+                                "kind": "ai_assisted",
+                                "generator": "local/model-v1",
+                                "humanReviewed": true
+                            },
                             "idempotencyKey": "mcp-test-revision"
                         })
                         .to_string(),
@@ -3322,7 +3867,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(revised.status(), StatusCode::CREATED);
-        let revision_id = json(revised).await["id"].as_str().unwrap().to_owned();
+        let revised = json(revised).await;
+        assert_eq!(revised["actor"]["kind"], "agent");
+        assert_eq!(revised["actor"]["id"], "osb-mcp");
+        assert_eq!(revised["authorship"]["kind"], "ai_assisted");
+        let revision_id = revised["id"].as_str().unwrap().to_owned();
 
         let published = router
             .clone()
@@ -3387,6 +3936,39 @@ mod tests {
             "/api/v1/auth/access-key/session"
         );
         assert_eq!(body["mutationMechanisms"], serde_json::json!(["session"]));
+    }
+
+    #[tokio::test]
+    async fn discovery_advertises_ai2ai_proposals_only_when_auth_and_dlc_are_active() {
+        let inactive = app(access_key_state(
+            "discovery-inactive-administrator-key-with-enough-entropy",
+        ))
+        .oneshot(
+            Request::get("/.well-known/open-soverign-blog.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            json(inactive).await["endpoints"]["proposeRevision"]["available"],
+            false
+        );
+
+        let mut state = access_key_state("discovery-active-administrator-key-with-enough-entropy");
+        state.features = Arc::new(FeatureRegistry::from_requested("seo,ai_authorship").unwrap());
+        let active = app(state)
+            .oneshot(
+                Request::get("/.well-known/open-soverign-blog.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            json(active).await["endpoints"]["proposeRevision"]["available"],
+            true
+        );
     }
 
     #[tokio::test]
@@ -3585,6 +4167,8 @@ mod tests {
             .unwrap();
         assert_eq!(create.status(), StatusCode::CREATED);
         let created = json(create).await;
+        assert_eq!(created["revision"]["actor"]["kind"], "human");
+        assert_eq!(created["revision"]["actor"]["id"], "owner");
         let document_id = created["id"].as_str().unwrap();
         let base_revision_id = created["currentRevisionId"].as_str().unwrap();
 
@@ -3615,6 +4199,8 @@ mod tests {
         assert_eq!(revise.status(), StatusCode::CREATED);
         let revised = json(revise).await;
         assert_eq!(revised["revisionNumber"], 2);
+        assert_eq!(revised["actor"]["kind"], "human");
+        assert_eq!(revised["actor"]["id"], "owner");
 
         let documents = router
             .clone()
@@ -3761,6 +4347,7 @@ mod tests {
         let cookie = set_cookie.split(';').next().unwrap().to_owned();
         let registered = json(register).await;
         assert_eq!(registered["state"], "authenticated");
+        assert_eq!(registered["instanceAdministrator"], false);
         assert_eq!(registered["user"]["handle"], "alice");
         assert!(registered.get("blog").is_none());
 
@@ -4078,6 +4665,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: Default::default(),
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: alice.id.to_string(),
@@ -4270,14 +4858,14 @@ mod tests {
                 osb_storage_sqlite::ThemeProfile::Paper,
             )
             .unwrap();
-        let owner_token = [10_u8; 32];
+        let owner_session_token = [10_u8; 32];
         let writer_token = [11_u8; 32];
-        let owner_token_hash: [u8; 32] = Sha256::digest(owner_token).into();
+        let owner_session_token_hash: [u8; 32] = Sha256::digest(owner_session_token).into();
         let writer_token_hash: [u8; 32] = Sha256::digest(writer_token).into();
         repository
             .create_session(
                 owner.id,
-                &owner_token_hash,
+                &owner_session_token_hash,
                 chrono::Utc::now() + chrono::Duration::hours(1),
             )
             .unwrap();
@@ -4288,7 +4876,10 @@ mod tests {
                 chrono::Utc::now() + chrono::Duration::hours(1),
             )
             .unwrap();
-        let owner_cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(owner_token));
+        let owner_cookie = format!(
+            "osb_session={}",
+            URL_SAFE_NO_PAD.encode(owner_session_token)
+        );
         let writer_cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(writer_token));
         let router = app(state);
 
@@ -4627,6 +5218,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: Default::default(),
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: owner.id.to_string(),
@@ -4654,6 +5246,11 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    authorship: PublicAuthorship {
+                        kind: PublicAuthorshipKind::AiAssisted,
+                        generator: Some("test-agent <unsafe>".into()),
+                        human_reviewed: true,
+                    },
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: owner.id.to_string(),
@@ -4707,6 +5304,7 @@ mod tests {
             blog_html.contains("href=\"https://blog.example/base/@alice-notes/canonical-slug\"")
         );
         assert!(blog_html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(blog_html.contains("AI 보조 · test-agent &lt;unsafe&gt; · 사람 검토"));
         assert!(!blog_html.contains("<script>alert(1)</script>"));
 
         let article = router
@@ -4726,6 +5324,7 @@ mod tests {
             "<title>A &lt;/title&gt;&lt;script&gt;alert(1)&lt;/script&gt; story · Alice &lt;Notes&gt;</title>"
         ));
         assert!(blog_html.contains("class=\"osb-site-frame\""));
+        assert!(blog_html.contains("class=\"blog-monogram\" aria-hidden=\"true\">A&lt;</span>"));
         assert!(blog_html.contains(&format!(
             "class=\"blog-page osb-site-theme\" data-site-id=\"{}\"",
             site.id
@@ -4742,6 +5341,7 @@ mod tests {
         ));
         assert!(article_html.contains("<h1>Crawlable heading</h1>"));
         assert!(article_html.contains("Safe body."));
+        assert!(article_html.contains("AI 보조 · test-agent &lt;unsafe&gt; · 사람 검토"));
         assert!(!article_html.contains("</title><script>alert(1)</script>"));
         assert!(!article_html.contains("<img src=x onerror=alert(1)>"));
 
@@ -4772,6 +5372,167 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disabling_seo_removes_public_metadata_from_community_and_legacy_html() {
+        let mut state = test_state(None);
+        state.features = Arc::new(FeatureRegistry::from_requested("").unwrap());
+        seed_community_post(&state, "no-seo", "no-seo-blog", "Plain post", "plain-post");
+        let legacy_site = state.repository.ensure_legacy_site(state.site_id).unwrap();
+        let legacy = state
+            .repository
+            .create_document(NewDocument {
+                site_id: legacy_site.id,
+                title: "Legacy without SEO".into(),
+                slug: "legacy-without-seo".into(),
+                source_markdown: "# Legacy body".into(),
+                embeds: vec![],
+                intent: None,
+                ontology: None,
+                authorship: Default::default(),
+                actor: RevisionActor {
+                    kind: RevisionActorKind::Human,
+                    id: "legacy-owner".into(),
+                    display_name: None,
+                },
+            })
+            .unwrap();
+        state
+            .repository
+            .publish(legacy.id, legacy.current_revision_id)
+            .unwrap();
+        let router = app(state);
+
+        for path in ["/@no-seo-blog", "/@no-seo-blog/plain-post"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT, "text/html")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let html = text(response).await;
+            assert!(html.contains("<title>"), "{path}");
+            assert!(!html.contains("rel=\"canonical\""), "{path}");
+            assert!(!html.contains("property=\"og:"), "{path}");
+            assert!(!html.contains("name=\"twitter:"), "{path}");
+        }
+
+        let legacy = router
+            .oneshot(
+                Request::get("/blog/legacy-without-seo")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(legacy.status(), StatusCode::OK);
+        let html = text(legacy).await;
+        assert!(html.contains("<title>Legacy without SEO</title>"));
+        assert!(!html.contains("rel=\"canonical\""));
+        assert!(!html.contains("property=\"og:"));
+        assert!(!html.contains("name=\"twitter:"));
+    }
+
+    #[tokio::test]
+    async fn provisioned_primary_site_uses_community_canonical_route() {
+        let mut state = access_key_state("correct horse battery staple");
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let site = state.repository.get_site_by_id(state.site_id).unwrap();
+        let document = state
+            .repository
+            .create_document(NewDocument {
+                site_id: state.site_id,
+                title: "Owned post".into(),
+                slug: "old-owned-post".into(),
+                source_markdown: "# Owned post\n\nPublic body.".into(),
+                embeds: vec![],
+                intent: None,
+                ontology: None,
+                authorship: Default::default(),
+                actor: RevisionActor {
+                    kind: RevisionActorKind::Human,
+                    id: site.owner_user_id.to_string(),
+                    display_name: Some("Test owner".into()),
+                },
+            })
+            .unwrap();
+        state
+            .repository
+            .publish(document.id, document.current_revision_id)
+            .unwrap();
+        let revision = state
+            .repository
+            .append_revision(ProposedRevision {
+                document_id: document.id,
+                base_revision_id: document.current_revision_id,
+                title: "Owned post".into(),
+                slug: "owned-post".into(),
+                source_markdown: "# Owned post\n\nPublic body.".into(),
+                embeds: vec![],
+                intent: None,
+                ontology: None,
+                authorship: Default::default(),
+                actor: RevisionActor {
+                    kind: RevisionActorKind::Human,
+                    id: site.owner_user_id.to_string(),
+                    display_name: Some("Test owner".into()),
+                },
+                idempotency_key: Some("provisioned-primary-canonical".into()),
+            })
+            .unwrap();
+        state.repository.publish(document.id, revision.id).unwrap();
+        let router = app(state);
+
+        let community_article = router
+            .clone()
+            .oneshot(
+                Request::get("/@test-blog/owned-post")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(community_article.status(), StatusCode::OK);
+        assert!(text(community_article).await.contains(
+            "<link rel=\"canonical\" href=\"https://blog.example/base/@test-blog/owned-post\">"
+        ));
+
+        let legacy_article = router
+            .clone()
+            .oneshot(
+                Request::get("/blog/old-owned-post?view=markdown_source")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(legacy_article.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            legacy_article.headers()[header::LOCATION],
+            "https://blog.example/base/@test-blog/owned-post?view=markdown_source"
+        );
+
+        let sitemap = router
+            .oneshot(Request::get("/sitemap.xml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(sitemap.status(), StatusCode::OK);
+        let sitemap = text(sitemap).await;
+        let canonical = "<loc>https://blog.example/base/@test-blog/owned-post</loc>";
+        assert_eq!(sitemap.matches(canonical).count(), 1);
+        assert!(!sitemap.contains("<loc>https://blog.example/base/blog/owned-post</loc>"));
+    }
+
+    #[tokio::test]
     async fn sitemap_includes_published_posts_from_every_community_blog() {
         let state = test_state(None);
         seed_community_post(&state, "alice", "alice-notes", "Alice post", "first");
@@ -4787,6 +5548,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                authorship: Default::default(),
                 actor: RevisionActor {
                     kind: RevisionActorKind::Human,
                     id: "owner".into(),
@@ -4813,6 +5575,18 @@ mod tests {
         assert_eq!(
             legacy_alias.headers()[header::LOCATION],
             "https://blog.example/blog/legacy"
+        );
+
+        let legacy_article = router
+            .clone()
+            .oneshot(Request::get("/blog/legacy").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(legacy_article.status(), StatusCode::OK);
+        assert!(
+            text(legacy_article)
+                .await
+                .contains("<link rel=\"canonical\" href=\"https://blog.example/blog/legacy\">")
         );
 
         let response = router
@@ -4966,6 +5740,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(css.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            css.headers()[header::CONTENT_TYPE],
+            "text/css; charset=utf-8"
+        );
     }
 
     #[tokio::test]

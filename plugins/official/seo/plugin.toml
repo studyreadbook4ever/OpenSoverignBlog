@@ -5,6 +5,7 @@ name = "SEO and URL policy"
 version = "0.1.0"
 license = "Unlicense"
 pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["seo", "render-extension"]
 description = "Canonical URLs, redirect history, metadata, robots, and sitemap projections."
 permissions = [

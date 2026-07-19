@@ -1,6 +1,7 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{self, BufRead, IsTerminal, Read, Write},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     time::Duration,
@@ -15,20 +16,45 @@ use base64::{
     Engine as _,
     engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD},
 };
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
+use osb_plugin_api::{
+    DlcHistoryAction, DlcHistoryRecord, INSTALL_INTENT_SCHEMA_VERSION, INSTALL_LOCK_SCHEMA_VERSION,
+    InstallationAdminAuth, InstallationCache, InstallationIntent, InstallationLock,
+    InstallationSelection, InstallationStyle, InstallationStyleKind, InstalledDlc,
+    InstalledDlcSourceKind, LockedEngine, PLUGIN_API_VERSION, PluginManifest, RequestedDlc,
+};
+use osb_storage_sqlite::DATABASE_SCHEMA_VERSION;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use url::Url;
 use uuid::Uuid;
+
+mod dlc_lifecycle;
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 const CONFIG_SCHEMA: &str = "open-soverign-blog/2";
 const INTENT_SCHEMA: &str = "open-soverign-blog-intent/1";
-const GENERATED_GITIGNORE: &str = ".env\nadmin-access-key.txt\n.osb-backups/\n";
-const REQUIRED_SECRET_IGNORES: [&str; 2] = [".env", "admin-access-key.txt"];
+const INSTALL_MANIFEST: &str = "osb.install.toml";
+const INSTALL_LOCK: &str = "osb.lock.json";
+const GITIGNORE_LIMIT: u64 = 256 * 1024;
+const GENERATED_GITIGNORE: &str = ".env\nadmin-access-key.txt\n.osb-backups/\n.osb-update/\n";
+const REQUIRED_SECRET_IGNORES: [&str; 4] = [
+    ".env",
+    "admin-access-key.txt",
+    ".osb-backups/",
+    ".osb-update/",
+];
+const RECOMMENDED_PERSONAL_DLCS: [&str; 5] = [
+    "seo",
+    "home-curation",
+    "ai-authorship",
+    "social-embeds",
+    "release-check",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -116,6 +142,40 @@ pub enum RedisTopologyChoice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CacheChoice {
+    None,
+    RedisStandalone,
+    RedisManaged,
+}
+
+impl CacheChoice {
+    fn installation(self) -> InstallationCache {
+        match self {
+            Self::None => InstallationCache::None,
+            Self::RedisStandalone => InstallationCache::RedisStandalone,
+            Self::RedisManaged => InstallationCache::RedisManaged,
+        }
+    }
+
+    fn redis_topology(self) -> Option<RedisTopologyChoice> {
+        match self {
+            Self::None => None,
+            Self::RedisStandalone => Some(RedisTopologyChoice::Standalone),
+            Self::RedisManaged => Some(RedisTopologyChoice::Managed),
+        }
+    }
+
+    fn compose_profile(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::RedisStandalone => Some("redis-standalone"),
+            Self::RedisManaged => Some("redis-managed"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DatabaseProfileChoice {
     Durable,
     Balanced,
@@ -132,11 +192,14 @@ impl DatabaseProfileChoice {
     }
 }
 
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct BootstrapArgs {
     /// New deployment directory. Existing files are never overwritten.
     #[arg(long, default_value = ".")]
     pub directory: PathBuf,
+    /// Never prompt; unspecified structural choices retain compatibility defaults.
+    #[arg(long)]
+    pub non_interactive: bool,
     /// Compose bundle from this source checkout. Defaults to ./compose.yaml.
     #[arg(long)]
     pub compose_file: Option<PathBuf>,
@@ -152,7 +215,7 @@ pub struct BootstrapArgs {
     /// Canonical URL visible to readers and search/AI agents.
     #[arg(long, default_value = "http://localhost:8787")]
     pub public_url: String,
-    /// Reader/member account authentication. Personal defaults disabled; community defaults local.
+    /// Reader/member authentication. OAuth-only is reserved and rejected until an adapter ships.
     #[arg(long, value_enum)]
     pub auth: Option<AuthChoice>,
     /// Administrator control plane: one-time access-key exchange, external OIDC, or no remote admin.
@@ -180,8 +243,14 @@ pub struct BootstrapArgs {
     #[arg(long, value_enum, default_value_t = Toggle::Disabled)]
     pub collaboration: Toggle,
     /// Owner-managed CSS served from this on-premise instance.
-    #[arg(long, value_enum, default_value_t = Toggle::Enabled)]
-    pub custom_css: Toggle,
+    #[arg(long, value_enum)]
+    pub custom_css: Option<Toggle>,
+    /// Stable built-in style id (`builtin:name`) or `none`.
+    #[arg(long, value_name = "STYLE")]
+    pub style: Option<String>,
+    /// Install this regular CSS file as the selected custom style.
+    #[arg(long, value_name = "FILE", conflicts_with = "style")]
+    pub css_file: Option<PathBuf>,
     /// Canonical metadata, robots policy, and sitemap.
     #[arg(long, value_enum, default_value_t = Toggle::Enabled)]
     pub seo: Toggle,
@@ -189,8 +258,14 @@ pub struct BootstrapArgs {
     #[arg(long, value_enum, default_value_t = Toggle::Enabled)]
     pub agent_discovery: Toggle,
     /// Managed uses a Redis primary, replica, and Sentinel discovery.
-    #[arg(long, value_enum, default_value_t = RedisTopologyChoice::Managed)]
-    pub redis_topology: RedisTopologyChoice,
+    #[arg(long, value_enum)]
+    pub redis_topology: Option<RedisTopologyChoice>,
+    /// Cache module: disabled, direct Redis, or managed Redis/Sentinel.
+    #[arg(long, value_enum)]
+    pub cache: Option<CacheChoice>,
+    /// Add an official DLC by alias or reverse-domain id; optionally append @SEMVER_REQ.
+    #[arg(long = "dlc", value_name = "ID[@VERSION]")]
+    pub dlcs: Vec<String>,
     /// SQLite durability/latency policy. Durable is recommended on-premise.
     #[arg(long, value_enum, default_value_t = DatabaseProfileChoice::Durable)]
     pub database_profile: DatabaseProfileChoice,
@@ -210,12 +285,60 @@ pub struct DoctorArgs {
     /// Semantic TOML generated by `osb bootstrap`.
     #[arg(long, default_value = "config.toml")]
     pub config: PathBuf,
+    /// Long-lived installation intent; defaults beside config.toml.
+    #[arg(long, env = "OSB_INSTALL_MANIFEST")]
+    pub install_manifest: Option<PathBuf>,
+    /// Exact installation lock; defaults beside config.toml.
+    #[arg(long, env = "OSB_INSTALL_LOCK")]
+    pub install_lock: Option<PathBuf>,
+    /// Generated deployment environment; defaults to a sibling .env when present.
+    #[arg(long)]
+    pub env_file: Option<PathBuf>,
     /// Validate files and semantics without contacting Redis.
     #[arg(long)]
     pub offline: bool,
     /// Emit a stable machine-readable report for another agent.
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct InstallationArgs {
+    #[command(subcommand)]
+    action: InstallationAction,
+}
+
+#[derive(Debug, Subcommand)]
+enum InstallationAction {
+    /// Verify intent, exact lock, canonical digest, and their shared selection.
+    Verify {
+        #[arg(long, default_value = INSTALL_MANIFEST)]
+        intent: PathBuf,
+        #[arg(long, default_value = INSTALL_LOCK)]
+        lock: PathBuf,
+    },
+    /// Atomically record an updater-approved engine transition in the lock.
+    RecordEngineUpgrade {
+        #[arg(long, default_value = INSTALL_MANIFEST)]
+        intent: PathBuf,
+        #[arg(long, default_value = INSTALL_LOCK)]
+        lock: PathBuf,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        source: String,
+        #[arg(long)]
+        artifact_sha256: Option<String>,
+    },
+    /// Adopt a pre-lock deployment without changing config, secrets, or CSS.
+    Adopt {
+        #[arg(long, default_value = ".")]
+        directory: PathBuf,
+    },
+    /// Maintain bundled official DLC intent, exact locks, and runtime composition.
+    Dlc(dlc_lifecycle::DlcArgs),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,6 +351,8 @@ struct IntentManifest {
     site_id: String,
     deployment_id: String,
     compose_project: String,
+    installation_manifest: &'static str,
+    installation_lock: &'static str,
     guarantees: Vec<&'static str>,
     features: ManifestFeatures,
     data: ManifestData,
@@ -244,7 +369,6 @@ struct ManifestFeatures {
     comments: bool,
     collaboration: bool,
     custom_css: bool,
-    seo: bool,
     agent_discovery: bool,
 }
 
@@ -254,7 +378,7 @@ struct ManifestData {
     source_of_truth: &'static str,
     cache: &'static str,
     redis_required: bool,
-    redis_topology: RedisTopologyChoice,
+    redis_topology: Option<RedisTopologyChoice>,
     database_profile: DatabaseProfileChoice,
 }
 
@@ -267,7 +391,537 @@ struct ManifestOperations {
     delivery_is_read_only: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedStyle {
+    installation: InstallationStyle,
+    css_bytes: Option<Vec<u8>>,
+    environment_value: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedDlc {
+    requested: RequestedDlc,
+    installed: InstalledDlc,
+    runtime_feature: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct OfficialDlc {
+    alias: &'static str,
+    id: &'static str,
+    runtime_feature: &'static str,
+    source: &'static str,
+    manifest: &'static str,
+}
+
+const OFFICIAL_DLCS: [OfficialDlc; 10] = [
+    OfficialDlc {
+        alias: "ads",
+        id: "org.open-soverign-blog.monetization-policy",
+        runtime_feature: "ads",
+        source: "plugins/official/ads/plugin.toml",
+        manifest: include_str!("../../../plugins/official/ads/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "ai-authorship",
+        id: "org.open-soverign-blog.ai-authorship",
+        runtime_feature: "ai_authorship",
+        source: "plugins/official/ai-authorship/plugin.toml",
+        manifest: include_str!("../../../plugins/official/ai-authorship/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "code-runner",
+        id: "org.open-soverign-blog.code-runner-client",
+        runtime_feature: "code_runner",
+        source: "plugins/official/code-runner/plugin.toml",
+        manifest: include_str!("../../../plugins/official/code-runner/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "comments",
+        id: "org.open-soverign-blog.comments",
+        runtime_feature: "comments",
+        source: "plugins/official/comments/plugin.toml",
+        manifest: include_str!("../../../plugins/official/comments/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "external-auth",
+        id: "org.open-soverign-blog.external-auth",
+        runtime_feature: "external_auth",
+        source: "plugins/official/external-auth/plugin.toml",
+        manifest: include_str!("../../../plugins/official/external-auth/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "home-curation",
+        id: "org.open-soverign-blog.home-curation",
+        runtime_feature: "home_curation",
+        source: "plugins/official/home-curation/plugin.toml",
+        manifest: include_str!("../../../plugins/official/home-curation/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "rbac",
+        id: "org.open-soverign-blog.rbac",
+        runtime_feature: "rbac",
+        source: "plugins/official/rbac/plugin.toml",
+        manifest: include_str!("../../../plugins/official/rbac/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "release-check",
+        id: "org.open-soverign-blog.release-check",
+        runtime_feature: "release_check",
+        source: "plugins/official/release-check/plugin.toml",
+        manifest: include_str!("../../../plugins/official/release-check/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "seo",
+        id: "org.open-soverign-blog.seo",
+        runtime_feature: "seo",
+        source: "plugins/official/seo/plugin.toml",
+        manifest: include_str!("../../../plugins/official/seo/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "social-embeds",
+        id: "org.open-soverign-blog.social-embeds",
+        runtime_feature: "social_embeds",
+        source: "plugins/official/social-embeds/plugin.toml",
+        manifest: include_str!("../../../plugins/official/social-embeds/plugin.toml"),
+    },
+];
+
+fn resolve_prompted_args(mut args: BootstrapArgs) -> Result<BootstrapArgs> {
+    let interactive =
+        !args.non_interactive && io::stdin().is_terminal() && io::stdout().is_terminal();
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
+    resolve_prompted_args_with(&mut args, interactive, &mut reader, &mut writer)?;
+    Ok(args)
+}
+
+fn resolve_prompted_args_with(
+    args: &mut BootstrapArgs,
+    interactive: bool,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<()> {
+    if !interactive {
+        return Ok(());
+    }
+
+    if args.admin_auth.is_none() {
+        let default = if args.intent == Intent::Delivery {
+            "disabled"
+        } else {
+            "access-key"
+        };
+        let answer = prompt(
+            reader,
+            writer,
+            "Administrator auth (access-key, external, disabled)",
+            default,
+        )?;
+        args.admin_auth = Some(
+            match answer.to_ascii_lowercase().replace('_', "-").as_str() {
+                "access-key" | "key" => AdminAuthChoice::AccessKey,
+                "external" | "oauth" | "oidc" => AdminAuthChoice::External,
+                "disabled" | "none" | "off" => AdminAuthChoice::Disabled,
+                _ => bail!("administrator auth must be access-key, external, or disabled"),
+            },
+        );
+    }
+    if args.admin_auth == Some(AdminAuthChoice::External) {
+        if args.external_issuer_url.is_none() {
+            args.external_issuer_url = Some(prompt(
+                reader,
+                writer,
+                "OIDC issuer URL",
+                "https://identity.example",
+            )?);
+        }
+        if args.external_client_id.is_none() {
+            args.external_client_id = Some(prompt(
+                reader,
+                writer,
+                "OIDC client id",
+                "open-soverign-blog",
+            )?);
+        }
+        if args.external_owner_subject.is_none() {
+            args.external_owner_subject = Some(prompt(
+                reader,
+                writer,
+                "Exact administrator OIDC subject (sub)",
+                "owner-subject",
+            )?);
+        }
+    }
+
+    if args.style.is_none() && args.css_file.is_none() && args.custom_css.is_none() {
+        let answer = prompt(
+            reader,
+            writer,
+            "Style (none, builtin:STYLE, file:/path/to/style.css)",
+            "builtin:paper",
+        )?;
+        if let Some(path) = answer.strip_prefix("file:") {
+            ensure!(!path.is_empty(), "file: style requires a path");
+            args.css_file = Some(PathBuf::from(path));
+        } else {
+            args.style = Some(answer);
+        }
+    }
+
+    if args.cache.is_none() && args.redis_topology.is_none() {
+        let answer = prompt(
+            reader,
+            writer,
+            "Cache (none, redis-standalone, redis-managed)",
+            "redis-managed",
+        )?;
+        args.cache = Some(
+            match answer.to_ascii_lowercase().replace('_', "-").as_str() {
+                "none" | "off" | "disabled" => CacheChoice::None,
+                "redis-standalone" | "standalone" => CacheChoice::RedisStandalone,
+                "redis-managed" | "managed" | "sentinel" => CacheChoice::RedisManaged,
+                _ => bail!("cache must be none, redis-standalone, or redis-managed"),
+            },
+        );
+    }
+
+    if args.dlcs.is_empty() {
+        let default_dlcs = if args.seo.enabled() {
+            "seo,home-curation,ai-authorship,social-embeds,release-check"
+        } else {
+            "home-curation,ai-authorship,social-embeds,release-check"
+        };
+        let answer = prompt(
+            reader,
+            writer,
+            "Optional DLC aliases, comma-separated (seo, home-curation, ai-authorship, social-embeds, release-check, comments, rbac, external-auth, code-runner, ads; or none)",
+            default_dlcs,
+        )?;
+        if answer.eq_ignore_ascii_case("none") {
+            args.dlcs.push("none".into());
+        } else {
+            args.dlcs.extend(
+                answer
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn prompt(
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+    label: &str,
+    default: &str,
+) -> Result<String> {
+    write!(writer, "{label} [{default}]: ")?;
+    writer.flush()?;
+    let mut answer = String::new();
+    let read = reader.read_line(&mut answer)?;
+    ensure!(read != 0, "interactive bootstrap input ended unexpectedly");
+    let answer = answer.trim();
+    Ok(if answer.is_empty() {
+        default.to_owned()
+    } else {
+        answer.to_owned()
+    })
+}
+
+fn resolve_cache(args: &BootstrapArgs) -> Result<CacheChoice> {
+    let legacy = args.redis_topology.map(|topology| match topology {
+        RedisTopologyChoice::Standalone => CacheChoice::RedisStandalone,
+        RedisTopologyChoice::Managed => CacheChoice::RedisManaged,
+    });
+    match (args.cache, legacy) {
+        (Some(cache), Some(legacy)) if cache != legacy => bail!(
+            "--cache and --redis-topology disagree; use one cache choice or make them equivalent"
+        ),
+        (Some(cache), _) => Ok(cache),
+        (None, Some(legacy)) => Ok(legacy),
+        (None, None) => Ok(CacheChoice::RedisManaged),
+    }
+}
+
+fn resolve_style(args: &BootstrapArgs) -> Result<ResolvedStyle> {
+    if let Some(path) = &args.css_file {
+        ensure!(
+            args.custom_css != Some(Toggle::Disabled),
+            "--css-file contradicts --custom-css disabled"
+        );
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("failed to inspect CSS source {}", path.display()))?;
+        ensure!(
+            metadata.file_type().is_file(),
+            "CSS source must be a regular file and cannot be a symlink"
+        );
+        ensure!(
+            metadata.len() <= 256 * 1024,
+            "CSS source exceeds the 256 KiB installation limit"
+        );
+        let bytes = fs::read(path)
+            .with_context(|| format!("failed to read CSS source {}", path.display()))?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        return Ok(ResolvedStyle {
+            installation: InstallationStyle {
+                kind: InstallationStyleKind::Custom,
+                id: None,
+                file: Some("custom.css".into()),
+                sha256: Some(digest.clone()),
+            },
+            css_bytes: Some(bytes),
+            environment_value: format!("custom:{digest}"),
+        });
+    }
+
+    if let Some(raw) = args.style.as_deref() {
+        ensure!(
+            args.custom_css != Some(Toggle::Enabled),
+            "--style contradicts --custom-css enabled; use --css-file for custom CSS"
+        );
+        if matches!(
+            raw.to_ascii_lowercase().as_str(),
+            "none" | "off" | "disabled"
+        ) {
+            return Ok(ResolvedStyle {
+                installation: InstallationStyle {
+                    kind: InstallationStyleKind::None,
+                    id: None,
+                    file: None,
+                    sha256: None,
+                },
+                css_bytes: None,
+                environment_value: "none".into(),
+            });
+        }
+        let id = raw
+            .strip_prefix("builtin:")
+            .unwrap_or(raw)
+            .to_ascii_lowercase();
+        ensure!(
+            matches!(id.as_str(), "paper" | "ink" | "forest" | "terminal"),
+            "unknown built-in style {id:?}; choose paper, ink, forest, or terminal"
+        );
+        let installation = InstallationStyle {
+            kind: InstallationStyleKind::Builtin,
+            id: Some(id.clone()),
+            file: None,
+            sha256: None,
+        };
+        installation
+            .validate()
+            .map_err(anyhow::Error::msg)
+            .context("invalid --style")?;
+        return Ok(ResolvedStyle {
+            installation,
+            css_bytes: None,
+            environment_value: format!("builtin:{id}"),
+        });
+    }
+
+    if args.custom_css == Some(Toggle::Disabled) {
+        return Ok(ResolvedStyle {
+            installation: InstallationStyle {
+                kind: InstallationStyleKind::None,
+                id: None,
+                file: None,
+                sha256: None,
+            },
+            css_bytes: None,
+            environment_value: "none".into(),
+        });
+    }
+
+    let bytes = include_bytes!("../../../deploy/custom.css").to_vec();
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    Ok(ResolvedStyle {
+        installation: InstallationStyle {
+            kind: InstallationStyleKind::Custom,
+            id: None,
+            file: Some("custom.css".into()),
+            sha256: Some(digest.clone()),
+        },
+        css_bytes: Some(bytes),
+        environment_value: format!("custom:{digest}"),
+    })
+}
+
+fn find_official_dlc(name: &str) -> Option<OfficialDlc> {
+    let normalized = name.to_ascii_lowercase().replace('_', "-");
+    OFFICIAL_DLCS.iter().copied().find(|dlc| {
+        dlc.id == normalized
+            || dlc.alias == normalized
+            || (dlc.alias == "code-runner" && normalized == "code-runner-client")
+            || (dlc.alias == "external-auth" && normalized == "external")
+    })
+}
+
+fn resolve_dlcs(
+    args: &BootstrapArgs,
+    auth: AuthChoice,
+    admin_auth: AdminAuthChoice,
+    comments: bool,
+) -> Result<Vec<ResolvedDlc>> {
+    let none_requested = args
+        .dlcs
+        .iter()
+        .any(|value| value.eq_ignore_ascii_case("none"));
+    ensure!(
+        !none_requested || args.dlcs.len() == 1,
+        "DLC value none cannot be combined with another --dlc"
+    );
+    if none_requested {
+        ensure!(
+            !comments,
+            "--dlc none conflicts with enabled comments; disable comments or install the comments DLC"
+        );
+        ensure!(
+            !args.collaboration.enabled(),
+            "--dlc none conflicts with collaboration; disable collaboration or install the rbac DLC"
+        );
+        ensure!(
+            !auth.oauth_enabled() && admin_auth != AdminAuthChoice::External,
+            "--dlc none conflicts with OAuth/external administrator auth; choose local/access-key/disabled auth or install external-auth"
+        );
+        return Ok(Vec::new());
+    }
+
+    let mut selected = BTreeMap::<String, String>::new();
+    if args.dlcs.is_empty() && args.intent == Intent::Personal {
+        for alias in RECOMMENDED_PERSONAL_DLCS {
+            if alias == "seo" && !args.seo.enabled() {
+                continue;
+            }
+            let official = find_official_dlc(alias).expect("known recommended official DLC");
+            let manifest =
+                PluginManifest::from_toml(official.manifest).map_err(anyhow::Error::msg)?;
+            selected.insert(official.id.into(), format!("^{}", manifest.version));
+        }
+    }
+    let mut imply = |alias: &str| -> Result<()> {
+        let official = find_official_dlc(alias).expect("known official DLC alias");
+        let manifest = PluginManifest::from_toml(official.manifest).map_err(anyhow::Error::msg)?;
+        selected
+            .entry(official.id.into())
+            .or_insert_with(|| format!("={}", manifest.version));
+        Ok(())
+    };
+    if args.seo.enabled() {
+        imply("seo")?;
+    }
+    if comments {
+        imply("comments")?;
+    }
+    if args.collaboration.enabled() {
+        imply("rbac")?;
+    }
+    if auth.oauth_enabled() || admin_auth == AdminAuthChoice::External {
+        imply("external-auth")?;
+    }
+
+    for raw in &args.dlcs {
+        let (name, requirement) = raw
+            .rsplit_once('@')
+            .map_or((raw.as_str(), None), |(name, requirement)| {
+                (name, Some(requirement))
+            });
+        ensure!(!name.is_empty(), "--dlc requires an id before @");
+        let official =
+            find_official_dlc(name).with_context(|| format!("unknown official DLC {name:?}"))?;
+        ensure!(
+            official.alias != "seo" || args.seo.enabled(),
+            "--dlc seo conflicts with --seo disabled"
+        );
+        let manifest = PluginManifest::from_toml(official.manifest).map_err(anyhow::Error::msg)?;
+        let requirement = requirement
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("^{}", manifest.version));
+        let request = RequestedDlc {
+            id: official.id.into(),
+            version: requirement.clone(),
+            enabled: true,
+        };
+        request.validate().map_err(anyhow::Error::msg)?;
+        selected.insert(official.id.into(), requirement);
+    }
+
+    resolve_selected_dlcs(selected)
+}
+
+fn resolve_selected_dlcs(selected: BTreeMap<String, String>) -> Result<Vec<ResolvedDlc>> {
+    selected
+        .into_iter()
+        .map(|(id, requirement)| {
+            let official = find_official_dlc(&id).expect("selected DLC is official");
+            let manifest =
+                PluginManifest::from_toml(official.manifest).map_err(anyhow::Error::msg)?;
+            ensure!(
+                manifest
+                    .supports_core(env!("CARGO_PKG_VERSION"))
+                    .map_err(anyhow::Error::msg)?,
+                "DLC {} does not support engine {}",
+                manifest.id,
+                env!("CARGO_PKG_VERSION")
+            );
+            let mut capabilities = manifest
+                .permissions
+                .iter()
+                .map(|permission| {
+                    serde_json::to_value(permission.capability)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .context("failed to serialize DLC capability")
+                })
+                .collect::<Result<Vec<_>>>()?;
+            capabilities.sort();
+            capabilities.dedup();
+            let config_sha256 = manifest.config.as_ref().map(|config| {
+                let bytes = serde_json::to_vec(config).expect("plugin config is serializable");
+                format!("{:x}", Sha256::digest(bytes))
+            });
+            let installed = InstalledDlc {
+                id: manifest.id.clone(),
+                requested_version: requirement.clone(),
+                version: manifest.version.clone(),
+                core_compatibility: manifest
+                    .core_compatibility
+                    .clone()
+                    .unwrap_or_else(|| format!("={}", env!("CARGO_PKG_VERSION"))),
+                manifest_version: manifest.manifest_version,
+                plugin_api: manifest.plugin_api.clone(),
+                source_kind: InstalledDlcSourceKind::Bundled,
+                source: official.source.into(),
+                manifest_sha256: format!("{:x}", Sha256::digest(official.manifest.as_bytes())),
+                artifact_sha256: None,
+                enabled: true,
+                approved_capabilities: capabilities,
+                config_sha256,
+                state_version: manifest.state.as_ref().map(|state| state.version),
+                applied_migrations: Vec::new(),
+            };
+            Ok(ResolvedDlc {
+                requested: RequestedDlc {
+                    id,
+                    version: requirement,
+                    enabled: true,
+                },
+                installed,
+                runtime_feature: official.runtime_feature,
+            })
+        })
+        .collect()
+}
+
 pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
+    let args = resolve_prompted_args(args)?;
+    let cache_choice = resolve_cache(&args)?;
+    let style = resolve_style(&args)?;
     let public_url = Url::parse(&args.public_url)
         .context("--public-url must be an absolute http:// or https:// URL")?;
     ensure!(
@@ -284,6 +938,10 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         Intent::Community => AuthChoice::Local,
         Intent::Personal | Intent::Delivery => AuthChoice::Disabled,
     });
+    ensure!(
+        auth != AuthChoice::Oauth,
+        "--auth oauth is not operational until a verified member OAuth adapter ships; use --auth local-and-oauth for local login plus reserved OAuth intent, or choose local/disabled"
+    );
     let admin_auth = args.admin_auth.unwrap_or_else(|| {
         if args.intent == Intent::Delivery {
             AdminAuthChoice::Disabled
@@ -299,6 +957,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             Toggle::Disabled
         })
         .enabled();
+    let dlcs = resolve_dlcs(&args, auth, admin_auth, comments)?;
     let registration_open = args.registration.enabled();
     let collaboration = args.collaboration.enabled();
     let delivery = args.intent == Intent::Delivery;
@@ -396,7 +1055,14 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         )
     })?;
     validate_deployment_path(&deployment_root)?;
-    let mut generated_targets = vec!["config.toml", ".env", "custom.css", "osb.intent.json"];
+    let mut generated_targets = vec![
+        "config.toml",
+        ".env",
+        "custom.css",
+        "osb.intent.json",
+        INSTALL_MANIFEST,
+        INSTALL_LOCK,
+    ];
     if admin_auth == AdminAuthChoice::AccessKey {
         generated_targets.push("admin-access-key.txt");
     }
@@ -440,6 +1106,62 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     } else {
         (None, None)
     };
+    let selection = InstallationSelection {
+        admin_auth: match admin_auth {
+            AdminAuthChoice::AccessKey => InstallationAdminAuth::AccessKey,
+            AdminAuthChoice::External => InstallationAdminAuth::External,
+            AdminAuthChoice::Disabled => InstallationAdminAuth::Disabled,
+        },
+        style: style.installation.clone(),
+        cache: cache_choice.installation(),
+    };
+    let installation_intent = InstallationIntent {
+        schema_version: INSTALL_INTENT_SCHEMA_VERSION.into(),
+        installation_id: deployment_id.to_string(),
+        site_id: site_id.to_string(),
+        created_with: env!("CARGO_PKG_VERSION").into(),
+        selection: selection.clone(),
+        dlcs: dlcs.iter().map(|dlc| dlc.requested.clone()).collect(),
+    };
+    let history = dlcs
+        .iter()
+        .enumerate()
+        .map(|(index, dlc)| DlcHistoryRecord {
+            sequence: u64::try_from(index).expect("bounded DLC count") + 1,
+            action: DlcHistoryAction::Installed,
+            dlc_id: dlc.installed.id.clone(),
+            from_version: None,
+            to_version: Some(dlc.installed.version.clone()),
+            engine_version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .collect();
+    let mut installation_lock = InstallationLock {
+        schema_version: INSTALL_LOCK_SCHEMA_VERSION.into(),
+        installation_id: deployment_id.to_string(),
+        engine: LockedEngine {
+            version: env!("CARGO_PKG_VERSION").into(),
+            config_schema_version: CONFIG_SCHEMA.into(),
+            database_schema_version: DATABASE_SCHEMA_VERSION,
+            plugin_api: PLUGIN_API_VERSION.into(),
+            source: "source-checkout".into(),
+            artifact_sha256: None,
+        },
+        selection: selection.clone(),
+        dlcs: dlcs.iter().map(|dlc| dlc.installed.clone()).collect(),
+        retained_dlcs: Vec::new(),
+        history,
+        lock_digest: String::new(),
+    };
+    installation_lock
+        .refresh_digest()
+        .map_err(anyhow::Error::msg)?;
+    installation_lock.validate().map_err(anyhow::Error::msg)?;
+    let installation_toml = installation_intent
+        .to_toml_pretty()
+        .map_err(anyhow::Error::msg)?;
+    let lock_json = installation_lock
+        .to_pretty_json()
+        .map_err(anyhow::Error::msg)?;
     let config_render = ConfigRender {
         public_url: normalized_public_url,
         site_id,
@@ -448,11 +1170,20 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         admin_auth,
         comments,
         delivery,
+        cache: cache_choice,
+        custom_css: style.installation.kind == InstallationStyleKind::Custom,
+        dlcs: &dlcs,
     };
     let config = render_config(&args, &config_render);
     write_new(&args.directory.join("config.toml"), config.as_bytes())?;
-    let redis_password = random_hex_secret();
-    let cache_signing_key = random_hex_secret();
+    let redis_password = cache_choice
+        .installation()
+        .redis_enabled()
+        .then(random_hex_secret);
+    let cache_signing_key = cache_choice
+        .installation()
+        .redis_enabled()
+        .then(random_hex_secret);
     let environment = EnvironmentRender {
         auth,
         admin_auth,
@@ -460,8 +1191,12 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         comments,
         collaboration,
         delivery,
-        redis_password: &redis_password,
-        cache_signing_key: &cache_signing_key,
+        cache: cache_choice,
+        style: &style,
+        dlcs: &dlcs,
+        lock_digest: &installation_lock.lock_digest,
+        redis_password: redis_password.as_deref(),
+        cache_signing_key: cache_signing_key.as_deref(),
         deployment_root: &deployment_root,
         public_url: normalized_public_url,
         compose_project: &compose_project,
@@ -480,19 +1215,31 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     // file mount while the semantic flag still controls whether it is served.
     write_new(
         &args.directory.join("custom.css"),
-        include_bytes!("../../../deploy/custom.css"),
+        style
+            .css_bytes
+            .as_deref()
+            .unwrap_or(include_bytes!("../../../deploy/custom.css")),
     )?;
+    write_new(
+        &args.directory.join(INSTALL_MANIFEST),
+        installation_toml.as_bytes(),
+    )?;
+    write_new(&args.directory.join(INSTALL_LOCK), lock_json.as_bytes())?;
+    let runtime_profile = cache_choice
+        .compose_profile()
+        .map(|profile| format!("--profile {profile} "))
+        .unwrap_or_default();
     let start_command = compose_command(
         &compose_file,
         &deployment_root,
         &compose_project,
-        "up -d --build --wait",
+        &format!("{runtime_profile}up -d --build --wait"),
     );
     let doctor_command = compose_command(
         &compose_file,
         &deployment_root,
         &compose_project,
-        "exec -T blog osb doctor --config /config/config.toml",
+        &format!("{runtime_profile}exec -T blog osb doctor --config /config/config.toml"),
     );
     let next_commands = if delivery {
         vec![
@@ -524,11 +1271,21 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         site_id: site_id.to_string(),
         deployment_id: deployment_id.to_string(),
         compose_project: compose_project.clone(),
+        installation_manifest: INSTALL_MANIFEST,
+        installation_lock: INSTALL_LOCK,
         guarantees: vec![
             "Markdown remains exportable",
             "SQLite and first-party blobs remain authoritative",
-            "Redis is required for the hot path but is never the only copy",
-            "Redis cache bodies require an application-only integrity signature",
+            if cache_choice == CacheChoice::None {
+                "Redis is deliberately absent and public reads use the authoritative origin"
+            } else {
+                "Redis accelerates the hot path but is never the only copy"
+            },
+            if cache_choice == CacheChoice::None {
+                "disabled cache modules require no cache credential"
+            } else {
+                "Redis cache bodies require an application-only integrity signature"
+            },
             "unknown configuration keys fail closed",
             "delivery intent rejects mutations",
         ],
@@ -538,15 +1295,18 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             registration_open,
             comments,
             collaboration,
-            custom_css: args.custom_css.enabled(),
-            seo: args.seo.enabled(),
+            custom_css: style.installation.kind == InstallationStyleKind::Custom,
             agent_discovery: args.agent_discovery.enabled(),
         },
         data: ManifestData {
             source_of_truth: "sqlite_and_content_addressed_blobs",
-            cache: "redis",
-            redis_required: true,
-            redis_topology: args.redis_topology,
+            cache: if cache_choice == CacheChoice::None {
+                "none"
+            } else {
+                "redis"
+            },
+            redis_required: cache_choice != CacheChoice::None,
+            redis_topology: cache_choice.redis_topology(),
             database_profile: args.database_profile,
         },
         operations: ManifestOperations {
@@ -567,8 +1327,15 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     );
     println!("  intent: {}", args.intent.as_str());
     println!("  administrator auth: {}", admin_auth.as_str());
-    println!("  Redis: required / {:?}", args.redis_topology);
+    println!("  cache: {}", cache_choice.installation().as_str());
+    println!("  style: {}", style.environment_value);
+    println!("  DLCs: {}", installation_lock.dlcs.len());
     println!("  config: {}", args.directory.join("config.toml").display());
+    println!(
+        "  installation: {} / {}",
+        args.directory.join(INSTALL_MANIFEST).display(),
+        args.directory.join(INSTALL_LOCK).display()
+    );
     println!(
         "  AI handoff: {}",
         args.directory.join("osb.intent.json").display()
@@ -647,10 +1414,16 @@ fn validate_existing_gitignore(path: &Path) -> Result<()> {
         "existing {} must be a regular file before bootstrap can create secrets",
         path.display()
     );
+    ensure!(
+        metadata.len() <= GITIGNORE_LIMIT,
+        "existing {} exceeds the 256 KiB safety limit",
+        path.display()
+    );
     let source = fs::read_to_string(path)
         .with_context(|| format!("failed to read existing {}", path.display()))?;
     let entries = source
         .lines()
+        .map(str::trim_end)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .collect::<Vec<_>>();
     let missing = REQUIRED_SECRET_IGNORES
@@ -669,7 +1442,107 @@ fn validate_existing_gitignore(path: &Path) -> Result<()> {
         missing.join(" and "),
         if missing.len() == 1 { "y" } else { "ies" }
     );
+    let unsafe_negations = REQUIRED_SECRET_IGNORES
+        .iter()
+        .flat_map(|required| {
+            let required = *required;
+            let last_exact_ignore = entries
+                .iter()
+                .rposition(|entry| *entry == required || entry.strip_prefix('/') == Some(required))
+                .expect("missing exact ignores were rejected above");
+            entries
+                .iter()
+                .enumerate()
+                .skip(last_exact_ignore + 1)
+                .filter_map(move |(index, entry)| {
+                    entry.strip_prefix('!').and_then(|negation| {
+                        negation_may_restore_protected_path(required, negation)
+                            .then(|| format!("line {} ({entry})", index + 1))
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+    ensure!(
+        unsafe_negations.is_empty(),
+        "existing {} has later negation rule(s) that may re-include protected secrets or backups: {}; put the exact protective entries after those rules and retry",
+        path.display(),
+        unsafe_negations.join(", ")
+    );
     Ok(())
+}
+
+fn negation_may_restore_protected_path(required: &str, negation: &str) -> bool {
+    let protected_name = required.trim_matches('/');
+    negation
+        .trim_matches('/')
+        .split('/')
+        .any(|component| glob_component_may_match(component, protected_name))
+}
+
+fn glob_component_may_match(pattern: &str, value: &str) -> bool {
+    #[derive(Clone, Copy)]
+    enum Token {
+        AnySequence,
+        AnyOne,
+        Literal(char),
+    }
+
+    let characters = pattern.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::with_capacity(characters.len());
+    let mut index = 0;
+    while index < characters.len() {
+        match characters[index] {
+            '*' => {
+                if !matches!(tokens.last(), Some(Token::AnySequence)) {
+                    tokens.push(Token::AnySequence);
+                }
+                index += 1;
+            }
+            '?' => {
+                tokens.push(Token::AnyOne);
+                index += 1;
+            }
+            '[' => {
+                // Git character classes consume one path-component character.
+                // Treat their contents conservatively as AnyOne; exact class
+                // membership is unnecessary for a fail-closed overlap check.
+                tokens.push(Token::AnyOne);
+                index = characters[index + 1..]
+                    .iter()
+                    .position(|character| *character == ']')
+                    .map_or(index + 1, |offset| index + offset + 2);
+            }
+            '\\' if index + 1 < characters.len() => {
+                tokens.push(Token::Literal(characters[index + 1]));
+                index += 2;
+            }
+            literal => {
+                tokens.push(Token::Literal(literal));
+                index += 1;
+            }
+        }
+    }
+
+    let value = value.chars().collect::<Vec<_>>();
+    let mut previous = vec![false; value.len() + 1];
+    previous[0] = true;
+    for token in tokens {
+        let mut current = vec![false; value.len() + 1];
+        if matches!(token, Token::AnySequence) {
+            current[0] = previous[0];
+        }
+        for value_index in 1..=value.len() {
+            current[value_index] = match token {
+                Token::AnySequence => previous[value_index] || current[value_index - 1],
+                Token::AnyOne => previous[value_index - 1],
+                Token::Literal(literal) => {
+                    previous[value_index - 1] && literal == value[value_index - 1]
+                }
+            };
+        }
+        previous = current;
+    }
+    previous[value.len()]
 }
 
 fn resolve_compose_file(configured: Option<&Path>) -> Result<PathBuf> {
@@ -741,20 +1614,37 @@ struct ConfigRender<'a> {
     admin_auth: AdminAuthChoice,
     comments: bool,
     delivery: bool,
+    cache: CacheChoice,
+    custom_css: bool,
+    dlcs: &'a [ResolvedDlc],
 }
 
 fn render_config(args: &BootstrapArgs, config: &ConfigRender<'_>) -> String {
-    let (redis_topology, redis_url, sentinel_urls) = match args.redis_topology {
-        RedisTopologyChoice::Standalone => (
+    let (redis_enabled, redis_topology, redis_url, sentinel_urls) = match config.cache {
+        CacheChoice::None => (
+            false,
             "standalone",
             "redis://redis-primary:6379/",
             "sentinel_urls = []",
         ),
-        RedisTopologyChoice::Managed => (
+        CacheChoice::RedisStandalone => (
+            true,
+            "standalone",
+            "redis://redis-primary:6379/",
+            "sentinel_urls = []",
+        ),
+        CacheChoice::RedisManaged => (
+            true,
             "sentinel",
             "redis://redis-primary:6379/",
             "sentinel_urls = [\"redis://redis-sentinel-1:26379/\", \"redis://redis-sentinel-2:26379/\", \"redis://redis-sentinel-3:26379/\"]",
         ),
+    };
+    let feature_enabled = |name: &str| {
+        config
+            .dlcs
+            .iter()
+            .any(|dlc| dlc.runtime_feature == name && dlc.installed.enabled)
     };
     format!(
         r#"schema_version = "{CONFIG_SCHEMA}"
@@ -792,13 +1682,14 @@ collaboration = {collaboration}
 delivery_only = {delivery}
 
 [redis]
+enabled = {redis_enabled}
 topology = "{redis_topology}"
 url = "{redis_url}"
 {sentinel_urls}
 sentinel_master = "osb-primary"
 namespace = "osb"
 content_release = "{content_release}"
-required = true
+required = {redis_enabled}
 response_ttl_seconds = 60
 connect_timeout_ms = 2000
 
@@ -817,30 +1708,34 @@ backup_retention = {backup_retention}
 
 [features]
 external_auth = {external_auth}
-rbac = {collaboration}
-comments = {comments}
+rbac = {rbac}
+comments = {comments_feature}
 seo = {seo}
-code_runner = false
-ads = false
+code_runner = {code_runner}
+ads = {ads}
 "#,
         intent = args.intent.as_str(),
         public_url = config.public_url,
         site_id = config.site_id,
-        no_index = !args.seo.enabled(),
+        no_index = !feature_enabled("seo"),
         database_profile = args.database_profile.as_str(),
         auth = config.auth.as_str(),
         admin_auth = config.admin_auth.as_str(),
         external_admin = render_external_admin(args, config.admin_auth),
         registration_open = args.registration.enabled(),
         collaboration = args.collaboration.enabled(),
-        custom_css = args.custom_css.enabled(),
+        custom_css = config.custom_css,
         agent_discovery = args.agent_discovery.enabled(),
         managed_backups = args.managed_backups.enabled() && !config.delivery,
         backup_interval = args.backup_interval_minutes,
         backup_retention = args.backup_retention,
-        external_auth =
-            config.auth.oauth_enabled() || config.admin_auth == AdminAuthChoice::External,
-        seo = args.seo.enabled(),
+        external_auth = feature_enabled("external_auth"),
+        rbac = feature_enabled("rbac"),
+        comments_feature = feature_enabled("comments"),
+        seo = feature_enabled("seo"),
+        code_runner = feature_enabled("code_runner"),
+        ads = feature_enabled("ads"),
+        redis_enabled = redis_enabled,
         content_release = config.content_release,
         comments = config.comments,
         delivery = config.delivery,
@@ -868,37 +1763,72 @@ struct EnvironmentRender<'a> {
     comments: bool,
     collaboration: bool,
     delivery: bool,
-    redis_password: &'a str,
-    cache_signing_key: &'a str,
+    cache: CacheChoice,
+    style: &'a ResolvedStyle,
+    dlcs: &'a [ResolvedDlc],
+    lock_digest: &'a str,
+    redis_password: Option<&'a str>,
+    cache_signing_key: Option<&'a str>,
     deployment_root: &'a Path,
     public_url: &'a str,
     compose_project: &'a str,
 }
 
 fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> String {
-    let features = [
-        ("seo", args.seo.enabled()),
-        ("comments", environment.comments),
-        ("rbac", environment.collaboration),
-        (
-            "external_auth",
-            environment.auth.oauth_enabled() || environment.admin_auth == AdminAuthChoice::External,
-        ),
-    ]
-    .into_iter()
-    .filter_map(|(name, enabled)| enabled.then_some(name))
-    .collect::<Vec<_>>()
-    .join(",");
+    let features = environment
+        .dlcs
+        .iter()
+        .filter(|dlc| dlc.installed.enabled)
+        .map(|dlc| dlc.runtime_feature)
+        .filter(|name| {
+            matches!(
+                *name,
+                "seo"
+                    | "home_curation"
+                    | "ai_authorship"
+                    | "social_embeds"
+                    | "release_check"
+                    | "comments"
+                    | "rbac"
+                    | "external_auth"
+                    | "code_runner"
+                    | "ads"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let features = if features.is_empty() {
         "none".to_owned()
     } else {
         features
     };
+    let dlc_ids = environment
+        .dlcs
+        .iter()
+        .filter(|dlc| dlc.installed.enabled)
+        .map(|dlc| dlc.installed.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let redis_enabled = environment.cache != CacheChoice::None;
+    let redis_topology = match environment.cache {
+        CacheChoice::None | CacheChoice::RedisStandalone => "standalone",
+        CacheChoice::RedisManaged => "sentinel",
+    };
     format!(
-        "COMPOSE_PROJECT_NAME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_REQUIRED=true\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
+        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME=osb-data-{}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
         environment.compose_project,
+        environment
+            .compose_project
+            .strip_prefix("osb-")
+            .unwrap_or(environment.compose_project),
         environment.deployment_root.join("config.toml").display(),
         environment.deployment_root.join("custom.css").display(),
+        environment.deployment_root.join(INSTALL_MANIFEST).display(),
+        environment.deployment_root.join(INSTALL_LOCK).display(),
+        environment.lock_digest,
+        environment.style.environment_value,
+        environment.cache.installation().as_str(),
+        dlc_ids,
         environment.public_url,
         args.intent.as_str(),
         environment.auth.as_str(),
@@ -907,12 +1837,15 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         args.registration.enabled(),
         environment.comments,
         environment.collaboration,
-        args.custom_css.enabled(),
+        environment.style.installation.kind == InstallationStyleKind::Custom,
         args.agent_discovery.enabled(),
         environment.delivery,
         features,
-        environment.redis_password,
-        environment.cache_signing_key,
+        redis_enabled,
+        redis_topology,
+        redis_enabled,
+        environment.redis_password.unwrap_or_default(),
+        environment.cache_signing_key.unwrap_or_default(),
         args.managed_backups.enabled() && !environment.delivery,
         environment.deployment_root.join(".osb-backups").display(),
     )
@@ -943,6 +1876,577 @@ fn write_new_with_permissions(path: &Path, bytes: &[u8], secret: bool) -> Result
     Ok(())
 }
 
+pub fn installation(args: InstallationArgs) -> Result<()> {
+    match args.action {
+        InstallationAction::Verify { intent, lock } => {
+            let (intent_contract, lock_contract) = read_installation_pair(&intent, &lock)?;
+            verify_intent_lock_pair(&intent_contract, &lock_contract)?;
+            println!(
+                "installation verified: {} · engine {} · {} DLC(s)",
+                lock_contract.lock_digest,
+                lock_contract.engine.version,
+                lock_contract.dlcs.len()
+            );
+            Ok(())
+        }
+        InstallationAction::RecordEngineUpgrade {
+            intent,
+            lock,
+            from,
+            to,
+            source,
+            artifact_sha256,
+        } => record_engine_upgrade(&intent, &lock, &from, &to, source, artifact_sha256),
+        InstallationAction::Adopt { directory } => adopt_installation(&directory),
+        InstallationAction::Dlc(args) => dlc_lifecycle::run(args),
+    }
+}
+
+fn read_installation_pair(
+    intent_path: &Path,
+    lock_path: &Path,
+) -> Result<(InstallationIntent, InstallationLock)> {
+    ensure_regular_contract_file(intent_path, INSTALL_MANIFEST)?;
+    ensure_regular_contract_file(lock_path, INSTALL_LOCK)?;
+    let intent = InstallationIntent::from_toml(&fs::read_to_string(intent_path)?)
+        .map_err(anyhow::Error::msg)?;
+    let lock =
+        InstallationLock::from_json(&fs::read_to_string(lock_path)?).map_err(anyhow::Error::msg)?;
+    Ok((intent, lock))
+}
+
+fn verify_intent_lock_pair(intent: &InstallationIntent, lock: &InstallationLock) -> Result<()> {
+    intent.validate().map_err(anyhow::Error::msg)?;
+    lock.validate().map_err(anyhow::Error::msg)?;
+    verify_bundled_official_manifest_bytes(lock)?;
+    ensure!(
+        intent.installation_id == lock.installation_id,
+        "installation id differs between intent and lock"
+    );
+    ensure!(
+        intent.selection == lock.selection,
+        "structural selection differs between intent and lock"
+    );
+    let requested = intent
+        .dlcs
+        .iter()
+        .map(|dlc| (dlc.id.as_str(), (dlc.version.as_str(), dlc.enabled)))
+        .collect::<BTreeMap<_, _>>();
+    let installed = lock
+        .dlcs
+        .iter()
+        .map(|dlc| {
+            (
+                dlc.id.as_str(),
+                (dlc.requested_version.as_str(), dlc.enabled),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    ensure!(
+        requested == installed,
+        "requested DLC set differs from exact installed records"
+    );
+    Ok(())
+}
+
+fn verify_bundled_official_manifest_bytes(lock: &InstallationLock) -> Result<()> {
+    for installed in &lock.dlcs {
+        if installed.source_kind != InstalledDlcSourceKind::Bundled {
+            continue;
+        }
+        let official = find_official_dlc(&installed.id).with_context(|| {
+            format!(
+                "bundled DLC {} is not present in this CLI's official catalog",
+                installed.id
+            )
+        })?;
+        let manifest = PluginManifest::from_toml(official.manifest)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("bundled official manifest {} is invalid", official.id))?;
+        let actual_digest = format!("{:x}", Sha256::digest(official.manifest.as_bytes()));
+        ensure!(
+            installed.source == official.source
+                && installed.manifest_sha256 == actual_digest
+                && installed.id == manifest.id
+                && installed.version == manifest.version
+                && installed.manifest_version == manifest.manifest_version
+                && installed.plugin_api == manifest.plugin_api
+                && manifest.core_compatibility.as_deref()
+                    == Some(installed.core_compatibility.as_str()),
+            "bundled DLC {} lock metadata does not match the manifest bytes compiled into this CLI",
+            installed.id
+        );
+    }
+    Ok(())
+}
+
+fn record_engine_upgrade(
+    intent_path: &Path,
+    lock_path: &Path,
+    from: &str,
+    to: &str,
+    source: String,
+    artifact_sha256: Option<String>,
+) -> Result<()> {
+    ensure!(
+        to == env!("CARGO_PKG_VERSION"),
+        "record-engine-upgrade must run from the target CLI {}; received --to {to}",
+        env!("CARGO_PKG_VERSION")
+    );
+    let (intent, mut lock) = read_installation_pair(intent_path, lock_path)?;
+    verify_intent_lock_pair(&intent, &lock)?;
+    lock.record_engine_upgrade(from, to, source, artifact_sha256)
+        .map_err(anyhow::Error::msg)?;
+    // The candidate CLI owns the engine-side compatibility tuple. Updating all
+    // four values together lets a future schema migration produce a lock the
+    // candidate server will accept after the updater swaps the release.
+    lock.engine.config_schema_version = CONFIG_SCHEMA.into();
+    lock.engine.database_schema_version = DATABASE_SCHEMA_VERSION;
+    lock.engine.plugin_api = PLUGIN_API_VERSION.into();
+    lock.refresh_digest().map_err(anyhow::Error::msg)?;
+    verify_intent_lock_pair(&intent, &lock)?;
+    let rendered = lock.to_pretty_json().map_err(anyhow::Error::msg)?;
+    atomic_replace_regular_file(lock_path, rendered.as_bytes())?;
+    println!(
+        "engine upgrade recorded: {from} -> {to} · lockDigest={}",
+        lock.lock_digest
+    );
+    Ok(())
+}
+
+fn atomic_replace_regular_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    ensure_regular_contract_file(path, "installation lock")?;
+    let metadata = fs::metadata(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("installation lock file name is not UTF-8")?;
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", Uuid::now_v7().simple()));
+    let result = (|| -> Result<()> {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(metadata.permissions().mode() & 0o777);
+        let mut file = options.open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        #[cfg(unix)]
+        fs::set_permissions(&temporary, metadata.permissions())?;
+        fs::rename(&temporary, path)?;
+        let directory = OpenOptions::new().read(true).open(parent)?;
+        directory.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+fn adopt_installation(directory: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(directory)
+        .with_context(|| format!("failed to inspect deployment {}", directory.display()))?;
+    ensure!(
+        metadata.file_type().is_dir(),
+        "adoption directory must be a real directory and cannot be a symlink"
+    );
+    let root = directory
+        .canonicalize()
+        .with_context(|| format!("failed to resolve deployment {}", directory.display()))?;
+    validate_deployment_path(&root)?;
+
+    let config_path = root.join("config.toml");
+    let env_path = root.join(".env");
+    let intent_path = root.join(INSTALL_MANIFEST);
+    let lock_path = root.join(INSTALL_LOCK);
+    ensure_regular_contract_file(&config_path, "deployment config")?;
+    ensure_regular_contract_file(&env_path, "protected deployment environment")?;
+    #[cfg(unix)]
+    ensure!(
+        fs::metadata(&env_path)?.permissions().mode() & 0o077 == 0,
+        "refusing to read an unprotected .env; remove group/world permissions first"
+    );
+    ensure!(
+        !intent_path.exists() && !lock_path.exists(),
+        "refusing to overwrite an existing installation manifest or lock"
+    );
+
+    let config_source = fs::read_to_string(&config_path)
+        .with_context(|| format!("failed to read {}", config_path.display()))?;
+    let mut config: DoctorConfig = toml::from_str(&config_source)
+        .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    let environment = read_environment_file(&env_path)?;
+    apply_environment_overrides_with(&mut config, |name| environment.get(name).cloned())?;
+    let mut checks = Vec::new();
+    check_semantics(&config, &mut checks);
+    let failures = checks
+        .iter()
+        .filter(|check| check.status == CheckStatus::Fail)
+        .map(|check| check.id)
+        .collect::<Vec<_>>();
+    ensure!(
+        failures.is_empty(),
+        "deployment cannot be adopted until these semantic checks pass: {}",
+        failures.join(", ")
+    );
+
+    let site_id = Uuid::parse_str(&config.server.site_id)
+        .context("effective server.site_id/OSB_SITE_ID must be a UUID before adoption")?;
+    let installation_id = infer_adopted_installation_id(&root, &environment)?;
+    let selection = InstallationSelection {
+        admin_auth: match config.admin.auth.as_str() {
+            "access_key" => InstallationAdminAuth::AccessKey,
+            "external" => InstallationAdminAuth::External,
+            "disabled" => InstallationAdminAuth::Disabled,
+            _ => bail!("effective administrator authentication is not adoptable"),
+        },
+        style: infer_adopted_style(&root, &config, &environment)?,
+        cache: if !config.redis.enabled {
+            InstallationCache::None
+        } else {
+            match config.redis.topology.as_str() {
+                "standalone" => InstallationCache::RedisStandalone,
+                "sentinel" => InstallationCache::RedisManaged,
+                _ => bail!("effective Redis topology is not adoptable"),
+            }
+        },
+    };
+    let dlcs = infer_adopted_dlcs(&config, &environment)?;
+    let intent = InstallationIntent {
+        schema_version: INSTALL_INTENT_SCHEMA_VERSION.into(),
+        installation_id: installation_id.to_string(),
+        site_id: site_id.to_string(),
+        created_with: env!("CARGO_PKG_VERSION").into(),
+        selection: selection.clone(),
+        dlcs: dlcs.iter().map(|dlc| dlc.requested.clone()).collect(),
+    };
+    let history = dlcs
+        .iter()
+        .enumerate()
+        .map(|(index, dlc)| DlcHistoryRecord {
+            sequence: u64::try_from(index).expect("bounded DLC count") + 1,
+            action: DlcHistoryAction::Installed,
+            dlc_id: dlc.installed.id.clone(),
+            from_version: None,
+            to_version: Some(dlc.installed.version.clone()),
+            engine_version: env!("CARGO_PKG_VERSION").into(),
+        })
+        .collect();
+    let mut lock = InstallationLock {
+        schema_version: INSTALL_LOCK_SCHEMA_VERSION.into(),
+        installation_id: installation_id.to_string(),
+        engine: LockedEngine {
+            version: env!("CARGO_PKG_VERSION").into(),
+            config_schema_version: CONFIG_SCHEMA.into(),
+            database_schema_version: DATABASE_SCHEMA_VERSION,
+            plugin_api: PLUGIN_API_VERSION.into(),
+            source: "adopted-v2".into(),
+            artifact_sha256: None,
+        },
+        selection,
+        dlcs: dlcs.into_iter().map(|dlc| dlc.installed).collect(),
+        retained_dlcs: Vec::new(),
+        history,
+        lock_digest: String::new(),
+    };
+    lock.refresh_digest().map_err(anyhow::Error::msg)?;
+    verify_intent_lock_pair(&intent, &lock)?;
+    let rendered_intent = intent.to_toml_pretty().map_err(anyhow::Error::msg)?;
+    let rendered_lock = lock.to_pretty_json().map_err(anyhow::Error::msg)?;
+    write_contract_pair_new(
+        &intent_path,
+        rendered_intent.as_bytes(),
+        &lock_path,
+        rendered_lock.as_bytes(),
+    )?;
+    println!(
+        "deployment adopted: {} · lockDigest={} · {} DLC(s)",
+        root.display(),
+        lock.lock_digest,
+        lock.dlcs.len()
+    );
+    println!(
+        "existing config, .env, and CSS were left byte-for-byte unchanged; set OSB_INSTALL_LOCK_DIGEST={} when you are ready to enforce the tracked contract at startup",
+        lock.lock_digest
+    );
+    Ok(())
+}
+
+fn infer_adopted_installation_id(
+    root: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Result<Uuid> {
+    let handoff_path = root.join("osb.intent.json");
+    let handoff_id = if handoff_path.exists() {
+        ensure_regular_contract_file(&handoff_path, "legacy intent handoff")?;
+        let metadata = fs::metadata(&handoff_path)?;
+        ensure!(
+            metadata.len() <= 256 * 1024,
+            "legacy intent handoff exceeds 256 KiB"
+        );
+        let handoff: serde_json::Value = serde_json::from_slice(&fs::read(&handoff_path)?)
+            .context("legacy osb.intent.json is invalid JSON")?;
+        handoff
+            .get("deploymentId")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| Uuid::parse_str(value).context("legacy deploymentId is not a UUID"))
+            .transpose()?
+    } else {
+        None
+    };
+    let compose_id = environment
+        .get("COMPOSE_PROJECT_NAME")
+        .and_then(|value| value.strip_prefix("osb-"))
+        .map(|value| Uuid::parse_str(value).context("COMPOSE_PROJECT_NAME does not contain a UUID"))
+        .transpose()?;
+    if let (Some(handoff), Some(compose)) = (handoff_id, compose_id) {
+        ensure!(
+            handoff == compose,
+            "legacy deploymentId and COMPOSE_PROJECT_NAME disagree"
+        );
+    }
+    Ok(handoff_id.or(compose_id).unwrap_or_else(Uuid::now_v7))
+}
+
+fn infer_adopted_style(
+    root: &Path,
+    config: &DoctorConfig,
+    environment: &BTreeMap<String, String>,
+) -> Result<InstallationStyle> {
+    let declared = environment.get("OSB_STYLE").map(String::as_str);
+    if config.appearance.custom_css {
+        ensure!(
+            !declared.is_some_and(|value| value == "none" || value.starts_with("builtin:")),
+            "OSB_STYLE contradicts the effective custom CSS switch"
+        );
+        let css_path = deployment_path(root, &config.appearance.custom_css_file);
+        ensure_regular_contract_file(&css_path, "adopted custom CSS")?;
+        let canonical_css = css_path
+            .canonicalize()
+            .with_context(|| format!("failed to resolve CSS {}", css_path.display()))?;
+        ensure!(
+            canonical_css.starts_with(root),
+            "adoption only accepts custom CSS stored inside the deployment directory"
+        );
+        let relative = canonical_css
+            .strip_prefix(root)
+            .expect("CSS containment checked")
+            .to_string_lossy()
+            .trim_start_matches('/')
+            .to_owned();
+        let bytes = fs::read(&canonical_css)?;
+        ensure!(bytes.len() <= 256 * 1024, "custom CSS exceeds 256 KiB");
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        if let Some(declared) = declared {
+            ensure!(
+                declared == format!("custom:{digest}"),
+                "OSB_STYLE custom digest differs from installed CSS"
+            );
+        }
+        let style = InstallationStyle {
+            kind: InstallationStyleKind::Custom,
+            id: None,
+            file: Some(relative),
+            sha256: Some(digest),
+        };
+        style.validate().map_err(anyhow::Error::msg)?;
+        return Ok(style);
+    }
+
+    match declared {
+        None | Some("none") => Ok(InstallationStyle {
+            kind: InstallationStyleKind::None,
+            id: None,
+            file: None,
+            sha256: None,
+        }),
+        Some(value) => {
+            let id = value
+                .strip_prefix("builtin:")
+                .context("OSB_STYLE is ambiguous; expected none or builtin:STYLE")?;
+            ensure!(
+                matches!(id, "paper" | "ink" | "forest" | "terminal"),
+                "OSB_STYLE names a built-in style this engine does not supply"
+            );
+            Ok(InstallationStyle {
+                kind: InstallationStyleKind::Builtin,
+                id: Some(id.into()),
+                file: None,
+                sha256: None,
+            })
+        }
+    }
+}
+
+fn infer_adopted_dlcs(
+    config: &DoctorConfig,
+    environment: &BTreeMap<String, String>,
+) -> Result<Vec<ResolvedDlc>> {
+    let exact_ids = environment.get("OSB_DLC_IDS").map(|raw| {
+        raw.split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    });
+    let runtime = environment.get("OSB_FEATURES").map(|raw| {
+        if raw.eq_ignore_ascii_case("none") {
+            Vec::new()
+        } else {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        }
+    });
+    let mut required = Vec::new();
+    if config.community.comments {
+        required.push("comments");
+    }
+    if config.community.collaboration {
+        required.push("rbac");
+    }
+    if matches!(config.community.auth.as_str(), "oauth" | "local_and_oauth")
+        || config.admin.auth == "external"
+    {
+        required.push("external-auth");
+    }
+
+    let names = if let Some(ids) = exact_ids {
+        ensure_unique_values(&ids, "OSB_DLC_IDS")?;
+        if let Some(runtime) = &runtime {
+            ensure_unique_values(runtime, "OSB_FEATURES")?;
+            let runtime_ids = runtime
+                .iter()
+                .map(|name| {
+                    find_official_dlc(name)
+                        .map(|dlc| dlc.id)
+                        .with_context(|| format!("unknown OSB_FEATURES module {name:?}"))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let exact_set = ids
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>();
+            let runtime_set = runtime_ids
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            ensure!(
+                exact_set == runtime_set,
+                "OSB_DLC_IDS and OSB_FEATURES describe different official modules"
+            );
+        }
+        for required in required {
+            let required_id = find_official_dlc(required).expect("known implied DLC").id;
+            ensure!(
+                ids.iter().any(|id| id == required_id),
+                "effective community/admin configuration requires DLC {required_id}"
+            );
+        }
+        ids
+    } else {
+        let mut names = runtime.unwrap_or_else(|| config.features.enabled_aliases());
+        names.extend(required.into_iter().map(str::to_owned));
+        names.sort();
+        names.dedup();
+        names
+    };
+
+    let mut selected = BTreeMap::new();
+    for name in names {
+        let official = find_official_dlc(&name)
+            .with_context(|| format!("unknown official module {name:?} cannot be adopted"))?;
+        let manifest = PluginManifest::from_toml(official.manifest).map_err(anyhow::Error::msg)?;
+        selected.insert(official.id.into(), format!("={}", manifest.version));
+    }
+    resolve_selected_dlcs(selected)
+}
+
+fn ensure_unique_values(values: &[String], name: &str) -> Result<()> {
+    let unique = values
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    ensure!(
+        unique.len() == values.len(),
+        "{name} contains a duplicate value"
+    );
+    Ok(())
+}
+
+fn read_environment_file(path: &Path) -> Result<BTreeMap<String, String>> {
+    let metadata = fs::metadata(path)?;
+    ensure!(metadata.len() <= 1024 * 1024, ".env exceeds 1 MiB");
+    let mut values = BTreeMap::new();
+    for (line_number, line) in fs::read_to_string(path)?.lines().enumerate() {
+        ensure!(
+            line.len() <= 16 * 1024,
+            ".env line {} is too long",
+            line_number + 1
+        );
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (name, raw) = line
+            .split_once('=')
+            .with_context(|| format!("invalid .env line {}", line_number + 1))?;
+        ensure!(
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'),
+            "invalid .env name on line {}",
+            line_number + 1
+        );
+        ensure!(
+            !values.contains_key(name),
+            ".env contains duplicate value {name}"
+        );
+        values.insert(name.into(), unquote_env(raw)?.into());
+    }
+    Ok(values)
+}
+
+fn write_contract_pair_new(
+    intent_path: &Path,
+    intent_bytes: &[u8],
+    lock_path: &Path,
+    lock_bytes: &[u8],
+) -> Result<()> {
+    ensure!(
+        intent_path.parent() == lock_path.parent(),
+        "installation contract files must share a directory"
+    );
+    let parent = intent_path.parent().unwrap_or_else(|| Path::new("."));
+    let nonce = Uuid::now_v7().simple().to_string();
+    let staged_intent = parent.join(format!(".{INSTALL_MANIFEST}.{nonce}.tmp"));
+    let staged_lock = parent.join(format!(".{INSTALL_LOCK}.{nonce}.tmp"));
+    let result = (|| -> Result<()> {
+        write_new(&staged_intent, intent_bytes)?;
+        write_new(&staged_lock, lock_bytes)?;
+        fs::hard_link(&staged_intent, intent_path)
+            .with_context(|| format!("refusing to overwrite {}", intent_path.display()))?;
+        if let Err(error) = fs::hard_link(&staged_lock, lock_path) {
+            let _ = fs::remove_file(intent_path);
+            return Err(error)
+                .with_context(|| format!("refusing to overwrite {}", lock_path.display()));
+        }
+        fs::remove_file(&staged_intent)?;
+        fs::remove_file(&staged_lock)?;
+        let directory = OpenOptions::new().read(true).open(parent)?;
+        directory.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&staged_intent);
+        let _ = fs::remove_file(&staged_lock);
+    }
+    result
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DoctorConfig {
@@ -957,6 +2461,7 @@ struct DoctorConfig {
     appearance: DoctorAppearance,
     discovery: DoctorDiscovery,
     operations: DoctorOperations,
+    features: DoctorFeatures,
     #[serde(skip)]
     cache_signing_key_present: bool,
     #[serde(skip)]
@@ -973,6 +2478,7 @@ struct DoctorSemantic {
 #[serde(default)]
 struct DoctorServer {
     public_url: String,
+    site_id: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1025,13 +2531,26 @@ struct DoctorDeployment {
     delivery_only: bool,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default)]
 struct DoctorRedis {
+    enabled: bool,
     topology: String,
     url: String,
     sentinel_urls: Vec<String>,
     required: bool,
+}
+
+impl Default for DoctorRedis {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            topology: String::new(),
+            url: String::new(),
+            sentinel_urls: Vec::new(),
+            required: false,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1054,6 +2573,42 @@ struct DoctorOperations {
     backup_directory: String,
     backup_interval_minutes: u64,
     backup_retention: usize,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct DoctorFeatures {
+    external_auth: bool,
+    rbac: bool,
+    comments: bool,
+    seo: bool,
+    code_runner: bool,
+    ads: bool,
+    ai_authorship: bool,
+    home_curation: bool,
+    release_check: bool,
+    social_embeds: bool,
+}
+
+impl DoctorFeatures {
+    fn enabled_aliases(&self) -> Vec<String> {
+        [
+            ("external-auth", self.external_auth),
+            ("rbac", self.rbac),
+            ("comments", self.comments),
+            ("seo", self.seo),
+            ("code-runner", self.code_runner),
+            ("ads", self.ads),
+            ("ai-authorship", self.ai_authorship),
+            ("home-curation", self.home_curation),
+            ("release-check", self.release_check),
+            ("social-embeds", self.social_embeds),
+        ]
+        .into_iter()
+        .filter(|(_, enabled)| *enabled)
+        .map(|(name, _)| name.to_owned())
+        .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1082,7 +2637,15 @@ pub fn doctor(args: DoctorArgs) -> Result<()> {
     let mut checks = Vec::new();
     check_semantics(&parsed, &mut checks);
     check_paths(&args.config, &parsed, &mut checks);
-    if args.offline {
+    check_installation_contract(&args, &parsed, &mut checks);
+    if !parsed.redis.enabled {
+        checks.push(DoctorCheck {
+            id: "redis.connectivity",
+            status: CheckStatus::Pass,
+            summary: "Redis is deliberately disabled by the installation contract".into(),
+            remediation: None,
+        });
+    } else if args.offline {
         checks.push(DoctorCheck {
             id: "redis.connectivity",
             status: CheckStatus::Warn,
@@ -1145,6 +2708,9 @@ fn apply_environment_overrides_with(
     }
     if let Some(item) = value("OSB_PUBLIC_URL") {
         config.server.public_url = item;
+    }
+    if let Some(item) = value("OSB_SITE_ID") {
+        config.server.site_id = item;
     }
     if let Some(item) = value("OSB_DATABASE") {
         config.storage.database = item;
@@ -1237,6 +2803,9 @@ fn apply_environment_overrides_with(
     }
     if let Some(item) = value("OSB_DELIVERY_ONLY") {
         config.deployment.delivery_only = doctor_bool("OSB_DELIVERY_ONLY", &item)?;
+    }
+    if let Some(item) = value("OSB_REDIS_ENABLED") {
+        config.redis.enabled = doctor_bool("OSB_REDIS_ENABLED", &item)?;
     }
     if let Some(item) = value("OSB_REDIS_TOPOLOGY") {
         config.redis.topology = match item.to_ascii_lowercase().as_str() {
@@ -1388,9 +2957,13 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
             "set both semantic.intent=delivery and deployment.delivery_only=true, or neither".into()
         }),
     });
-    let redis_semantic = config.redis.required
-        && matches!(config.redis.topology.as_str(), "standalone" | "sentinel")
-        && !config.redis.url.is_empty();
+    let redis_semantic = if config.redis.enabled {
+        config.redis.required
+            && matches!(config.redis.topology.as_str(), "standalone" | "sentinel")
+            && !config.redis.url.is_empty()
+    } else {
+        !config.redis.required
+    };
     checks.push(DoctorCheck {
         id: "redis.required_hot_path",
         status: if redis_semantic {
@@ -1398,31 +2971,37 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
         } else {
             CheckStatus::Fail
         },
-        summary: if redis_semantic {
+        summary: if redis_semantic && config.redis.enabled {
             format!("Redis is required with {} topology", config.redis.topology)
+        } else if redis_semantic {
+            "Redis is deliberately disabled; SQLite/blobs serve the origin".into()
         } else {
-            "Redis must be explicit and required".into()
+            "Redis enablement, required flag, topology, or URL contradict each other".into()
         },
         remediation: (!redis_semantic)
-            .then(|| "set redis.required=true and configure its topology/URL".into()),
+            .then(|| "set redis.enabled=false with required=false, or enable and configure a required topology/URL".into()),
     });
     checks.push(DoctorCheck {
         id: "redis.cache_integrity",
-        status: if config.cache_signing_key_present {
+        status: if !config.redis.enabled || config.cache_signing_key_present {
             CheckStatus::Pass
         } else {
             CheckStatus::Warn
         },
-        summary: if config.cache_signing_key_present {
+        summary: if !config.redis.enabled {
+            "cache signing is not applicable while Redis is disabled".into()
+        } else if config.cache_signing_key_present {
             "application-only cache response signing is deployment-stable".into()
         } else {
             "cache signing will use a process-local key".into()
         },
-        remediation: (!config.cache_signing_key_present).then(|| {
+        remediation: (config.redis.enabled && !config.cache_signing_key_present).then(|| {
             "set a 64-hex OSB_CACHE_SIGNING_KEY; osb bootstrap generates it automatically".into()
         }),
     });
-    let sentinel_ok = config.redis.topology != "sentinel" || config.redis.sentinel_urls.len() >= 3;
+    let sentinel_ok = !config.redis.enabled
+        || config.redis.topology != "sentinel"
+        || config.redis.sentinel_urls.len() >= 3;
     checks.push(DoctorCheck {
         id: "redis.failure_domains",
         status: if sentinel_ok {
@@ -1430,7 +3009,9 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
         } else {
             CheckStatus::Warn
         },
-        summary: if config.redis.topology == "sentinel" {
+        summary: if !config.redis.enabled {
+            "Redis failure domains are not applicable".into()
+        } else if config.redis.topology == "sentinel" {
             format!(
                 "{} Sentinel endpoints declared",
                 config.redis.sentinel_urls.len()
@@ -1546,6 +3127,346 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
             summary: config.server.public_url.clone(),
             remediation: None,
         });
+    }
+}
+
+fn check_installation_contract(
+    args: &DoctorArgs,
+    config: &DoctorConfig,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    let root = args.config.parent().unwrap_or_else(|| Path::new("."));
+    let intent_path = args
+        .install_manifest
+        .clone()
+        .unwrap_or_else(|| root.join(INSTALL_MANIFEST));
+    let lock_path = args
+        .install_lock
+        .clone()
+        .unwrap_or_else(|| root.join(INSTALL_LOCK));
+    if !intent_path.exists() && !lock_path.exists() {
+        checks.push(DoctorCheck {
+            id: "installation.contract",
+            status: CheckStatus::Warn,
+            summary: "legacy deployment has no installation manifest or lock".into(),
+            remediation: Some(
+                "run `osb installation adopt --directory <deployment>` before upgrading".into(),
+            ),
+        });
+        return;
+    }
+    match verify_installation_contract(args, config, &intent_path, &lock_path) {
+        Ok(summary) => checks.push(DoctorCheck {
+            id: "installation.contract",
+            status: CheckStatus::Pass,
+            summary,
+            remediation: None,
+        }),
+        Err(error) => checks.push(DoctorCheck {
+            id: "installation.contract",
+            status: CheckStatus::Fail,
+            summary: error.to_string(),
+            remediation: Some(
+                "restore matching osb.install.toml, osb.lock.json, .env, CSS, and config; never hand-edit lockDigest".into(),
+            ),
+        }),
+    }
+}
+
+fn verify_installation_contract(
+    args: &DoctorArgs,
+    config: &DoctorConfig,
+    intent_path: &Path,
+    lock_path: &Path,
+) -> Result<String> {
+    ensure_regular_contract_file(intent_path, INSTALL_MANIFEST)?;
+    ensure_regular_contract_file(lock_path, INSTALL_LOCK)?;
+    let intent = InstallationIntent::from_toml(&fs::read_to_string(intent_path)?)
+        .map_err(anyhow::Error::msg)?;
+    let lock =
+        InstallationLock::from_json(&fs::read_to_string(lock_path)?).map_err(anyhow::Error::msg)?;
+    verify_intent_lock_pair(&intent, &lock)?;
+    ensure!(
+        intent.site_id == config.server.site_id,
+        "site id differs between installation intent and effective config"
+    );
+    ensure!(
+        lock.engine.version == env!("CARGO_PKG_VERSION"),
+        "lock engine version {} differs from running CLI {}",
+        lock.engine.version,
+        env!("CARGO_PKG_VERSION")
+    );
+    ensure!(
+        lock.engine.config_schema_version == CONFIG_SCHEMA,
+        "lock config schema differs from this CLI"
+    );
+    let requested = intent
+        .dlcs
+        .iter()
+        .map(|dlc| (dlc.id.as_str(), (dlc.version.as_str(), dlc.enabled)))
+        .collect::<BTreeMap<_, _>>();
+    let installed = lock
+        .dlcs
+        .iter()
+        .map(|dlc| {
+            (
+                dlc.id.as_str(),
+                (dlc.requested_version.as_str(), dlc.enabled),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    ensure!(
+        requested == installed,
+        "requested DLC set differs from the exact installed lock"
+    );
+
+    let expected_admin = match lock.selection.admin_auth {
+        InstallationAdminAuth::AccessKey => "access_key",
+        InstallationAdminAuth::External => "external",
+        InstallationAdminAuth::Disabled => "disabled",
+    };
+    ensure!(
+        config.admin.auth == expected_admin,
+        "effective administrator auth differs from installation lock"
+    );
+    let effective_cache = if !config.redis.enabled {
+        InstallationCache::None
+    } else if config.redis.topology == "standalone" {
+        InstallationCache::RedisStandalone
+    } else if config.redis.topology == "sentinel" {
+        InstallationCache::RedisManaged
+    } else {
+        bail!("effective Redis topology is unknown")
+    };
+    ensure!(
+        effective_cache == lock.selection.cache,
+        "effective cache module differs from installation lock"
+    );
+    let custom_selected = lock.selection.style.kind == InstallationStyleKind::Custom;
+    ensure!(
+        config.appearance.custom_css == custom_selected,
+        "effective custom CSS flag differs from installation lock"
+    );
+    if custom_selected {
+        let file = lock
+            .selection
+            .style
+            .file
+            .as_deref()
+            .context("custom style lock has no file")?;
+        let expected_digest = lock
+            .selection
+            .style
+            .sha256
+            .as_deref()
+            .context("custom style lock has no digest")?;
+        let installed_file = root_for_contract(intent_path).join(file);
+        ensure_regular_contract_file(&installed_file, "installed CSS")?;
+        let actual = format!("{:x}", Sha256::digest(fs::read(installed_file)?));
+        ensure!(
+            actual == expected_digest,
+            "installed CSS digest differs from lock"
+        );
+    }
+
+    let structural = structural_environment(args, intent_path)?;
+    let require_structural_environment = lock.engine.source != "adopted-v2";
+    let required = [
+        "OSB_ADMIN_AUTH",
+        "OSB_STYLE",
+        "OSB_CACHE",
+        "OSB_DLC_IDS",
+        "OSB_INSTALL_LOCK_DIGEST",
+        "OSB_REDIS_ENABLED",
+        "OSB_REDIS_TOPOLOGY",
+    ];
+    if require_structural_environment {
+        for name in required {
+            ensure!(
+                structural.contains_key(name),
+                "generated environment does not remember structural value {name}"
+            );
+        }
+    }
+    verify_structural_value(
+        &structural,
+        "OSB_ADMIN_AUTH",
+        expected_admin,
+        require_structural_environment,
+    )?;
+    let expected_style = style_environment_value(&lock.selection.style);
+    verify_structural_value(
+        &structural,
+        "OSB_STYLE",
+        &expected_style,
+        require_structural_environment,
+    )?;
+    verify_structural_value(
+        &structural,
+        "OSB_CACHE",
+        lock.selection.cache.as_str(),
+        require_structural_environment,
+    )?;
+    let dlc_ids = lock
+        .dlcs
+        .iter()
+        .filter(|dlc| dlc.enabled)
+        .map(|dlc| dlc.id.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    verify_structural_value(
+        &structural,
+        "OSB_DLC_IDS",
+        &dlc_ids,
+        require_structural_environment,
+    )?;
+    verify_structural_value(
+        &structural,
+        "OSB_INSTALL_LOCK_DIGEST",
+        &lock.lock_digest,
+        require_structural_environment,
+    )?;
+    let redis_enabled = if lock.selection.cache.redis_enabled() {
+        "true"
+    } else {
+        "false"
+    };
+    let redis_topology = match lock.selection.cache {
+        InstallationCache::None | InstallationCache::RedisStandalone => "standalone",
+        InstallationCache::RedisManaged => "sentinel",
+    };
+    verify_structural_value(
+        &structural,
+        "OSB_REDIS_ENABLED",
+        redis_enabled,
+        require_structural_environment,
+    )?;
+    verify_structural_value(
+        &structural,
+        "OSB_REDIS_TOPOLOGY",
+        redis_topology,
+        require_structural_environment,
+    )?;
+    Ok(format!(
+        "lock {} · engine {} · {} DLC(s)",
+        &lock.lock_digest[..12],
+        lock.engine.version,
+        lock.dlcs.len()
+    ))
+}
+
+fn verify_structural_value(
+    values: &BTreeMap<String, String>,
+    name: &str,
+    expected: &str,
+    required: bool,
+) -> Result<()> {
+    match values.get(name) {
+        Some(actual) => ensure!(actual == expected, "{name} differs from installation lock"),
+        None if required => {
+            bail!("generated environment does not remember structural value {name}")
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+fn ensure_regular_contract_file(path: &Path, label: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("missing or unreadable {label}: {}", path.display()))?;
+    ensure!(
+        metadata.file_type().is_file(),
+        "{label} must be a regular file and cannot be a symlink"
+    );
+    Ok(())
+}
+
+fn root_for_contract(intent_path: &Path) -> &Path {
+    intent_path.parent().unwrap_or_else(|| Path::new("."))
+}
+
+fn structural_environment(
+    args: &DoctorArgs,
+    intent_path: &Path,
+) -> Result<BTreeMap<String, String>> {
+    let mut values = BTreeMap::new();
+    let default_env = root_for_contract(intent_path).join(".env");
+    let env_file = args
+        .env_file
+        .as_deref()
+        .or_else(|| default_env.exists().then_some(default_env.as_path()));
+    if let Some(path) = env_file {
+        ensure_regular_contract_file(path, "deployment environment")?;
+        for (line_number, line) in fs::read_to_string(path)?.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let (name, raw) = line.split_once('=').with_context(|| {
+                format!("invalid generated environment line {}", line_number + 1)
+            })?;
+            if is_structural_environment_name(name) {
+                ensure!(
+                    !values.contains_key(name),
+                    "duplicate structural environment value {name}"
+                );
+                values.insert(name.into(), unquote_env(raw)?.into());
+            }
+        }
+    }
+    for name in [
+        "OSB_ADMIN_AUTH",
+        "OSB_STYLE",
+        "OSB_CACHE",
+        "OSB_DLC_IDS",
+        "OSB_INSTALL_LOCK_DIGEST",
+        "OSB_REDIS_ENABLED",
+        "OSB_REDIS_TOPOLOGY",
+    ] {
+        if let Ok(value) = std::env::var(name)
+            && !value.trim().is_empty()
+        {
+            values.insert(name.into(), value);
+        }
+    }
+    Ok(values)
+}
+
+fn is_structural_environment_name(name: &str) -> bool {
+    matches!(
+        name,
+        "OSB_ADMIN_AUTH"
+            | "OSB_STYLE"
+            | "OSB_CACHE"
+            | "OSB_DLC_IDS"
+            | "OSB_INSTALL_LOCK_DIGEST"
+            | "OSB_REDIS_ENABLED"
+            | "OSB_REDIS_TOPOLOGY"
+    )
+}
+
+fn unquote_env(value: &str) -> Result<&str> {
+    if value.starts_with('\'') || value.starts_with('"') {
+        let quote = value.as_bytes()[0];
+        ensure!(
+            value.len() >= 2 && value.as_bytes()[value.len() - 1] == quote,
+            "generated environment contains an unterminated quote"
+        );
+        Ok(&value[1..value.len() - 1])
+    } else {
+        Ok(value)
+    }
+}
+
+fn style_environment_value(style: &InstallationStyle) -> String {
+    match style.kind {
+        InstallationStyleKind::None => "none".into(),
+        InstallationStyleKind::Builtin => {
+            format!("builtin:{}", style.id.as_deref().unwrap_or_default())
+        }
+        InstallationStyleKind::Custom => {
+            format!("custom:{}", style.sha256.as_deref().unwrap_or_default())
+        }
     }
 }
 
@@ -1749,6 +3670,7 @@ mod tests {
     fn personal(directory: PathBuf) -> BootstrapArgs {
         BootstrapArgs {
             directory,
+            non_interactive: true,
             compose_file: Some(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../compose.yaml"),
             ),
@@ -1765,10 +3687,14 @@ mod tests {
             registration: Toggle::Disabled,
             comments: None,
             collaboration: Toggle::Disabled,
-            custom_css: Toggle::Enabled,
+            custom_css: Some(Toggle::Enabled),
+            style: None,
+            css_file: None,
             seo: Toggle::Enabled,
             agent_discovery: Toggle::Enabled,
-            redis_topology: RedisTopologyChoice::Managed,
+            redis_topology: Some(RedisTopologyChoice::Managed),
+            cache: None,
+            dlcs: Vec::new(),
             database_profile: DatabaseProfileChoice::Durable,
             managed_backups: Toggle::Enabled,
             backup_interval_minutes: 15,
@@ -1851,6 +3777,449 @@ mod tests {
                 .unwrap()
                 .contains("--env-file")
         );
+        let intent = InstallationIntent::from_toml(
+            &fs::read_to_string(root.path().join(INSTALL_MANIFEST)).unwrap(),
+        )
+        .unwrap();
+        let lock = InstallationLock::from_json(
+            &fs::read_to_string(root.path().join(INSTALL_LOCK)).unwrap(),
+        )
+        .unwrap();
+        verify_intent_lock_pair(&intent, &lock).unwrap();
+        assert_eq!(lock.engine.database_schema_version, DATABASE_SCHEMA_VERSION);
+        assert_eq!(lock.dlcs.len(), RECOMMENDED_PERSONAL_DLCS.len());
+        assert!(RECOMMENDED_PERSONAL_DLCS.iter().all(|alias| {
+            let id = find_official_dlc(alias).unwrap().id;
+            lock.dlcs.iter().any(|dlc| dlc.id == id && dlc.enabled)
+        }));
+        assert!(environment.contains(&format!("OSB_INSTALL_LOCK_DIGEST={}", lock.lock_digest)));
+        assert!(environment.contains("OSB_ALLOW_UNTRACKED_INSTALLATION=false\n"));
+        assert!(environment.contains(&format!(
+            "OSB_DATA_VOLUME=osb-data-{}",
+            lock.installation_id.replace('-', "")
+        )));
+    }
+
+    #[test]
+    fn bootstrap_supports_a_zero_redis_builtin_style_profile() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.admin_auth = Some(AdminAuthChoice::Disabled);
+        args.redis_topology = None;
+        args.cache = Some(CacheChoice::None);
+        args.custom_css = None;
+        args.style = Some("builtin:forest".into());
+        args.seo = Toggle::Disabled;
+        args.dlcs = vec!["none".into()];
+        bootstrap(args).unwrap();
+
+        let config = fs::read_to_string(root.path().join("config.toml")).unwrap();
+        assert!(config.contains("[redis]\nenabled = false"));
+        assert!(config.contains("required = false"));
+        assert!(config.contains("custom_css = false"));
+        let environment = fs::read_to_string(root.path().join(".env")).unwrap();
+        assert!(environment.contains("OSB_STYLE=builtin:forest\n"));
+        assert!(environment.contains("OSB_CACHE=none\n"));
+        assert!(environment.contains("OSB_DLC_IDS=\n"));
+        assert!(environment.contains("OSB_REDIS_ENABLED=false\n"));
+        assert!(environment.contains("OSB_REDIS_PASSWORD=\n"));
+        assert!(environment.contains("OSB_CACHE_SIGNING_KEY=\n"));
+        let handoff: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("osb.intent.json")).unwrap())
+                .unwrap();
+        assert!(
+            !handoff["nextCommands"][0]
+                .as_str()
+                .unwrap()
+                .contains("--profile redis-")
+        );
+        let lock = InstallationLock::from_json(
+            &fs::read_to_string(root.path().join(INSTALL_LOCK)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lock.selection.cache, InstallationCache::None);
+        assert_eq!(lock.selection.style.kind, InstallationStyleKind::Builtin);
+        assert_eq!(lock.selection.style.id.as_deref(), Some("forest"));
+        assert!(lock.dlcs.is_empty());
+    }
+
+    #[test]
+    fn installation_verify_rejects_a_rehashed_forged_bundled_manifest_digest() {
+        let intent =
+            InstallationIntent::from_toml(include_str!("../../../osb.install.example.toml"))
+                .unwrap();
+        let mut lock =
+            InstallationLock::from_json(include_str!("../../../osb.lock.example.json")).unwrap();
+        lock.dlcs[0].manifest_sha256 = "f".repeat(64);
+        lock.refresh_digest().unwrap();
+        lock.validate().unwrap();
+
+        let error = verify_intent_lock_pair(&intent, &lock).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("manifest bytes compiled into this CLI")
+        );
+    }
+
+    #[test]
+    fn explicit_dlc_none_disables_all_recommended_defaults() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.dlcs = vec!["none".into()];
+        bootstrap(args).unwrap();
+        let lock = InstallationLock::from_json(
+            &fs::read_to_string(root.path().join(INSTALL_LOCK)).unwrap(),
+        )
+        .unwrap();
+        assert!(lock.dlcs.is_empty());
+        let environment = fs::read_to_string(root.path().join(".env")).unwrap();
+        assert!(environment.contains("OSB_DLC_IDS=\n"));
+        assert!(environment.contains("OSB_FEATURES=none\n"));
+        let config = fs::read_to_string(root.path().join("config.toml")).unwrap();
+        assert!(config.contains("no_index = true"));
+        assert!(config.contains("seo = false"));
+        let handoff: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("osb.intent.json")).unwrap())
+                .unwrap();
+        assert!(handoff["features"]["seo"].is_null());
+        assert!(handoff["installationLockDigest"].is_null());
+        assert!(handoff["installedDlcs"].is_null());
+    }
+
+    #[test]
+    fn seo_disabled_excludes_the_recommended_seo_dlc_everywhere() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.seo = Toggle::Disabled;
+        bootstrap(args).unwrap();
+        let lock = InstallationLock::from_json(
+            &fs::read_to_string(root.path().join(INSTALL_LOCK)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lock.dlcs.len(), RECOMMENDED_PERSONAL_DLCS.len() - 1);
+        assert!(
+            lock.dlcs
+                .iter()
+                .all(|dlc| dlc.id != find_official_dlc("seo").unwrap().id)
+        );
+        let config = fs::read_to_string(root.path().join("config.toml")).unwrap();
+        assert!(config.contains("no_index = true"));
+        assert!(config.contains("seo = false"));
+        let handoff: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("osb.intent.json")).unwrap())
+                .unwrap();
+        assert!(handoff["features"]["seo"].is_null());
+    }
+
+    #[test]
+    fn explicit_dlc_none_rejects_required_runtime_modules() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.dlcs = vec!["none".into()];
+        args.comments = Some(Toggle::Enabled);
+        let error = bootstrap(args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("conflicts with enabled comments")
+        );
+        assert!(!root.path().join(INSTALL_LOCK).exists());
+    }
+
+    #[test]
+    fn bootstrap_rejects_oauth_only_before_creating_deployment_files() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.auth = Some(AuthChoice::Oauth);
+
+        let error = bootstrap(args).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("--auth oauth is not operational")
+        );
+        assert!(error.to_string().contains("local-and-oauth"));
+        for name in [
+            ".gitignore",
+            "config.toml",
+            ".env",
+            "admin-access-key.txt",
+            ".osb-backups",
+            INSTALL_MANIFEST,
+            INSTALL_LOCK,
+        ] {
+            assert!(!root.path().join(name).exists(), "unexpected {name}");
+        }
+    }
+
+    #[test]
+    fn bootstrap_pins_custom_css_and_repeated_official_dlcs() {
+        let root = tempdir().unwrap();
+        let css = root.path().join("operator.css");
+        fs::write(&css, b":root { --accent: #123456; }\n").unwrap();
+        let deployment = root.path().join("deployment");
+        let mut args = personal(deployment.clone());
+        args.custom_css = None;
+        args.css_file = Some(css.clone());
+        args.seo = Toggle::Disabled;
+        args.dlcs = vec![
+            "ai-authorship@>=0.1.0, <0.2.0".into(),
+            "home-curation".into(),
+            "release-check".into(),
+            "social-embeds".into(),
+        ];
+        bootstrap(args).unwrap();
+        assert_eq!(
+            fs::read(deployment.join("custom.css")).unwrap(),
+            fs::read(&css).unwrap()
+        );
+        let lock = InstallationLock::from_json(
+            &fs::read_to_string(deployment.join(INSTALL_LOCK)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lock.dlcs.len(), 4);
+        assert!(lock.dlcs.windows(2).all(|pair| pair[0].id < pair[1].id));
+        assert_eq!(
+            lock.dlcs
+                .iter()
+                .find(|dlc| dlc.id.ends_with("ai-authorship"))
+                .unwrap()
+                .requested_version,
+            ">=0.1.0, <0.2.0"
+        );
+        assert_eq!(
+            lock.selection.style.sha256.as_deref(),
+            Some(format!("{:x}", Sha256::digest(fs::read(css).unwrap())).as_str())
+        );
+    }
+
+    #[test]
+    fn interactive_bootstrap_prompts_only_for_unspecified_structural_choices() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.non_interactive = false;
+        args.admin_auth = None;
+        args.custom_css = None;
+        args.style = None;
+        args.css_file = None;
+        args.redis_topology = None;
+        args.cache = None;
+        args.dlcs.clear();
+        let input = b"disabled\nbuiltin:terminal\nnone\nai-authorship,social-embeds\n";
+        let mut reader = io::Cursor::new(input);
+        let mut output = Vec::new();
+        resolve_prompted_args_with(&mut args, true, &mut reader, &mut output).unwrap();
+        assert_eq!(args.admin_auth, Some(AdminAuthChoice::Disabled));
+        assert_eq!(args.style.as_deref(), Some("builtin:terminal"));
+        assert_eq!(args.cache, Some(CacheChoice::None));
+        assert_eq!(args.dlcs, ["ai-authorship", "social-embeds"]);
+        let prompts = String::from_utf8(output).unwrap();
+        assert!(prompts.contains("Administrator auth"));
+        assert!(prompts.contains("Style"));
+        assert!(prompts.contains("Cache"));
+        assert!(prompts.contains("Optional DLC"));
+        assert!(!prompts.to_ascii_lowercase().contains("secret"));
+    }
+
+    #[test]
+    fn interactive_bootstrap_defaults_to_the_recommended_personal_dlc_set() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.non_interactive = false;
+        args.admin_auth = None;
+        args.custom_css = None;
+        args.style = None;
+        args.css_file = None;
+        args.redis_topology = None;
+        args.cache = None;
+        args.dlcs.clear();
+        let mut reader = io::Cursor::new(b"\n\n\n\n");
+        let mut output = Vec::new();
+        resolve_prompted_args_with(&mut args, true, &mut reader, &mut output).unwrap();
+        assert_eq!(args.dlcs, RECOMMENDED_PERSONAL_DLCS);
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("seo,home-curation,ai-authorship,social-embeds,release-check")
+        );
+
+        let mut no_seo = personal(root.path().join("no-seo"));
+        no_seo.non_interactive = false;
+        no_seo.admin_auth = None;
+        no_seo.custom_css = None;
+        no_seo.style = None;
+        no_seo.css_file = None;
+        no_seo.redis_topology = None;
+        no_seo.cache = None;
+        no_seo.dlcs.clear();
+        no_seo.seo = Toggle::Disabled;
+        let mut reader = io::Cursor::new(b"\n\n\n\n");
+        resolve_prompted_args_with(&mut no_seo, true, &mut reader, &mut Vec::new()).unwrap();
+        assert_eq!(
+            no_seo.dlcs,
+            [
+                "home-curation",
+                "ai-authorship",
+                "social-embeds",
+                "release-check"
+            ]
+        );
+    }
+
+    #[test]
+    fn adopt_creates_only_a_valid_contract_pair_for_a_legacy_v2_deployment() {
+        let root = tempdir().unwrap();
+        bootstrap(personal(root.path().to_owned())).unwrap();
+        fs::remove_file(root.path().join(INSTALL_MANIFEST)).unwrap();
+        fs::remove_file(root.path().join(INSTALL_LOCK)).unwrap();
+        let environment = fs::read_to_string(root.path().join(".env")).unwrap();
+        let environment = environment
+            .lines()
+            .filter(|line| {
+                !line.starts_with("OSB_STYLE=")
+                    && !line.starts_with("OSB_CACHE=")
+                    && !line.starts_with("OSB_DLC_IDS=")
+                    && !line.starts_with("OSB_INSTALL_LOCK_DIGEST=")
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(root.path().join(".env"), &environment).unwrap();
+        let config_before = fs::read(root.path().join("config.toml")).unwrap();
+        let env_before = fs::read(root.path().join(".env")).unwrap();
+        let css_before = fs::read(root.path().join("custom.css")).unwrap();
+
+        adopt_installation(root.path()).unwrap();
+        assert_eq!(
+            fs::read(root.path().join("config.toml")).unwrap(),
+            config_before
+        );
+        assert_eq!(fs::read(root.path().join(".env")).unwrap(), env_before);
+        assert_eq!(
+            fs::read(root.path().join("custom.css")).unwrap(),
+            css_before
+        );
+        let (intent, lock) = read_installation_pair(
+            &root.path().join(INSTALL_MANIFEST),
+            &root.path().join(INSTALL_LOCK),
+        )
+        .unwrap();
+        verify_intent_lock_pair(&intent, &lock).unwrap();
+        assert_eq!(lock.engine.source, "adopted-v2");
+        assert_eq!(lock.engine.database_schema_version, DATABASE_SCHEMA_VERSION);
+        assert_eq!(lock.dlcs.len(), RECOMMENDED_PERSONAL_DLCS.len());
+
+        let mut effective: DoctorConfig =
+            toml::from_str(&fs::read_to_string(root.path().join("config.toml")).unwrap()).unwrap();
+        let values = read_environment_file(&root.path().join(".env")).unwrap();
+        apply_environment_overrides_with(&mut effective, |name| values.get(name).cloned()).unwrap();
+        let doctor_args = DoctorArgs {
+            config: root.path().join("config.toml"),
+            install_manifest: None,
+            install_lock: None,
+            env_file: Some(root.path().join(".env")),
+            offline: true,
+            json: false,
+        };
+        verify_installation_contract(
+            &doctor_args,
+            &effective,
+            &root.path().join(INSTALL_MANIFEST),
+            &root.path().join(INSTALL_LOCK),
+        )
+        .unwrap();
+
+        let intent_bytes = fs::read(root.path().join(INSTALL_MANIFEST)).unwrap();
+        let error = adopt_installation(root.path()).unwrap_err();
+        assert!(error.to_string().contains("refusing to overwrite"));
+        assert_eq!(
+            fs::read(root.path().join(INSTALL_MANIFEST)).unwrap(),
+            intent_bytes
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn record_engine_upgrade_is_target_bound_atomic_and_mode_preserving() {
+        let root = tempdir().unwrap();
+        let selection = InstallationSelection {
+            admin_auth: InstallationAdminAuth::Disabled,
+            style: InstallationStyle {
+                kind: InstallationStyleKind::None,
+                id: None,
+                file: None,
+                sha256: None,
+            },
+            cache: InstallationCache::None,
+        };
+        let intent = InstallationIntent {
+            schema_version: INSTALL_INTENT_SCHEMA_VERSION.into(),
+            installation_id: "018f0000-0000-7000-8000-000000000001".into(),
+            site_id: "018f0000-0000-7000-8000-000000000002".into(),
+            created_with: env!("CARGO_PKG_VERSION").into(),
+            selection: selection.clone(),
+            dlcs: Vec::new(),
+        };
+        let mut lock = InstallationLock {
+            schema_version: INSTALL_LOCK_SCHEMA_VERSION.into(),
+            installation_id: intent.installation_id.clone(),
+            engine: LockedEngine {
+                version: "0.0.1".into(),
+                config_schema_version: "open-soverign-blog/1".into(),
+                database_schema_version: 1,
+                plugin_api: PLUGIN_API_VERSION.into(),
+                source: "legacy-release".into(),
+                artifact_sha256: None,
+            },
+            selection,
+            dlcs: Vec::new(),
+            retained_dlcs: Vec::new(),
+            history: Vec::new(),
+            lock_digest: String::new(),
+        };
+        lock.refresh_digest().unwrap();
+        let intent_path = root.path().join(INSTALL_MANIFEST);
+        let lock_path = root.path().join(INSTALL_LOCK);
+        fs::write(&intent_path, intent.to_toml_pretty().unwrap()).unwrap();
+        fs::write(&lock_path, lock.to_pretty_json().unwrap()).unwrap();
+        fs::set_permissions(&lock_path, fs::Permissions::from_mode(0o640)).unwrap();
+        let original = fs::read(&lock_path).unwrap();
+        let error = record_engine_upgrade(
+            &intent_path,
+            &lock_path,
+            "0.0.1",
+            "9.9.9",
+            "candidate".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("target CLI"));
+        assert_eq!(fs::read(&lock_path).unwrap(), original);
+
+        record_engine_upgrade(
+            &intent_path,
+            &lock_path,
+            "0.0.1",
+            env!("CARGO_PKG_VERSION"),
+            "candidate-release".into(),
+            Some("a".repeat(64)),
+        )
+        .unwrap();
+        let updated =
+            InstallationLock::from_json(&fs::read_to_string(&lock_path).unwrap()).unwrap();
+        assert_eq!(updated.engine.version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(updated.engine.config_schema_version, CONFIG_SCHEMA);
+        assert_eq!(
+            updated.engine.database_schema_version,
+            DATABASE_SCHEMA_VERSION
+        );
+        assert_eq!(updated.engine.plugin_api, PLUGIN_API_VERSION);
+        assert_eq!(updated.engine.source, "candidate-release");
+        assert_eq!(
+            fs::metadata(lock_path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 
     #[test]
@@ -1864,7 +4233,7 @@ mod tests {
     #[test]
     fn bootstrap_preserves_an_existing_safe_operator_gitignore() {
         let root = tempdir().unwrap();
-        let existing = "operator-rule\n/.env\n/admin-access-key.txt\n";
+        let existing = "!.*\noperator-rule\n/.env\n/admin-access-key.txt\n/.osb-backups/\n/.osb-update/\n!README.md\n";
         fs::write(root.path().join(".gitignore"), existing).unwrap();
         bootstrap(personal(root.path().to_owned())).unwrap();
         assert_eq!(
@@ -1876,8 +4245,22 @@ mod tests {
     #[test]
     fn bootstrap_fails_before_creating_secrets_when_gitignore_is_unsafe() {
         for (existing, missing) in [
-            (".env\noperator-rule\n", "admin-access-key.txt"),
-            ("admin-access-key.txt\noperator-rule\n", ".env"),
+            (
+                ".env\n.osb-backups/\n.osb-update/\noperator-rule\n",
+                "admin-access-key.txt",
+            ),
+            (
+                "admin-access-key.txt\n.osb-backups/\n.osb-update/\noperator-rule\n",
+                ".env",
+            ),
+            (
+                ".env\nadmin-access-key.txt\n.osb-backups/\noperator-rule\n",
+                ".osb-update/",
+            ),
+            (
+                ".env\nadmin-access-key.txt\n.osb-update/\noperator-rule\n",
+                ".osb-backups/",
+            ),
         ] {
             let root = tempdir().unwrap();
             fs::write(root.path().join(".gitignore"), existing).unwrap();
@@ -1893,6 +4276,30 @@ mod tests {
             ] {
                 assert!(!root.path().join(name).exists(), "unexpected {name}");
             }
+        }
+    }
+
+    #[test]
+    fn bootstrap_rejects_later_gitignore_negations_that_restore_protected_paths() {
+        for negation in [
+            "!/.env",
+            "!*.txt",
+            "!/.osb-backups/**",
+            "!/.osb-update/private.env",
+            "!.*",
+        ] {
+            let root = tempdir().unwrap();
+            let existing =
+                format!(".env\nadmin-access-key.txt\n.osb-backups/\n.osb-update/\n{negation}\n");
+            fs::write(root.path().join(".gitignore"), existing).unwrap();
+            let error = bootstrap(personal(root.path().to_owned())).unwrap_err();
+            assert!(
+                error.to_string().contains("later negation"),
+                "unexpected error for {negation}: {error:#}"
+            );
+            assert!(!root.path().join(".env").exists());
+            assert!(!root.path().join("admin-access-key.txt").exists());
+            assert!(!root.path().join(".osb-backups").exists());
         }
     }
 
@@ -1981,7 +4388,7 @@ mod tests {
         args.intent = Intent::Delivery;
         args.auth = Some(AuthChoice::Disabled);
         args.comments = Some(Toggle::Disabled);
-        args.custom_css = Toggle::Disabled;
+        args.custom_css = Some(Toggle::Disabled);
         args.site_id = Some(source_site);
         args.content_release = Some("generation-20260719T120000Z".into());
         bootstrap(args).unwrap();

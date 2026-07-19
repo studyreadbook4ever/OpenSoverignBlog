@@ -25,6 +25,40 @@ pub enum RevisionActorKind {
     System,
 }
 
+/// Portable, public-facing authorship provenance for one immutable revision.
+///
+/// This deliberately does not contain an internal user, agent, session, or
+/// service identifier. Optional AI/import plugins may create this metadata,
+/// but readers and exports can keep displaying it after the plugin is removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicAuthorship {
+    pub kind: PublicAuthorshipKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<String>,
+    #[serde(default)]
+    pub human_reviewed: bool,
+}
+
+impl Default for PublicAuthorship {
+    fn default() -> Self {
+        Self {
+            kind: PublicAuthorshipKind::Human,
+            generator: None,
+            human_reviewed: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicAuthorshipKind {
+    Human,
+    AiGenerated,
+    AiAssisted,
+    Imported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RevisionActor {
@@ -116,6 +150,8 @@ pub struct RevisionSnapshot {
     pub intent: Option<IntentLayer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    pub authorship: PublicAuthorship,
     pub actor: RevisionActor,
     pub content_hash: String,
     pub created_at: DateTime<Utc>,
@@ -149,6 +185,8 @@ pub struct NewDocument {
     pub intent: Option<IntentLayer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    pub authorship: PublicAuthorship,
     pub actor: RevisionActor,
 }
 
@@ -166,6 +204,8 @@ pub struct ProposedRevision {
     pub intent: Option<IntentLayer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    pub authorship: PublicAuthorship,
     pub actor: RevisionActor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
@@ -177,6 +217,7 @@ impl NewDocument {
         validate_slug(&self.slug)?;
         validate_markdown(&self.source_markdown)?;
         validate_embeds(&self.embeds)?;
+        validate_authorship(&self.authorship)?;
         validate_optional_layers(self.intent.as_ref(), self.ontology.as_ref())
     }
 }
@@ -187,6 +228,7 @@ impl ProposedRevision {
         validate_slug(&self.slug)?;
         validate_markdown(&self.source_markdown)?;
         validate_embeds(&self.embeds)?;
+        validate_authorship(&self.authorship)?;
         validate_optional_layers(self.intent.as_ref(), self.ontology.as_ref())?;
         if let Some(key) = &self.idempotency_key
             && (key.trim().is_empty() || key.len() > 200)
@@ -322,6 +364,23 @@ fn validate_optional_layers(
     Ok(())
 }
 
+fn validate_authorship(value: &PublicAuthorship) -> Result<(), ContentValidationError> {
+    if value.generator.as_ref().is_some_and(|generator| {
+        generator.trim().is_empty()
+            || generator.len() > 300
+            || generator.chars().any(char::is_control)
+    }) {
+        return Err(ContentValidationError::InvalidAuthorship);
+    }
+    if value.kind == PublicAuthorshipKind::Human && value.generator.is_some() {
+        return Err(ContentValidationError::InvalidAuthorship);
+    }
+    if value.kind != PublicAuthorshipKind::Human && value.generator.is_none() {
+        return Err(ContentValidationError::InvalidAuthorship);
+    }
+    Ok(())
+}
+
 fn validate_embeds(values: &[EmbedReference]) -> Result<(), ContentValidationError> {
     if values.len() > 10_000 {
         return Err(ContentValidationError::InvalidEmbed);
@@ -381,6 +440,8 @@ pub enum ContentValidationError {
     InvalidIdempotencyKey,
     #[error("embed reference is invalid or duplicated")]
     InvalidEmbed,
+    #[error("public authorship metadata is invalid")]
+    InvalidAuthorship,
 }
 
 #[cfg(test)]
@@ -401,6 +462,7 @@ mod tests {
                 schema: "https://example.invalid/ontology/v1".into(),
                 statements: vec![],
             }),
+            authorship: Default::default(),
             actor: RevisionActor {
                 kind: RevisionActorKind::Human,
                 id: "owner".into(),
@@ -459,6 +521,7 @@ mod tests {
             }],
             intent: None,
             ontology: None,
+            authorship: Default::default(),
             actor: RevisionActor {
                 kind: RevisionActorKind::Human,
                 id: "owner".into(),
@@ -479,5 +542,39 @@ mod tests {
             proposed.validate(),
             Err(ContentValidationError::InvalidOntologyLayer)
         );
+    }
+
+    #[test]
+    fn public_authorship_requires_safe_portable_generator_metadata() {
+        assert_eq!(
+            validate_authorship(&PublicAuthorship {
+                kind: PublicAuthorshipKind::AiGenerated,
+                generator: None,
+                human_reviewed: false,
+            }),
+            Err(ContentValidationError::InvalidAuthorship)
+        );
+        assert_eq!(
+            validate_authorship(&PublicAuthorship {
+                kind: PublicAuthorshipKind::Human,
+                generator: Some("internal-agent-id".into()),
+                human_reviewed: true,
+            }),
+            Err(ContentValidationError::InvalidAuthorship)
+        );
+        assert_eq!(
+            validate_authorship(&PublicAuthorship {
+                kind: PublicAuthorshipKind::Imported,
+                generator: Some("source\nwith-control".into()),
+                human_reviewed: true,
+            }),
+            Err(ContentValidationError::InvalidAuthorship)
+        );
+        validate_authorship(&PublicAuthorship {
+            kind: PublicAuthorshipKind::AiAssisted,
+            generator: Some("local/model-v1".into()),
+            human_reviewed: true,
+        })
+        .unwrap();
     }
 }

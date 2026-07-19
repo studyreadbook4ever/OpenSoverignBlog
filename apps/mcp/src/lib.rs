@@ -700,12 +700,12 @@ fn tool_definitions(mode: AccessMode) -> Vec<Value> {
         tools.push(json!({
             "name": "osb_content_create",
             "title": "Create a blog draft",
-            "description": "Create an unpublished draft through the authoritative HTTP API. This tool does not publish, execute macros, or call a model.",
+            "description": "Create an unpublished draft through the authoritative HTTP API. Explicit portable authorship is required so AI-created content cannot silently default to human authorship. This tool does not publish, execute macros, or call a model.",
             "inputSchema": {
                 "$schema": schema,
                 "type": "object",
                 "properties": content_properties,
-                "required": ["title", "slug", "sourceMarkdown"],
+                "required": ["title", "slug", "sourceMarkdown", "authorship"],
                 "additionalProperties": false
             },
             "annotations": {
@@ -736,12 +736,12 @@ fn tool_definitions(mode: AccessMode) -> Vec<Value> {
         tools.push(json!({
             "name": "osb_content_revise",
             "title": "Append a blog revision",
-            "description": "Append a complete immutable revision. Read first, copy any embeds/sidecars that must remain, and pass the current baseRevisionId. The new revision remains unpublished.",
+            "description": "Append a complete immutable revision with explicit portable authorship. Read first, copy any embeds/sidecars that must remain, and pass the current baseRevisionId. The new revision remains unpublished.",
             "inputSchema": {
                 "$schema": schema,
                 "type": "object",
                 "properties": revision_properties,
-                "required": ["documentId", "baseRevisionId", "idempotencyKey", "title", "slug", "sourceMarkdown"],
+                "required": ["documentId", "baseRevisionId", "idempotencyKey", "title", "slug", "sourceMarkdown", "authorship"],
                 "additionalProperties": false
             },
             "annotations": {
@@ -789,7 +789,49 @@ fn content_schema_properties() -> Value {
             "items": { "type": "object" }
         },
         "intent": { "type": ["object", "null"] },
-        "ontology": { "type": ["object", "null"] }
+        "ontology": { "type": ["object", "null"] },
+        "authorship": public_authorship_schema()
+    })
+}
+
+fn public_authorship_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "humanReviewed"],
+        "properties": {
+            "kind": {
+                "type": "string",
+                "enum": ["human", "ai_generated", "ai_assisted", "imported"]
+            },
+            "generator": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300,
+                "description": "Portable provider/model or import-source label; never an internal actor, session, or agent ID."
+            },
+            "humanReviewed": { "type": "boolean" }
+        },
+        "allOf": [
+            {
+                "if": {
+                    "properties": { "kind": { "const": "human" } },
+                    "required": ["kind"]
+                },
+                "then": { "properties": { "generator": false } }
+            },
+            {
+                "if": {
+                    "properties": {
+                        "kind": {
+                            "enum": ["ai_generated", "ai_assisted", "imported"]
+                        }
+                    },
+                    "required": ["kind"]
+                },
+                "then": { "required": ["generator"] }
+            }
+        ]
     })
 }
 
@@ -845,6 +887,7 @@ fn parse_command(
                     "embeds",
                     "intent",
                     "ontology",
+                    "authorship",
                 ],
             )?;
             Ok(ApiCommand::Create {
@@ -865,6 +908,7 @@ fn parse_command(
                     "embeds",
                     "intent",
                     "ontology",
+                    "authorship",
                 ],
             )?;
             let document_id = parse_uuid("documentId", required_string(arguments, "documentId")?)?;
@@ -915,6 +959,11 @@ fn content_body(arguments: &Map<String, Value>) -> Result<Value, String> {
         ("slug".into(), Value::String(slug.to_owned())),
         ("sourceMarkdown".into(), Value::String(markdown.to_owned())),
     ]);
+    let authorship = arguments
+        .get("authorship")
+        .ok_or_else(|| "authorship is required for MCP create and revise operations".to_owned())?;
+    validate_public_authorship(authorship)?;
+    body.insert("authorship".into(), authorship.clone());
     for field in ["embeds", "intent", "ontology"] {
         if let Some(value) = arguments.get(field) {
             let valid_shape = match field {
@@ -928,6 +977,50 @@ fn content_body(arguments: &Map<String, Value>) -> Result<Value, String> {
         }
     }
     Ok(Value::Object(body))
+}
+
+fn validate_public_authorship(value: &Value) -> Result<(), String> {
+    let authorship = value
+        .as_object()
+        .ok_or_else(|| "authorship must be an object".to_owned())?;
+    ensure_only(authorship, &["kind", "generator", "humanReviewed"])?;
+
+    let kind = required_string(authorship, "kind")?;
+    if !authorship
+        .get("humanReviewed")
+        .is_some_and(Value::is_boolean)
+    {
+        return Err("authorship.humanReviewed must be a boolean".into());
+    }
+
+    match kind {
+        "human" => {
+            if authorship.contains_key("generator") {
+                return Err("human authorship must not include a generator".into());
+            }
+        }
+        "ai_generated" | "ai_assisted" | "imported" => {
+            let generator = authorship
+                .get("generator")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "non-human authorship requires a generator string".to_owned())?;
+            if generator.trim().is_empty()
+                || generator.len() > 300
+                || generator.chars().any(char::is_control)
+            {
+                return Err(
+                    "authorship.generator must contain 1..=300 bytes without control characters"
+                        .into(),
+                );
+            }
+        }
+        _ => {
+            return Err(
+                "authorship.kind must be human, ai_generated, ai_assisted, or imported".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn ensure_only(arguments: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {
@@ -1219,7 +1312,16 @@ mod tests {
             (
                 1,
                 "osb_content_create",
-                json!({ "title": "Draft", "slug": "draft", "sourceMarkdown": "# Draft" }),
+                json!({
+                    "title": "Draft",
+                    "slug": "draft",
+                    "sourceMarkdown": "# Draft",
+                    "authorship": {
+                        "kind": "ai_generated",
+                        "generator": "local/model-v1",
+                        "humanReviewed": false
+                    }
+                }),
             ),
             (
                 2,
@@ -1230,7 +1332,12 @@ mod tests {
                     "idempotencyKey": "agent-revision-1",
                     "title": "Revised",
                     "slug": "draft",
-                    "sourceMarkdown": "# Revised"
+                    "sourceMarkdown": "# Revised",
+                    "authorship": {
+                        "kind": "ai_assisted",
+                        "generator": "local/model-v1",
+                        "humanReviewed": true
+                    }
                 }),
             ),
             (
@@ -1256,8 +1363,28 @@ mod tests {
 
         let calls = adapter.api.calls.lock().unwrap();
         assert_eq!(calls.len(), 3);
-        assert!(matches!(calls[0], ApiCommand::Create { .. }));
-        assert!(matches!(calls[1], ApiCommand::Revise { .. }));
+        let ApiCommand::Create { body } = &calls[0] else {
+            panic!("first call must create a draft");
+        };
+        assert_eq!(
+            body.get("authorship"),
+            Some(&json!({
+                "kind": "ai_generated",
+                "generator": "local/model-v1",
+                "humanReviewed": false
+            }))
+        );
+        let ApiCommand::Revise { body, .. } = &calls[1] else {
+            panic!("second call must append a revision");
+        };
+        assert_eq!(
+            body.get("authorship"),
+            Some(&json!({
+                "kind": "ai_assisted",
+                "generator": "local/model-v1",
+                "humanReviewed": true
+            }))
+        );
         assert_eq!(
             calls[2],
             ApiCommand::Publish {
@@ -1265,6 +1392,105 @@ mod tests {
                 revision_id
             }
         );
+    }
+
+    #[tokio::test]
+    async fn write_tools_require_explicit_bounded_authorship() {
+        let mut adapter = initialized_adapter(AccessMode::Write, json!({ "ok": true })).await;
+        let response = adapter
+            .handle_message(json!({
+                "jsonrpc": "2.0",
+                "id": "tools",
+                "method": "tools/list",
+                "params": {}
+            }))
+            .await
+            .unwrap();
+        let tools = response
+            .pointer("/result/tools")
+            .and_then(Value::as_array)
+            .unwrap();
+
+        for name in ["osb_content_create", "osb_content_revise"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.get("name") == Some(&json!(name)))
+                .unwrap();
+            assert!(
+                tool.pointer("/inputSchema/required")
+                    .and_then(Value::as_array)
+                    .is_some_and(|required| required.contains(&json!("authorship")))
+            );
+            assert_eq!(
+                tool.pointer("/inputSchema/properties/authorship/allOf/1/then/required/0"),
+                Some(&json!("generator"))
+            );
+        }
+
+        for (request_id, authorship) in [
+            (1, None),
+            (
+                2,
+                Some(json!({
+                    "kind": "ai_generated",
+                    "humanReviewed": false
+                })),
+            ),
+            (
+                3,
+                Some(json!({
+                    "kind": "human",
+                    "generator": "must-not-be-present",
+                    "humanReviewed": true
+                })),
+            ),
+            (
+                4,
+                Some(json!({
+                    "kind": "imported",
+                    "generator": "source\nwith-control",
+                    "humanReviewed": true
+                })),
+            ),
+            (
+                5,
+                Some(json!({
+                    "kind": "ai_assisted",
+                    "generator": "model",
+                    "humanReviewed": false,
+                    "internalActorId": "must-not-leak"
+                })),
+            ),
+        ] {
+            let mut arguments = json!({
+                "title": "Draft",
+                "slug": "draft",
+                "sourceMarkdown": "# Draft"
+            });
+            if let Some(authorship) = authorship {
+                arguments
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("authorship".into(), authorship);
+            }
+            let response = adapter
+                .handle_message(json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "osb_content_create",
+                        "arguments": arguments
+                    }
+                }))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.pointer("/result/isError"),
+                Some(&Value::Bool(true))
+            );
+        }
+        assert!(adapter.api.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

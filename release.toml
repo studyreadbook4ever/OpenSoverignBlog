@@ -1,0 +1,12 @@
+schema_version = "open-soverign-blog-release/1"
+version = "0.1.0"
+status = "unreleased"
+channel = "stable"
+repository_url = "https://github.com/studyreadbook4ever/OpenSoverignBlog"
+developer_url = "https://eff0rtchung.kr"
+license = "Unlicense"
+license_path = "UNLICENSE"
+
+# `release_date = "YYYY-MM-DD"` is added only by the release process that
+# publishes the matching immutable vX.Y.Z tag and GitHub Release. Development
+# checkouts must not present a commit date as a release date.
