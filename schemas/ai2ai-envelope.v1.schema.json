@@ -84,6 +84,12 @@
         },
         "intent": { "type": ["object", "null"] },
         "ontology": { "type": ["object", "null"] },
+        "aiSummary": {
+          "oneOf": [
+            { "$ref": "content-envelope.v1.schema.json#/$defs/aiSummary" },
+            { "type": "null" }
+          ]
+        },
         "authorship": {
           "$ref": "content-envelope.v1.schema.json#/$defs/publicAuthorship"
         },

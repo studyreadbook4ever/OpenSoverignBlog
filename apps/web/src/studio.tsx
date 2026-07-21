@@ -10,7 +10,10 @@ import {
 } from "react";
 import DOMPurify from "dompurify";
 import type {
+  AiSummary,
+  AiSummaryProvider,
   Capabilities,
+  CategorySummary,
   Collaborator,
   CollaboratorRole,
   CreatePostInput,
@@ -27,10 +30,15 @@ import { studioAccessFor } from "./auth-policy";
 import { socialEmbedFromUrl } from "./social-embeds";
 import {
   acceptedEditorState,
+  aiSummarySourceHash,
   editorFingerprint,
   homeCurationCandidates,
+  isAiSummarySourceCurrent,
   normalizeSavePayload,
+  normalizedEditorTitle,
   payloadFingerprint,
+  revisionSavePayload,
+  reviewAiSummaryCandidate,
 } from "./studio-state";
 import {
   AppLink,
@@ -88,6 +96,7 @@ interface StoredStudioDraft {
 export function StudioDashboard({ capabilities }: { capabilities: Capabilities | undefined }) {
   const { session, capabilitiesError, refreshCapabilities } = useSession();
   const [documents, setDocuments] = useState<DocumentSnapshot[]>([]);
+  const [categories, setCategories] = useState<CategorySummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string>();
   usePageTitle("Studio");
@@ -103,8 +112,12 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setLoading(true);
     setStatus("문서를 불러오는 중…");
     try {
-      const values = await client.listStudioDocuments();
+      const [values, categoryResponse] = await Promise.all([
+        client.listStudioDocuments(),
+        client.listStudioCategories(),
+      ]);
       setDocuments(values);
+      setCategories(categoryResponse.items);
       setStatus(values.length ? `${values.length}개의 문서를 불러왔습니다.` : undefined);
     } catch (reason) {
       setStatus(asMessage(reason));
@@ -124,6 +137,7 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const displayName = session?.state === "authenticated" ? session.user.displayName : "Owner";
   const collaboratorSession = studioAccess === "members" && session?.state === "authenticated"
     && Boolean(session.membershipRole && session.membershipRole !== "owner");
+  const categoryById = new Map(categories.map((category) => [category.id, category]));
 
   if (!capabilities && capabilitiesError) {
     return <StudioAccessGate detail={`서버 기능을 확인하지 못했습니다: ${capabilitiesError}`} onRetry={() => void refreshCapabilities()} />;
@@ -137,12 +151,14 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   if (session.state !== "authenticated") {
     return <StudioAccessGate detail="블로그의 글을 쓰고 관리하려면 먼저 인증해 주세요." login />;
   }
-  if (session.state === "authenticated" && !session.blog) {
+  const blog = session.blog;
+  if (!blog) {
     return <StudioAccessGate detail="글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요." onboarding />;
   }
   if (!canLoad) {
     return <StudioAccessGate detail="이 서버가 지원하는 글쓰기 프로필을 확인할 수 없습니다." />;
   }
+  const blogHandle = blog.handle;
 
   return (
     <div className="studio-dashboard">
@@ -156,7 +172,13 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         </div>
         <div className="studio-heading-actions">
           {session.state === "authenticated" && (!session.membershipRole || session.membershipRole === "owner") ? (
-            <AppLink className="button button-ghost" href="/studio/settings"><span aria-hidden="true">⚙</span> 블로그 설정</AppLink>
+            <>
+              <AppLink className="button button-ghost" href="/studio/categories"><span aria-hidden="true">▦</span> 카테고리</AppLink>
+              <AppLink className="button button-ghost" href="/studio/settings"><span aria-hidden="true">⚙</span> 블로그 설정</AppLink>
+            </>
+          ) : null}
+          {session.instanceAdministrator ? (
+            <AppLink className="button button-ghost" href="/studio/system"><span aria-hidden="true">⌘</span> 시스템 구조</AppLink>
           ) : null}
           <AppLink className="button button-primary" href="/studio/write">새 글 쓰기 <span aria-hidden="true">＋</span></AppLink>
         </div>
@@ -187,7 +209,9 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
                   <time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time>
                 </div>
                 <h3><AppLink href={`/studio/write/${document.id}`}>{document.revision.title || "제목 없는 글"}</AppLink></h3>
-                <p className="document-slug">/@{session?.state === "authenticated" && session.blog ? session.blog.handle : "blog"}/{document.revision.slug || "untitled"}</p>
+                <p className="document-slug">{document.categoryId && categoryById.get(document.categoryId)
+                  ? `${session.instanceAdministrator ? "" : `/@${blogHandle}`}/${categoryById.get(document.categoryId)!.slug}/${document.revision.slug || "untitled"}`
+                  : `/@${session?.state === "authenticated" && session.blog ? session.blog.handle : "blog"}/${document.revision.slug || "untitled"}`}</p>
                 <div className="document-card-footer"><span>저장 버전 {document.revision.revisionNumber}</span><AppLink href={`/studio/write/${document.id}`}>계속 쓰기 <span aria-hidden="true">→</span></AppLink></div>
               </article>
             ))}
@@ -668,10 +692,54 @@ export function StudioEditor({
   const [slugTouched, setSlugTouched] = useState(Boolean(draft.slug));
   const [previewArtifact, setPreviewArtifact] = useState<PublishArtifact>();
   const [previewState, setPreviewState] = useState<"idle" | "loading" | "ready" | "local">("idle");
+  const [categories, setCategories] = useState<CategorySummary[]>([]);
+  const [categoriesLoading, setCategoriesLoading] = useState(false);
+  const [categoriesError, setCategoriesError] = useState<string>();
+  const [currentAiSummarySourceHash, setCurrentAiSummarySourceHash] = useState<string | null>();
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   usePageTitle(draft.title || "새 글");
+
+  const aiSummaryEnabled = capabilities?.features.includes("ai_summary") ?? false;
+  const aiSummaryVisible = aiSummaryEnabled || Boolean(draft.aiSummary);
+
+  useEffect(() => {
+    if (!canEdit) return;
+    const controller = new AbortController();
+    setCategoriesLoading(true);
+    setCategoriesError(undefined);
+    void client.listStudioCategories(controller.signal)
+      .then((response) => {
+        if (!controller.signal.aborted) setCategories(response.items);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setCategoriesError(asMessage(reason));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCategoriesLoading(false);
+      });
+    return () => controller.abort();
+  }, [canEdit]);
+
+  useEffect(() => {
+    if (!aiSummaryVisible) {
+      setCurrentAiSummarySourceHash(undefined);
+      return;
+    }
+    let active = true;
+    setCurrentAiSummarySourceHash(undefined);
+    void aiSummarySourceHash(normalizedEditorTitle(draft.title), draft.sourceMarkdown)
+      .then((sourceHash) => {
+        if (active) setCurrentAiSummarySourceHash(sourceHash);
+      })
+      .catch(() => {
+        if (active) setCurrentAiSummarySourceHash(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [aiSummaryVisible, draft.sourceMarkdown, draft.title]);
 
   useEffect(() => {
     const resizeTitle = () => {
@@ -755,7 +823,7 @@ export function StudioEditor({
     };
     // Sidecar parsing is intentionally deferred until save; source preview remains responsive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit, loadingDocument, loadError, draft.title, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, embedText]);
+  }, [canEdit, loadingDocument, loadError, draft.title, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, draft.aiSummary, currentAiSummarySourceHash, embedText]);
 
   function update<K extends keyof CreatePostInput>(key: K, value: CreatePostInput[K]) {
     setStatus(undefined);
@@ -779,6 +847,8 @@ export function StudioEditor({
       sourceMarkdown: revision.sourceMarkdown,
       embeds: revision.embeds,
       authorship: revision.authorship,
+      categoryId: document.categoryId ?? null,
+      ...(revision.aiSummary ? { aiSummary: revision.aiSummary } : {}),
       ...(revision.intent ? { intent: revision.intent } : {}),
       ...(revision.ontology ? { ontology: revision.ontology } : {}),
     };
@@ -809,6 +879,8 @@ export function StudioEditor({
         slug: memoryScopes.core ? draft.slug : "",
         sourceMarkdown: memoryScopes.core ? draft.sourceMarkdown : "",
         ...(memoryScopes.core && draft.authorship ? { authorship: draft.authorship } : {}),
+        ...(memoryScopes.core && draft.aiSummary ? { aiSummary: draft.aiSummary } : {}),
+        ...(memoryScopes.core && draft.categoryId !== undefined ? { categoryId: draft.categoryId } : {}),
         ...(memoryScopes.intent && draft.intent ? { intent: draft.intent } : {}),
       };
       const value: StoredStudioDraft = {
@@ -851,6 +923,13 @@ export function StudioEditor({
   }
 
   function parsePayload(): CreatePostInput | undefined {
+    if (
+      draft.aiSummary
+      && !isAiSummarySourceCurrent(draft.aiSummary, currentAiSummarySourceHash)
+    ) {
+      setStatus("AI 요약을 만든 뒤 제목이나 본문이 바뀌었습니다. 요약을 다시 만들거나 제거해 주세요.");
+      return;
+    }
     let embeds: EmbedReference[] = [];
     let ontology: OntologySidecar | undefined;
     try {
@@ -870,11 +949,13 @@ export function StudioEditor({
       return;
     }
     return normalizeSavePayload({
-      title: draft.title.trim(),
+      title: normalizedEditorTitle(draft.title),
       slug: draft.slug.trim(),
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
       ...(draft.authorship ? { authorship: draft.authorship } : {}),
+      ...(draft.aiSummary ? { aiSummary: draft.aiSummary } : {}),
+      ...(draft.categoryId !== undefined ? { categoryId: draft.categoryId } : {}),
       ...(draft.intent ? { intent: draft.intent } : {}),
       ...(ontology ? { ontology } : {}),
     });
@@ -889,11 +970,15 @@ export function StudioEditor({
       // Keep the writing preview responsive; save surfaces malformed JSON.
     }
     return {
-      title: draft.title || "제목 없는 글",
+      title: normalizedEditorTitle(draft.title) || "제목 없는 글",
       slug: draft.slug || "untitled",
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
       ...(draft.authorship ? { authorship: draft.authorship } : {}),
+      ...(isAiSummarySourceCurrent(draft.aiSummary, currentAiSummarySourceHash)
+        ? { aiSummary: draft.aiSummary }
+        : {}),
+      ...(draft.categoryId !== undefined ? { categoryId: draft.categoryId } : {}),
       ...(draft.intent ? { intent: draft.intent } : {}),
     };
   }
@@ -909,7 +994,10 @@ export function StudioEditor({
     setStatus(editing ? "현재 내용을 새 버전으로 저장하는 중…" : "첫 초안을 서버에 저장하는 중…");
     try {
       const document = editing
-        ? await appendStudioRevision(editing, payload)
+        ? await appendStudioRevision(
+          editing,
+          revisionSavePayload(payload, accepted?.categoryId),
+        )
         : await client.createStudioDocument(payload);
       const acceptedState = acceptedEditorState(payload);
       setAccepted(document);
@@ -1137,6 +1225,21 @@ export function StudioEditor({
               value={draft.title}
             />
             <span className="title-rule" aria-hidden="true" />
+            <CategorySelector
+              categories={categories}
+              error={categoriesError}
+              loading={categoriesLoading}
+              onChange={(categoryId) => update("categoryId", categoryId)}
+              value={draft.categoryId}
+            />
+            {aiSummaryVisible ? (
+              <AiSummaryEditor
+                currentSourceHash={currentAiSummarySourceHash}
+                draft={draft}
+                generationEnabled={aiSummaryEnabled}
+                setDraft={setDraft}
+              />
+            ) : null}
             <MarkdownToolbar
               onCommand={(command) => {
                 if (command === "heading") prefixLines("## ", "제목");
@@ -1222,7 +1325,12 @@ export function StudioEditor({
               {previewArtifact ? (
                 <div className="article-content" dangerouslySetInnerHTML={{ __html: sanitizedPreview }} />
               ) : (
-                <LocalMarkdownPreview markdown={draft.sourceMarkdown} />
+                <>
+                  {isAiSummarySourceCurrent(draft.aiSummary, currentAiSummarySourceHash) ? (
+                    <AiSummaryPreview summary={draft.aiSummary!} />
+                  ) : null}
+                  <LocalMarkdownPreview markdown={draft.sourceMarkdown} />
+                </>
               )}
             </article>
           </div>
@@ -1243,6 +1351,313 @@ export function StudioEditor({
         />
       ) : null}
     </div>
+  );
+}
+
+function CategorySelector({
+  categories,
+  error,
+  loading,
+  onChange,
+  value,
+}: {
+  categories: CategorySummary[];
+  error: string | undefined;
+  loading: boolean;
+  onChange: (value: string | null) => void;
+  value: string | null | undefined;
+}) {
+  const current = value ? categories.find((category) => category.id === value) : undefined;
+  return (
+    <section className="editor-category-selector" aria-labelledby="editor-category-title">
+      <div>
+        <label id="editor-category-title" htmlFor="editor-category">카테고리</label>
+        <p>글을 `/카테고리/글주소` 아래에 정리합니다. 카테고리는 글쓰기와 별도로 관리됩니다.</p>
+      </div>
+      <div className="editor-category-control">
+        <select
+          disabled={loading}
+          id="editor-category"
+          onChange={(event) => onChange(event.target.value || null)}
+          value={value ?? ""}
+        >
+          <option value="">미분류 · 기존 블로그 주소</option>
+          {categories.map((category) => (
+            <option
+              disabled={category.status === "archived" && category.id !== value}
+              key={category.id}
+              value={category.id}
+            >
+              {category.title} · /{category.slug}{category.status === "archived" ? " · 보관됨" : ""}
+            </option>
+          ))}
+        </select>
+        <AppLink className="text-button" href="/studio/categories">카테고리 만들기·관리</AppLink>
+      </div>
+      {loading ? <p className="field-help" role="status">카테고리를 불러오는 중…</p> : null}
+      {error ? <p className="field-error" role="alert">카테고리를 불러오지 못했습니다: {error}</p> : null}
+      {value && !current && !loading ? (
+        <p className="field-error" role="alert">선택했던 카테고리를 찾을 수 없습니다. 저장 전 다른 카테고리를 골라 주세요.</p>
+      ) : null}
+    </section>
+  );
+}
+
+function AiSummaryEditor({
+  currentSourceHash,
+  draft,
+  generationEnabled,
+  setDraft,
+}: {
+  currentSourceHash: string | null | undefined;
+  draft: CreatePostInput;
+  generationEnabled: boolean;
+  setDraft: React.Dispatch<React.SetStateAction<CreatePostInput>>;
+}) {
+  const [providers, setProviders] = useState<AiSummaryProvider[]>([]);
+  const [maximumSourceBytes, setMaximumSourceBytes] = useState<number>();
+  const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
+  const [providerId, setProviderId] = useState<AiSummaryProvider["id"] | "">("");
+  const [model, setModel] = useState("");
+  const [oneShotApiKey, setOneShotApiKey] = useState("");
+  const [candidate, setCandidate] = useState<AiSummary>();
+  const [generating, setGenerating] = useState(false);
+  const [notice, setNotice] = useState<string>();
+  const generationController = useRef<AbortController | undefined>(undefined);
+
+  useEffect(() => {
+    if (!generationEnabled) {
+      setCatalogState("ready");
+      setProviders([]);
+      setMaximumSourceBytes(undefined);
+      return;
+    }
+    const controller = new AbortController();
+    setCatalogState("loading");
+    void client.aiSummaryProviders(controller.signal)
+      .then((response) => {
+        if (controller.signal.aborted) return;
+        setProviders(response.providers);
+        setMaximumSourceBytes(response.maximumSourceBytes);
+        const initialProvider = response.providers.find(
+          (provider) => provider.id === draft.aiSummary?.provenance.provider,
+        ) ?? response.providers[0];
+        if (initialProvider) {
+          setProviderId(initialProvider.id);
+          setModel(
+            initialProvider.models.includes(draft.aiSummary?.provenance.model ?? "")
+              ? draft.aiSummary!.provenance.model
+              : initialProvider.defaultModel,
+          );
+        }
+        setCatalogState("ready");
+      })
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        setCatalogState("error");
+        setNotice(`AI 제공자 목록을 불러오지 못했습니다: ${asMessage(reason)}`);
+      });
+    return () => controller.abort();
+    // A loaded document only supplies a preferred initial provider/model.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [generationEnabled]);
+
+  useEffect(() => () => {
+    generationController.current?.abort();
+    setOneShotApiKey("");
+  }, []);
+
+  const selectedProvider = providers.find((provider) => provider.id === providerId);
+  const appliedFreshness = aiSummaryFreshness(draft.aiSummary, currentSourceHash);
+  const candidateFreshness = aiSummaryFreshness(candidate, currentSourceHash);
+  const sourceBytes = new TextEncoder().encode(
+    `${normalizedEditorTitle(draft.title)}${draft.sourceMarkdown}`,
+  ).byteLength;
+
+  function selectProvider(nextProviderId: AiSummaryProvider["id"]) {
+    const provider = providers.find((value) => value.id === nextProviderId);
+    setProviderId(nextProviderId);
+    setModel(provider?.defaultModel ?? "");
+    setNotice(undefined);
+  }
+
+  async function generateSummary() {
+    if (!selectedProvider || !model || !oneShotApiKey) return;
+    generationController.current?.abort();
+    const controller = new AbortController();
+    generationController.current = controller;
+    const apiKey = oneShotApiKey;
+    setGenerating(true);
+    setNotice("AI 제공자에게 제목과 Markdown을 보내 요약 초안을 만드는 중…");
+    try {
+      const response = await client.generateAiSummary({
+        provider: selectedProvider.id,
+        model,
+        credentialMode: "one_shot",
+        title: normalizedEditorTitle(draft.title),
+        sourceMarkdown: draft.sourceMarkdown,
+      }, apiKey, controller.signal);
+      if (controller.signal.aborted) return;
+      setCandidate(response.candidate);
+      setNotice("요약 초안이 도착했습니다. 내용을 직접 확인한 뒤 사용해 주세요.");
+    } catch (reason) {
+      if (!controller.signal.aborted) setNotice(asMessage(reason));
+    } finally {
+      // Clear the credential for success, failure, and cancellation alike.
+      setOneShotApiKey("");
+      if (generationController.current === controller) {
+        setGenerating(false);
+        generationController.current = undefined;
+      }
+    }
+  }
+
+  function useCandidate() {
+    if (!candidate || candidateFreshness !== "current" || !candidate.text.trim()) return;
+    const reviewed = reviewAiSummaryCandidate({ ...candidate, text: candidate.text.trim() });
+    setDraft((current) => ({ ...current, aiSummary: reviewed }));
+    setNotice("검토한 요약을 이 글에 적용했습니다. 저장 버튼을 눌러 새 리비전에 포함하세요.");
+  }
+
+  function removeAppliedSummary() {
+    setDraft((current) => {
+      const { aiSummary: _removed, ...withoutSummary } = current;
+      return withoutSummary;
+    });
+    setNotice("이 글에서 AI 요약을 제거했습니다. 서버에 반영하려면 저장해 주세요.");
+  }
+
+  return (
+    <section className="ai-summary-editor" aria-labelledby="ai-summary-editor-title">
+      <div className="ai-summary-editor-heading">
+        <div>
+          <p className="eyebrow">선택 기능</p>
+          <h2 id="ai-summary-editor-title">글 위에 AI 요약 넣기</h2>
+          <p>{generationEnabled
+            ? "생성할 때만 제목과 Markdown 본문을 선택한 AI 제공자에게 보냅니다. 요청이 끝나면 입력칸에서 키를 지우며, 글·브라우저 초안·OSB 데이터베이스에는 저장하지 않습니다."
+            : "이 서버에서는 새 AI 요약 생성을 사용하지 않습니다. 기존 글에 저장된 요약은 확인하거나 제거할 수 있습니다."}</p>
+        </div>
+        {draft.aiSummary ? (
+          <span className={`ai-summary-state is-${appliedFreshness}`}>
+            {appliedFreshness === "current" ? "요약 적용됨" : appliedFreshness === "checking" ? "내용 확인 중" : "다시 확인 필요"}
+          </span>
+        ) : <span className="ai-summary-state">사용 안 함</span>}
+      </div>
+
+      {draft.aiSummary ? (
+        <div className={`ai-summary-applied is-${appliedFreshness}`}>
+          <div>
+            <strong>현재 글에 적용된 요약</strong>
+            <span>{aiSummaryProvenanceText(draft.aiSummary)}</span>
+          </div>
+          <p>{draft.aiSummary.text}</p>
+          {appliedFreshness === "stale" ? <p className="ai-summary-warning" role="alert">제목이나 본문이 달라졌습니다. 저장하기 전에 다시 생성하거나 요약을 제거해 주세요.</p> : null}
+          <button className="text-button" onClick={removeAppliedSummary} type="button">적용된 요약 제거</button>
+        </div>
+      ) : null}
+
+      {generationEnabled && catalogState === "loading" ? <p className="ai-summary-loading" role="status">사용 가능한 AI 제공자를 확인하는 중…</p> : null}
+      {generationEnabled && catalogState === "ready" && providers.length === 0 ? <p className="ai-summary-warning" role="status">현재 사용할 수 있는 AI 제공자가 없습니다.</p> : null}
+      {generationEnabled && catalogState === "ready" && selectedProvider ? (
+        <div className="ai-summary-controls">
+          <label>
+            AI 제공자
+            <select onChange={(event) => selectProvider(event.target.value as AiSummaryProvider["id"])} value={providerId}>
+              {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+            </select>
+          </label>
+          <label>
+            모델
+            <select onChange={(event) => setModel(event.target.value)} value={model}>
+              {selectedProvider.models.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <label className="ai-summary-key-field">
+            이번 요청에만 쓸 API 키
+            <input
+              autoComplete="off"
+              onChange={(event) => setOneShotApiKey(event.target.value)}
+              placeholder={`${selectedProvider.label} API 키`}
+              spellCheck="false"
+              type="password"
+              value={oneShotApiKey}
+            />
+          </label>
+          <button
+            className="button button-ghost ai-summary-generate"
+            disabled={
+              generating
+              || !draft.title.trim()
+              || !draft.sourceMarkdown.trim()
+              || !oneShotApiKey
+              || Boolean(maximumSourceBytes && sourceBytes > maximumSourceBytes)
+            }
+            onClick={() => void generateSummary()}
+            type="button"
+          >
+            {generating ? "요약 만드는 중…" : candidate || draft.aiSummary ? "다시 생성" : "요약 초안 생성"}
+          </button>
+          {maximumSourceBytes ? (
+            <p className={sourceBytes > maximumSourceBytes ? "ai-summary-warning" : "ai-summary-limit"}>
+              제목 + 본문 {sourceBytes.toLocaleString()} / {maximumSourceBytes.toLocaleString()} bytes
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {candidate ? (
+        <div className={`ai-summary-candidate is-${candidateFreshness}`}>
+          <label htmlFor="ai-summary-candidate">요약 초안 확인·수정</label>
+          <textarea
+            id="ai-summary-candidate"
+            maxLength={2_000}
+            onChange={(event) => setCandidate((current) => current ? { ...current, text: event.target.value } : current)}
+            rows={5}
+            value={candidate.text}
+          />
+          <div className="ai-summary-candidate-footer">
+            <span>{aiSummaryProvenanceText(candidate)}</span>
+            <button
+              className="button button-primary"
+              disabled={candidateFreshness !== "current" || !candidate.text.trim()}
+              onClick={useCandidate}
+              type="button"
+            >이 요약 사용</button>
+          </div>
+          {candidateFreshness === "stale" ? <p className="ai-summary-warning" role="alert">생성 뒤 제목이나 본문이 바뀌었습니다. 현재 글 기준으로 다시 생성해 주세요.</p> : null}
+        </div>
+      ) : null}
+      {notice ? <p className="ai-summary-notice" role="status">{notice}</p> : null}
+    </section>
+  );
+}
+
+function aiSummaryFreshness(
+  summary: AiSummary | undefined,
+  currentSourceHash: string | null | undefined,
+): "none" | "checking" | "current" | "stale" {
+  if (!summary) return "none";
+  if (currentSourceHash === undefined) return "checking";
+  return isAiSummarySourceCurrent(summary, currentSourceHash) ? "current" : "stale";
+}
+
+function aiSummaryProvenanceText(summary: AiSummary): string {
+  const provider = summary.provenance.provider === "openai"
+    ? "OpenAI"
+    : summary.provenance.provider === "anthropic"
+      ? "Anthropic"
+      : summary.provenance.provider === "google"
+        ? "Google Gemini"
+        : summary.provenance.provider;
+  return `${provider} · ${summary.provenance.model}`;
+}
+
+function AiSummaryPreview({ summary }: { summary: AiSummary }) {
+  return (
+    <aside className="osb-ai-summary" aria-label="AI 요약">
+      <p className="osb-ai-summary__label">AI 요약 · 사람이 검토함</p>
+      <p className="osb-ai-summary__text">{summary.text}</p>
+    </aside>
   );
 }
 

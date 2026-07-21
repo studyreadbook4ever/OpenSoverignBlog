@@ -341,9 +341,11 @@ docker compose exec blog osb-cli \
   export 00000000-0000-7000-8000-000000000001 /data/export-1
 ```
 
-The export writes `assets-manifest.json` with SHA-256 and size entries for the
-copied blob files. An export is a portability artifact, not a substitute for a
-verified off-volume backup bundle.
+The versioned export preserves category metadata (including empty or archived
+categories) and each immutable revision's category placement alongside the
+content and route history. It also writes `assets-manifest.json` with SHA-256
+and size entries for copied blob files. An export is a portability artifact,
+not a substitute for a verified off-volume backup bundle.
 
 The data volume is independent of the image, so replacing or removing the
 renderer does not remove content.

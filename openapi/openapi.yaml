@@ -556,6 +556,174 @@ paths:
         "304": { description: The supplied ETag still matches. }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/blogs/{handle}/categories:
+    get:
+      tags: [Blogs, Content]
+      operationId: listBlogCategories
+      summary: List active categories in one blog
+      description: Archived categories and all private placement metadata are excluded.
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+      responses:
+        "200":
+          description: Cacheable, site-scoped category metadata.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryListResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/categories/{category}:
+    get:
+      tags: [Blogs, Content]
+      operationId: getBlogCategory
+      summary: Read one public category landing projection
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+        - $ref: "#/components/parameters/CategorySlug"
+      responses:
+        "200":
+          description: Cacheable category metadata, owning blog, and published post count.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogCategoryResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/categories/{category}/posts:
+    get:
+      tags: [Blogs, Content]
+      operationId: listBlogCategoryPosts
+      summary: List published revisions currently placed in one category
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+        - $ref: "#/components/parameters/CategorySlug"
+      responses:
+        "200":
+          description: Cacheable category archive using published, not draft, placement.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/categories/{category}/posts/{slug}:
+    get:
+      tags: [Blogs, Content]
+      operationId: getBlogCategoryPost
+      summary: Read a published revision through its category path
+      description: Category placement is resolved from the immutable published revision.
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+        - $ref: "#/components/parameters/CategorySlug"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: Cacheable post projection with its public category metadata.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPostView" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/categories:
+    get:
+      tags: [Blogs, Content]
+      operationId: listPrimaryBlogCategories
+      summary: List active categories in the provisioned primary blog
+      description: Anonymous short-route alias that does not require discovery of the primary blog handle.
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable, site-scoped category metadata.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryListResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/categories/{category}:
+    get:
+      tags: [Blogs, Content]
+      operationId: getPrimaryBlogCategory
+      summary: Read one category in the provisioned primary blog
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/CategorySlug"
+      responses:
+        "200":
+          description: Cacheable category metadata, primary blog, and published post count.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogCategoryResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/categories/{category}/posts:
+    get:
+      tags: [Blogs, Content]
+      operationId: listPrimaryBlogCategoryPosts
+      summary: List published revisions in one primary-blog category
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/CategorySlug"
+      responses:
+        "200":
+          description: Cacheable category archive using published placement.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/categories/{category}/posts/{slug}:
+    get:
+      tags: [Blogs, Content]
+      operationId: getPrimaryBlogCategoryPost
+      summary: Read a primary-blog published revision through its category path
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/CategorySlug"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: Cacheable post projection with its public category metadata.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogPostView" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/admin/home/pins:
     get:
       tags: [Studio]
@@ -625,7 +793,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/CreatePostRequest" }
+            schema: { $ref: "#/components/schemas/StudioDocumentRequest" }
       responses:
         "201":
           description: Draft created.
@@ -669,7 +837,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/ProposeRevisionRequest" }
+            schema: { $ref: "#/components/schemas/StudioRevisionRequest" }
       responses:
         "201":
           description: Updated document snapshot. A prior published revision stays public.
@@ -707,6 +875,98 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
 
+  /api/v1/studio/categories:
+    get:
+      tags: [Studio, Blogs]
+      operationId: listStudioCategories
+      summary: List active and archived categories for the writable blog
+      description: Owner, editor, and writer sessions may use this private list when choosing revision placement.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Private category list, including archived entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategoryListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Studio, Blogs]
+      operationId: createStudioCategory
+      summary: Create a site-scoped category as the blog owner
+      description: The normalized slug is immutable and must not collide with application or configured article routes.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCategoryRequest" }
+      responses:
+        "201":
+          description: Category created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategorySummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/categories/{id}:
+    put:
+      tags: [Studio, Blogs]
+      operationId: updateStudioCategory
+      summary: Update mutable category presentation as the blog owner
+      description: The category slug and site ownership are immutable.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CategoryId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCategoryRequest" }
+      responses:
+        "200":
+          description: Updated category.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategorySummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/categories/{id}/archive:
+    post:
+      tags: [Studio, Blogs]
+      operationId: archiveStudioCategory
+      summary: Archive a category as the blog owner
+      description: Existing immutable revision placement is retained, while future revisions and publications cannot target the archived category.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/CategoryId"
+      responses:
+        "200":
+          description: Archived category.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CategorySummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /api/v1/studio/preview:
     post:
       tags: [Studio]
@@ -719,7 +979,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/CreatePostRequest" }
+            schema: { $ref: "#/components/schemas/StudioDocumentRequest" }
       responses:
         "200":
           description: Private rendered preview.
@@ -728,6 +988,63 @@ paths:
               schema: { $ref: "#/components/schemas/StudioPreviewResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /api/v1/studio/ai-summary/providers:
+    get:
+      tags: [Studio]
+      operationId: listStudioAiSummaryProviders
+      summary: List the fixed AI summary providers and models enabled by this module
+      description: |
+        This private, no-store route is mounted only when the `ai_summary`
+        module is active. It never returns credentials or provider account data.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Fixed provider catalog and source-size policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AiSummaryProvidersResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/ai-summary/generate:
+    post:
+      tags: [Studio]
+      operationId: generateStudioAiSummary
+      summary: Generate a private AI summary candidate with a one-shot provider key
+      description: |
+        Requires a same-origin authenticated Studio mutation and a volatile key
+        in `X-OSB-AI-One-Shot-Key`. The credential is never accepted in JSON,
+        echoed, persisted, or added to post provenance. The returned candidate
+        has `humanReviewed: false`; Studio must require an explicit author review
+        before storing it on a revision. MCP bearer credentials are never valid.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/AiOneShotKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GenerateAiSummaryRequest" }
+      responses:
+        "200":
+          description: Private, no-store summary candidate bound to the exact title and Markdown source.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GenerateAiSummaryResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+        "504": { $ref: "#/components/responses/GatewayTimeout" }
 
   /api/v1/studio/assets:
     post:
@@ -1009,6 +1326,103 @@ paths:
           $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /api/v1/posts/{category}/{slug}:
+    get:
+      tags: [Content]
+      operationId: getCategorizedPublishedPost
+      summary: Get a categorized published post and a sanitized publish artifact
+      description: Follow `apiHref` from `listPublishedPosts`; category and leaf slug remain ordinary path segments for reverse-proxy portability.
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/CategorySlug"
+        - $ref: "#/components/parameters/Slug"
+        - $ref: "#/components/parameters/View"
+      responses:
+        "200":
+          description: Published content in the selected view.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PostView"
+        "400":
+          $ref: "#/components/responses/QueryError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/posts/{category}/{slug}/source.md:
+    get:
+      tags: [Content]
+      operationId: getCategorizedPublishedMarkdownSource
+      summary: Fetch portable Markdown for a categorized published post
+      description: Follow `sourceHref` from `listPublishedPosts`; category and leaf slug remain ordinary path segments for reverse-proxy portability.
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/CategorySlug"
+        - $ref: "#/components/parameters/Slug"
+      responses:
+        "200":
+          description: Verbatim Markdown for the published revision.
+          content:
+            text/markdown:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /api/v1/admin/tree:
+    get:
+      tags: [Administration]
+      operationId: getAdministratorProgramTree
+      summary: Lazily inspect an allowlisted metadata-only view of the installation
+      description: |
+        This installation-wide view requires an administrator browser session.
+        Blog membership and MCP bearer credentials are never sufficient. Nodes
+        deliberately exclude Markdown, custom CSS, filesystem and database paths,
+        environment values, credentials, user identity fields, content hashes,
+        and provider configuration. Responses are private and no-store.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - name: parent
+          in: query
+          required: false
+          description: Opaque node identifier to expand; omission selects `root`.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            default: root
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque continuation cursor returned by this same parent expansion.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 32
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 100
+      responses:
+        "200":
+          description: One bounded page of direct child nodes.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminTreePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/admin/documents:
     get:
@@ -1501,6 +1915,14 @@ components:
       schema:
         type: string
         format: uuid
+    CategoryId:
+      name: id
+      in: path
+      required: true
+      description: Site-scoped category identifier.
+      schema:
+        type: string
+        format: uuid
     PostId:
       name: id
       in: path
@@ -1515,6 +1937,16 @@ components:
       schema:
         type: string
         pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+    CategorySlug:
+      name: category
+      in: path
+      required: true
+      description: Immutable normalized category slug.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 40
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
     Slug:
       name: slug
       in: path
@@ -1532,6 +1964,21 @@ components:
         type: string
         enum: [intent, markdown, markdown_source, source]
         default: intent
+    AiOneShotKey:
+      name: X-OSB-AI-One-Shot-Key
+      in: header
+      required: true
+      description: |
+        Sensitive provider API key held only for this outbound generation call.
+        It must be 8-4096 bytes with no surrounding whitespace or control
+        characters. The server never accepts this value in JSON, echoes it,
+        persists it, or copies it into summary provenance.
+      schema:
+        type: string
+        format: password
+        minLength: 8
+        maxLength: 4096
+        writeOnly: true
 
   responses:
     Unauthorized:
@@ -1616,7 +2063,19 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorBody"
     BadGateway:
-      description: The optional remote runner returned an invalid or failed upstream response.
+      description: An optional remote runner or explicitly selected AI provider returned an invalid or failed upstream response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    TooManyRequests:
+      description: The bounded AI summary worker pool or selected provider is temporarily rate limited.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorBody"
+    GatewayTimeout:
+      description: The selected AI provider did not respond before the server-side timeout.
       content:
         application/json:
           schema:
@@ -2072,11 +2531,26 @@ components:
     PostSummary:
       type: object
       additionalProperties: false
-      required: [id, title, slug, updatedAt, hasIntentView, hasOntology, authorship]
+      required: [id, title, slug, routePath, apiHref, sourceHref, updatedAt, hasIntentView, hasOntology, authorship]
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
-        slug: { type: string }
+        slug:
+          type: string
+          description: Backwards-compatible leaf slug without a category prefix.
+        routePath:
+          type: string
+          description: Published lookup path; category posts use `category/slug`.
+          minLength: 1
+          maxLength: 281
+        apiHref:
+          type: string
+          format: uri
+          pattern: '^https?://'
+        sourceHref:
+          type: string
+          format: uri
+          pattern: '^https?://'
         updatedAt: { type: string, format: date-time }
         hasIntentView: { type: boolean }
         hasOntology: { type: boolean }
@@ -2111,7 +2585,7 @@ components:
     BlogSummary:
       type: object
       additionalProperties: false
-      required: [id, handle, title, owner, theme]
+      required: [id, handle, title, owner, theme, isPrimary]
       properties:
         id: { type: string, format: uuid }
         handle:
@@ -2121,7 +2595,86 @@ components:
         description: { type: string, minLength: 1, maxLength: 240 }
         owner: { $ref: "#/components/schemas/UserSummary" }
         theme: { $ref: "#/components/schemas/BlogTheme" }
+        isPrimary:
+          type: boolean
+          description: True only for the configured primary site whose categorized posts use handle-free public paths.
         createdAt: { type: string, format: date-time }
+
+    CategorySummary:
+      type: object
+      additionalProperties: false
+      required: [id, slug, title, status]
+      properties:
+        id: { type: string, format: uuid }
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
+          description: Immutable within the category's site.
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+        themePreset:
+          type: string
+          enum: [paper, ink, forest, terminal]
+          description: Omission inherits the owning blog's selected theme.
+        status:
+          type: string
+          enum: [active, archived]
+
+    CategoryListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/CategorySummary" }
+
+    BlogCategoryResponse:
+      type: object
+      additionalProperties: false
+      required: [category, blog, postCount]
+      properties:
+        category: { $ref: "#/components/schemas/CategorySummary" }
+        blog: { $ref: "#/components/schemas/BlogSummary" }
+        postCount: { type: integer, minimum: 0, maximum: 500 }
+
+    CreateCategoryRequest:
+      type: object
+      additionalProperties: false
+      required: [slug, title]
+      properties:
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
+          description: Becomes an immutable public path segment after normalization.
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+          description: Null, omission, or empty text stores no description.
+        themePreset:
+          type: [string, "null"]
+          enum: [paper, ink, forest, terminal, null]
+
+    UpdateCategoryRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+          description: Null or empty text clears the stored description.
+        themePreset:
+          type: [string, "null"]
+          enum: [paper, ink, forest, terminal, null]
+          description: Null or omission selects blog-theme inheritance.
 
     AnonymousSession:
       type: object
@@ -2270,6 +2823,57 @@ components:
           maxLength: 65536
           description: Omit to preserve; null or an empty string clears. Rejected when custom CSS is disabled.
 
+    AdminTreeNode:
+      type: object
+      additionalProperties: false
+      required: [id, parentId, kind, label, hasChildren]
+      description: |
+        Closed metadata projection. It intentionally has no free-form metadata
+        object and no source, actor, identity, path, environment, configuration,
+        credential, provider, CSS, or content-hash fields.
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        parentId: { type: string, minLength: 1, maxLength: 128 }
+        kind:
+          type: string
+          enum: [group, site, category, document, revision, setting, module, runtime]
+        label: { type: string, minLength: 1, maxLength: 300 }
+        hasChildren: { type: boolean }
+        entityId: { type: string, format: uuid }
+        handle:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
+        slug: { type: string, minLength: 1, maxLength: 240 }
+        state: { type: string, minLength: 1, maxLength: 100 }
+        revisionNumber: { type: integer, minimum: 1 }
+        requested: { type: boolean }
+        operational: { type: boolean }
+        summary: { type: string, minLength: 1, maxLength: 2000 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    AdminTreePage:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, generatedAt, parentId, items]
+      properties:
+        schemaVersion:
+          type: string
+          const: open-soverign-blog-admin-tree/1
+        generatedAt: { type: string, format: date-time }
+        parentId: { type: string, minLength: 1, maxLength: 128 }
+        items:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/AdminTreeNode" }
+        nextCursor:
+          type: string
+          minLength: 11
+          maxLength: 32
+          pattern: '^[A-Za-z0-9_-]+$'
+
     PublicAuthorship:
       type: object
       additionalProperties: false
@@ -2299,6 +2903,142 @@ components:
             required: [kind]
           then:
             required: [generator]
+
+    AiSummaryProvenance:
+      type: object
+      additionalProperties: false
+      required: [provider, model, promptVersion, generatedAt, humanReviewed]
+      description: Portable generation metadata. It never contains credentials, provider response bodies, account identifiers, or internal actor/session IDs.
+      properties:
+        provider: { type: string, minLength: 1, maxLength: 100 }
+        model: { type: string, minLength: 1, maxLength: 300 }
+        promptVersion: { type: string, minLength: 1, maxLength: 100 }
+        generatedAt: { type: string, format: date-time }
+        humanReviewed:
+          type: boolean
+          description: Generation returns false; persistence requires an explicit Studio review action that changes this to true.
+
+    AiSummary:
+      type: object
+      additionalProperties: false
+      required: [text, sourceHash, provenance]
+      description: Plain-text candidate or reviewed stored summary bound to the exact title and Markdown source; persistence requires humanReviewed to be true.
+      properties:
+        text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: Plain text only; publication escapes it rather than interpreting Markdown or HTML.
+        sourceHash:
+          type: string
+          pattern: '^sha256:[a-f0-9]{64}$'
+          description: Domain-separated digest of the exact title and sourceMarkdown.
+        provenance: { $ref: "#/components/schemas/AiSummaryProvenance" }
+
+    AiSummaryProvider:
+      type: object
+      additionalProperties: false
+      required: [id, label, models, defaultModel, credentialModes]
+      properties:
+        id:
+          type: string
+          enum: [openai, anthropic, google]
+        label: { type: string, minLength: 1, maxLength: 100 }
+        models:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items:
+            type: string
+            enum:
+              - gpt-5.4-mini
+              - gpt-5.4-nano
+              - gpt-5.4
+              - claude-sonnet-5
+              - claude-haiku-4-5-20251001
+              - gemini-3.5-flash
+              - gemini-3.1-flash-lite
+        defaultModel:
+          type: string
+          enum:
+            - gpt-5.4-mini
+            - claude-sonnet-5
+            - gemini-3.5-flash
+        credentialModes:
+          type: array
+          minItems: 1
+          maxItems: 1
+          uniqueItems: true
+          items: { type: string, const: one_shot }
+
+    AiSummaryProvidersResponse:
+      type: object
+      additionalProperties: false
+      required: [providers, maximumSourceBytes, credentialsPersisted]
+      properties:
+        providers:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: { $ref: "#/components/schemas/AiSummaryProvider" }
+        maximumSourceBytes:
+          type: integer
+          const: 262144
+          description: Combined UTF-8 byte ceiling for title plus sourceMarkdown.
+        credentialsPersisted:
+          type: boolean
+          const: false
+          description: Provider keys are transient request data and are never persisted in drafts, content, or the OSB database; browser and network-stack memory may hold temporary copies during the request.
+
+    GenerateAiSummaryRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, model, credentialMode, title, sourceMarkdown]
+      description: The one-shot provider credential is intentionally absent and must be supplied only through the dedicated sensitive header.
+      properties:
+        provider:
+          type: string
+          enum: [openai, anthropic, google]
+        model:
+          type: string
+          minLength: 1
+          maxLength: 300
+        credentialMode:
+          type: string
+          const: one_shot
+        title: { type: string, minLength: 1, maxLength: 300 }
+        sourceMarkdown:
+          type: string
+          maxLength: 262144
+          description: Title and Markdown together must not exceed 262144 UTF-8 bytes.
+      allOf:
+        - if:
+            properties: { provider: { const: openai } }
+            required: [provider]
+          then:
+            properties:
+              model: { enum: [gpt-5.4-mini, gpt-5.4-nano, gpt-5.4] }
+        - if:
+            properties: { provider: { const: anthropic } }
+            required: [provider]
+          then:
+            properties:
+              model: { enum: [claude-sonnet-5, claude-haiku-4-5-20251001] }
+        - if:
+            properties: { provider: { const: google } }
+            required: [provider]
+          then:
+            properties:
+              model: { enum: [gemini-3.5-flash, gemini-3.1-flash-lite] }
+
+    GenerateAiSummaryResponse:
+      type: object
+      additionalProperties: false
+      required: [candidate]
+      properties:
+        candidate:
+          $ref: "#/components/schemas/AiSummary"
 
     FeedPostSummary:
       type: object
@@ -2331,6 +3071,8 @@ components:
         commentCount: { type: integer, minimum: 0 }
         hasIntentView: { type: boolean }
         authorship: { $ref: "#/components/schemas/PublicAuthorship" }
+        category:
+          $ref: "#/components/schemas/CategorySummary"
         coverImageUrl: { type: string, format: uri-reference }
 
     FeedResponse:
@@ -2397,7 +3139,9 @@ components:
           items: { $ref: "#/components/schemas/EmbedReference" }
         artifact: { $ref: "#/components/schemas/PublishArtifact" }
         ontology: { $ref: "#/components/schemas/OntologySidecar" }
+        aiSummary: { $ref: "#/components/schemas/AiSummary" }
         authorship: { $ref: "#/components/schemas/PublicAuthorship" }
+        category: { $ref: "#/components/schemas/CategorySummary" }
         slug: { type: string }
         excerpt: { type: string }
         publishedAt: { type: string, format: date-time }
@@ -2563,8 +3307,42 @@ components:
           oneOf:
             - $ref: "#/components/schemas/OntologySidecar"
             - type: "null"
+        aiSummary:
+          oneOf:
+            - $ref: "#/components/schemas/AiSummary"
+            - type: "null"
         authorship: { $ref: "#/components/schemas/PublicAuthorship" }
       description: Unknown JSON fields are currently ignored by this request type.
+
+    StudioDocumentRequest:
+      type: object
+      additionalProperties: false
+      required: [title, slug, sourceMarkdown]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 300 }
+        slug: { type: string, minLength: 1, maxLength: 240 }
+        sourceMarkdown: { type: string, maxLength: 10485760 }
+        embeds:
+          type: array
+          maxItems: 10000
+          items: { $ref: "#/components/schemas/EmbedReference" }
+        intent:
+          oneOf:
+            - $ref: "#/components/schemas/IntentLayer"
+            - type: "null"
+        ontology:
+          oneOf:
+            - $ref: "#/components/schemas/OntologySidecar"
+            - type: "null"
+        aiSummary:
+          oneOf:
+            - $ref: "#/components/schemas/AiSummary"
+            - type: "null"
+        categoryId:
+          type: [string, "null"]
+          format: uuid
+          description: Omission or null creates an uncategorized first revision.
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
 
     ProposedRevision:
       type: object
@@ -2587,6 +3365,10 @@ components:
         ontology:
           oneOf:
             - $ref: "#/components/schemas/OntologySidecar"
+            - type: "null"
+        aiSummary:
+          oneOf:
+            - $ref: "#/components/schemas/AiSummary"
             - type: "null"
         authorship: { $ref: "#/components/schemas/PublicAuthorship" }
         actor:
@@ -2618,6 +3400,44 @@ components:
           oneOf:
             - $ref: "#/components/schemas/OntologySidecar"
             - type: "null"
+        aiSummary:
+          oneOf:
+            - $ref: "#/components/schemas/AiSummary"
+            - type: "null"
+        authorship: { $ref: "#/components/schemas/PublicAuthorship" }
+        idempotencyKey:
+          type: [string, "null"]
+          maxLength: 200
+
+    StudioRevisionRequest:
+      type: object
+      additionalProperties: false
+      required: [baseRevisionId, title, slug, sourceMarkdown]
+      properties:
+        baseRevisionId: { type: string, format: uuid }
+        title: { type: string, minLength: 1, maxLength: 300 }
+        slug: { type: string, minLength: 1, maxLength: 240 }
+        sourceMarkdown: { type: string, maxLength: 10485760 }
+        embeds:
+          type: array
+          maxItems: 10000
+          items: { $ref: "#/components/schemas/EmbedReference" }
+        intent:
+          oneOf:
+            - $ref: "#/components/schemas/IntentLayer"
+            - type: "null"
+        ontology:
+          oneOf:
+            - $ref: "#/components/schemas/OntologySidecar"
+            - type: "null"
+        aiSummary:
+          oneOf:
+            - $ref: "#/components/schemas/AiSummary"
+            - type: "null"
+        categoryId:
+          type: [string, "null"]
+          format: uuid
+          description: Omission inherits the parent revision's category; null explicitly clears placement.
         authorship: { $ref: "#/components/schemas/PublicAuthorship" }
         idempotencyKey:
           type: [string, "null"]
@@ -2656,6 +3476,8 @@ components:
           $ref: "#/components/schemas/IntentLayer"
         ontology:
           $ref: "#/components/schemas/OntologySidecar"
+        aiSummary:
+          $ref: "#/components/schemas/AiSummary"
         authorship:
           $ref: "#/components/schemas/PublicAuthorship"
         actor:
@@ -2688,6 +3510,10 @@ components:
         publishedRevisionId: { type: string, format: uuid }
         revision:
           $ref: "#/components/schemas/RevisionSnapshot"
+        categoryId:
+          type: string
+          format: uuid
+          description: Present on private Studio projections when the current revision is categorized.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
 
@@ -2756,6 +3582,8 @@ components:
           $ref: "#/components/schemas/PublishArtifact"
         ontology:
           $ref: "#/components/schemas/OntologySidecar"
+        aiSummary:
+          $ref: "#/components/schemas/AiSummary"
         authorship:
           $ref: "#/components/schemas/PublicAuthorship"
 

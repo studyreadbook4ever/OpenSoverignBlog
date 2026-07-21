@@ -219,9 +219,13 @@ title/Markdown writing surface, preview, explicit publication review, pinned
 home management, portable AI authorship disclosure, and typed YouTube/X embed
 insertion. YouTube uses a privacy-enhanced, click-to-load iframe; X remains a
 safe link card in this initial adapter. Arbitrary embed HTML is never accepted.
-Provisioned blogs use `/@handle/slug` as their canonical reader URL; `/blog/slug`
-redirects there, while databases that predate the installation control plane
-retain their original `/blog/slug` canonical URL.
+The primary site's category pages use `/category` and `/category/slug`.
+Additional community blogs use `/@handle/category` and
+`/@handle/category/slug`; uncategorized posts retain `/@handle/slug`.
+Category landing pages are first-class reader pages, and Studio keeps category
+creation/appearance separate from writing. Legacy flat post paths redirect to
+the corresponding natural category path only when the site's published leaf
+slug has one unambiguous match; duplicate leaves across categories stay 404.
 
 ## DLC lifecycle
 
@@ -233,6 +237,7 @@ an exact bundled manifest digest. The current catalog is:
 | `seo` | Canonical discovery, robots, sitemap, metadata |
 | `home-curation` | Up to three pinned home posts and recent fallback |
 | `ai-authorship` | Portable authorship disclosure and AI2AI proposal surface |
+| `ai-summary` | Opt-in, human-reviewed per-post summary generation with ephemeral provider keys |
 | `social-embeds` | Strict YouTube/X references and consent-first rendering |
 | `release-check` | Bounded informational stable-channel checks |
 | `comments` | Authenticated community comments when community config is enabled |

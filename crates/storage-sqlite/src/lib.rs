@@ -17,7 +17,7 @@ use osb_kernel::{
     AI_PROPOSAL_AUDIT_SCHEMA_VERSION, Ai2AiEnvelope, AiProposalAuditRecord, CONTENT_SCHEMA_VERSION,
     ContentRepository, DocumentSnapshot, DocumentStatus, NewDocument, ProposedRevision,
     PublicAuthorship, PublicAuthorshipKind, RepositoryError, RevisionActorKind, RevisionSnapshot,
-    content_hash,
+    content_hash_with_ai_summary,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -27,7 +27,7 @@ use url::Url;
 use uuid::Uuid;
 
 /// Latest schema version required by both mutable and delivery-only runtimes.
-pub const DATABASE_SCHEMA_VERSION: u64 = 7;
+pub const DATABASE_SCHEMA_VERSION: u64 = 8;
 
 pub struct SqliteRepository {
     connection: Mutex<Connection>,
@@ -291,7 +291,143 @@ pub struct SiteRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// Closed, content-free site metadata used by bounded control-plane listings.
+///
+/// Keep this projection separate from [`SiteRecord`]: callers that only need
+/// navigation metadata must not load owner identity, descriptions, theme
+/// revisions, or custom CSS for every row in a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteMetadataRecord {
+    pub id: Uuid,
+    pub handle: String,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 pub type CommunitySite = SiteRecord;
+
+/// Lifecycle state for a category landing page.
+///
+/// Archiving is deliberately non-destructive: already-published revisions keep
+/// their category placement and routes, while new assignments and publications
+/// into the category are rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CategoryStatus {
+    Active,
+    Archived,
+}
+
+impl CategoryStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Archived => "archived",
+        }
+    }
+}
+
+impl FromStr for CategoryStatus {
+    type Err = RepositoryError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "active" => Ok(Self::Active),
+            "archived" => Ok(Self::Archived),
+            other => Err(RepositoryError::Storage(format!(
+                "unknown category status {other}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRecord {
+    pub id: Uuid,
+    pub site_id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub theme_profile: Option<ThemeProfile>,
+    pub status: CategoryStatus,
+    pub created_by_user_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Closed category metadata for paginated navigation projections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryMetadataRecord {
+    pub id: Uuid,
+    pub site_id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub status: CategoryStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Metadata for a document's exact current revision and placement.
+///
+/// Source Markdown, embeds, authorship, hashes, and AI provenance are omitted
+/// deliberately so a tree page cannot accidentally hydrate private content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentDocumentMetadataRecord {
+    pub id: Uuid,
+    pub site_id: Uuid,
+    pub status: DocumentStatus,
+    pub current_revision_id: Uuid,
+    pub published_revision_id: Option<Uuid>,
+    pub title: String,
+    pub slug: String,
+    pub revision_number: u64,
+    pub category_id: Option<Uuid>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Closed revision metadata for paginated history navigation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevisionMetadataRecord {
+    pub id: Uuid,
+    pub document_id: Uuid,
+    pub revision_number: u64,
+    pub slug: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCategoryInput {
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub theme_profile: Option<ThemeProfile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCategoryInput {
+    pub title: String,
+    pub description: Option<String>,
+    pub theme_profile: Option<ThemeProfile>,
+}
+
+/// Category placement belongs to an immutable revision rather than a mutable
+/// document. This lets delivery keep showing the published category while a
+/// newer Studio revision is moved elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevisionCategoryPlacement {
+    pub revision_id: Uuid,
+    pub document_id: Uuid,
+    pub site_id: Uuid,
+    pub category_id: Option<Uuid>,
+    pub assigned_by_user_id: Option<Uuid>,
+    pub assigned_at: DateTime<Utc>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -376,6 +512,8 @@ pub type CommunityComment = CommentRecord;
 pub struct SiteExport {
     pub schema_version: String,
     pub site_id: Uuid,
+    #[serde(default)]
+    pub categories: Vec<CategoryRecord>,
     pub documents: Vec<ExportedDocument>,
 }
 
@@ -384,6 +522,8 @@ pub struct SiteExport {
 pub struct ExportedDocument {
     pub current: DocumentSnapshot,
     pub revisions: Vec<RevisionSnapshot>,
+    #[serde(default)]
+    pub revision_category_placements: Vec<RevisionCategoryPlacement>,
     pub ai_proposals: Vec<AiProposalAuditRecord>,
     pub routes: Vec<ExportedRoute>,
 }
@@ -542,6 +682,20 @@ impl SqliteRepository {
                 .execute_batch(MIGRATION_7)
                 .map_err(storage_error)?;
         }
+        let has_migration_8 = transaction
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version = 8",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .is_some();
+        if !has_migration_8 {
+            transaction
+                .execute_batch(MIGRATION_8)
+                .map_err(storage_error)?;
+        }
         transaction.commit().map_err(storage_error)
     }
 
@@ -576,6 +730,22 @@ impl SqliteRepository {
 
     pub fn export_site(&self, site_id: Uuid) -> Result<SiteExport, RepositoryError> {
         let connection = self.lock()?;
+        let categories = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, site_id, slug, title, description, theme_profile, status,
+                            created_by_user_id, created_at, updated_at
+                     FROM categories
+                     WHERE site_id = ?1
+                     ORDER BY created_at, id",
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![site_id.to_string()], stored_category_row)
+                .map_err(storage_error)?
+                .map(|row| row.map_err(storage_error).and_then(parse_category_row))
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let document_ids = {
             let mut statement = connection
                 .prepare("SELECT id FROM documents WHERE site_id = ?1 ORDER BY created_at")
@@ -603,8 +773,9 @@ impl SqliteRepository {
                     })
                     .map_err(storage_error)?
                     .map(|row| {
-                        row.map_err(storage_error)
-                            .and_then(|json| serde_json::from_str(&json).map_err(storage_error))
+                        row.map_err(storage_error).and_then(|json| {
+                            serde_json::from_str::<RevisionSnapshot>(&json).map_err(storage_error)
+                        })
                     })
                     .collect::<Result<Vec<_>, _>>()?
             };
@@ -634,6 +805,12 @@ impl SqliteRepository {
                     })
                     .collect::<Result<Vec<_>, RepositoryError>>()?
             };
+            let revision_category_placements = revisions
+                .iter()
+                .map(|revision| {
+                    load_revision_category_placement(&connection, site_id, document_id, revision.id)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let ai_proposals = load_ai_proposals(
                 &connection,
                 document_id,
@@ -643,13 +820,15 @@ impl SqliteRepository {
             documents.push(ExportedDocument {
                 current,
                 revisions,
+                revision_category_placements,
                 ai_proposals,
                 routes,
             });
         }
         Ok(SiteExport {
-            schema_version: "open-soverign-blog-export/2".into(),
+            schema_version: "open-soverign-blog-export/3".into(),
             site_id,
+            categories,
             documents,
         })
     }
@@ -1350,6 +1529,49 @@ impl SqliteRepository {
         load_sites(&connection, None, limit)
     }
 
+    /// Lists only the closed site navigation projection with true SQL
+    /// offset/limit pagination. No installation-wide hard cap is applied.
+    pub fn list_site_metadata_page(
+        &self,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<SiteMetadataRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, handle, title, created_at, updated_at
+                 FROM sites
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT ?1 OFFSET ?2",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![page_parameter(limit)?, page_parameter(offset)?],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?
+            .map(|row| {
+                let (id, handle, title, created_at, updated_at) = row.map_err(storage_error)?;
+                Ok(SiteMetadataRecord {
+                    id: parse_uuid(&id)?,
+                    handle,
+                    title,
+                    created_at: parse_datetime(&created_at)?,
+                    updated_at: parse_datetime(&updated_at)?,
+                })
+            })
+            .collect()
+    }
+
     pub fn get_site_by_id(&self, id: Uuid) -> Result<SiteRecord, RepositoryError> {
         let connection = self.lock()?;
         load_site_by_id(&connection, id, None)
@@ -1613,6 +1835,362 @@ impl SqliteRepository {
         load_site_by_id(&connection, site_id, Some(owner_user_id))
     }
 
+    /// Creates a site-scoped category. Slugs are immutable after creation so
+    /// public category URLs cannot be silently repurposed.
+    pub fn create_category(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        input: CreateCategoryInput,
+    ) -> Result<CategoryRecord, RepositoryError> {
+        let slug = normalize_category_slug(&input.slug)?;
+        let title = validate_required_text(&input.title, "category title", 200)?;
+        let description =
+            validate_optional_text(input.description.as_deref(), "category description", 2_000)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        ensure_category_landing_available(&transaction, site_id, &slug)?;
+        let id = Uuid::now_v7();
+        let now = Utc::now();
+        transaction
+            .execute(
+                "INSERT INTO categories (
+                    id, site_id, slug, title, description, theme_profile, status,
+                    created_by_user_id, created_at, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
+                params![
+                    id.to_string(),
+                    site_id.to_string(),
+                    slug,
+                    title,
+                    description,
+                    input.theme_profile.map(ThemeProfile::as_str),
+                    owner_user_id.to_string(),
+                    now.to_rfc3339(),
+                ],
+            )
+            .map_err(map_category_constraint_error)?;
+        transaction.commit().map_err(storage_error)?;
+        load_category_by_id(&connection, site_id, id)
+    }
+
+    pub fn list_categories(
+        &self,
+        site_id: Uuid,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<CategoryRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        load_site_by_id(&connection, site_id, None)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, site_id, slug, title, description, theme_profile, status,
+                        created_by_user_id, created_at, updated_at
+                 FROM categories
+                 WHERE site_id = ?1 AND (?2 OR status = 'active')
+                 ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, title, slug
+                 LIMIT ?3",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![site_id.to_string(), include_archived, limit.min(500) as i64],
+                stored_category_row,
+            )
+            .map_err(storage_error)?
+            .map(|row| row.map_err(storage_error).and_then(parse_category_row))
+            .collect()
+    }
+
+    /// Lists only closed category navigation metadata with true SQL
+    /// offset/limit pagination. The site existence check prevents an empty
+    /// result from making an unknown tenant indistinguishable from a real,
+    /// empty site at repository boundaries that require fail-closed scoping.
+    pub fn list_category_metadata_page(
+        &self,
+        site_id: Uuid,
+        include_archived: bool,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<CategoryMetadataRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        ensure_site_exists(&connection, site_id)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, site_id, slug, title, status, created_at, updated_at
+                 FROM categories
+                 WHERE site_id = ?1 AND (?2 OR status = 'active')
+                 ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, title, slug
+                 LIMIT ?3 OFFSET ?4",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![
+                    site_id.to_string(),
+                    include_archived,
+                    page_parameter(limit)?,
+                    page_parameter(offset)?,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?
+            .map(|row| {
+                let (id, site_id, slug, title, status, created_at, updated_at) =
+                    row.map_err(storage_error)?;
+                Ok(CategoryMetadataRecord {
+                    id: parse_uuid(&id)?,
+                    site_id: parse_uuid(&site_id)?,
+                    slug,
+                    title,
+                    status: CategoryStatus::from_str(&status)?,
+                    created_at: parse_datetime(&created_at)?,
+                    updated_at: parse_datetime(&updated_at)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn get_category_by_id(
+        &self,
+        site_id: Uuid,
+        category_id: Uuid,
+    ) -> Result<CategoryRecord, RepositoryError> {
+        let connection = self.lock()?;
+        load_category_by_id(&connection, site_id, category_id)
+    }
+
+    pub fn get_category_by_slug(
+        &self,
+        site_id: Uuid,
+        slug: &str,
+    ) -> Result<CategoryRecord, RepositoryError> {
+        let slug = normalize_category_slug(slug)?;
+        let connection = self.lock()?;
+        load_category_by_slug(&connection, site_id, &slug)
+    }
+
+    pub fn update_category(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        category_id: Uuid,
+        input: UpdateCategoryInput,
+    ) -> Result<CategoryRecord, RepositoryError> {
+        let title = validate_required_text(&input.title, "category title", 200)?;
+        let description =
+            validate_optional_text(input.description.as_deref(), "category description", 2_000)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        load_category_by_id(&transaction, site_id, category_id)?;
+        transaction
+            .execute(
+                "UPDATE categories
+                 SET title = ?1, description = ?2, theme_profile = ?3, updated_at = ?4
+                 WHERE id = ?5 AND site_id = ?6",
+                params![
+                    title,
+                    description,
+                    input.theme_profile.map(ThemeProfile::as_str),
+                    Utc::now().to_rfc3339(),
+                    category_id.to_string(),
+                    site_id.to_string(),
+                ],
+            )
+            .map_err(map_category_constraint_error)?;
+        transaction.commit().map_err(storage_error)?;
+        load_category_by_id(&connection, site_id, category_id)
+    }
+
+    pub fn archive_category(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        category_id: Uuid,
+    ) -> Result<CategoryRecord, RepositoryError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        let category = load_category_by_id(&transaction, site_id, category_id)?;
+        if category.status == CategoryStatus::Active {
+            transaction
+                .execute(
+                    "UPDATE categories SET status = 'archived', updated_at = ?1
+                     WHERE id = ?2 AND site_id = ?3",
+                    params![
+                        Utc::now().to_rfc3339(),
+                        category_id.to_string(),
+                        site_id.to_string(),
+                    ],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction.commit().map_err(storage_error)?;
+        load_category_by_id(&connection, site_id, category_id)
+    }
+
+    /// Assigns the current, unpublished revision to a category. `None` moves
+    /// it back to the site root. A revision that is already public is immutable;
+    /// append a new revision before moving it.
+    pub fn assign_revision_category_in_writable_site(
+        &self,
+        actor_user_id: Uuid,
+        site_id: Uuid,
+        document_id: Uuid,
+        revision_id: Uuid,
+        category_id: Option<Uuid>,
+    ) -> Result<RevisionCategoryPlacement, RepositoryError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_writer(&transaction, actor_user_id, site_id)?;
+        let placement = assign_revision_category_in_transaction(
+            &transaction,
+            actor_user_id,
+            site_id,
+            document_id,
+            revision_id,
+            category_id,
+            Utc::now(),
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(placement)
+    }
+
+    pub fn get_revision_category_placement(
+        &self,
+        site_id: Uuid,
+        document_id: Uuid,
+        revision_id: Uuid,
+    ) -> Result<RevisionCategoryPlacement, RepositoryError> {
+        let connection = self.lock()?;
+        ensure_document_in_site(&connection, site_id, document_id)?;
+        load_revision_category_placement(&connection, site_id, document_id, revision_id)
+    }
+
+    pub fn get_current_category(
+        &self,
+        site_id: Uuid,
+        document_id: Uuid,
+    ) -> Result<Option<CategoryRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        load_document_category(&connection, site_id, document_id, RevisionSelector::Current)
+    }
+
+    pub fn get_published_category(
+        &self,
+        site_id: Uuid,
+        document_id: Uuid,
+    ) -> Result<Option<CategoryRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        load_document_category(
+            &connection,
+            site_id,
+            document_id,
+            RevisionSelector::Published,
+        )
+    }
+
+    /// Resolves a backwards-compatible leaf slug only when it identifies one
+    /// currently published document in the site. Category routes deliberately
+    /// allow the same leaf below different category roots, so callers must keep
+    /// zero and multiple matches indistinguishable.
+    pub fn get_unique_published_by_leaf_slug(
+        &self,
+        site_id: Uuid,
+        leaf_slug: &str,
+    ) -> Result<Option<DocumentSnapshot>, RepositoryError> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT document.id
+                 FROM documents document
+                 JOIN revisions published ON published.id = document.published_revision_id
+                 WHERE document.site_id = ?1
+                   AND published.slug = ?2
+                   AND document.published_revision_id IS NOT NULL
+                   AND document.status != 'archived'
+                 ORDER BY document.id
+                 LIMIT 2",
+            )
+            .map_err(storage_error)?;
+        let ids = statement
+            .query_map(params![site_id.to_string(), leaf_slug], |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        if ids.len() != 1 {
+            return Ok(None);
+        }
+        load_document(
+            &connection,
+            parse_uuid(&ids[0])?,
+            RevisionSelector::Published,
+        )
+        .map(Some)
+    }
+
+    pub fn list_published_in_category(
+        &self,
+        site_id: Uuid,
+        category_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<DocumentSnapshot>, RepositoryError> {
+        let connection = self.lock()?;
+        load_category_by_id(&connection, site_id, category_id)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT document.id
+                 FROM documents document
+                 JOIN revision_categories placement
+                   ON placement.revision_id = document.published_revision_id
+                  AND placement.document_id = document.id
+                  AND placement.site_id = document.site_id
+                 JOIN revisions published ON published.id = document.published_revision_id
+                 WHERE document.site_id = ?1 AND placement.category_id = ?2
+                   AND document.published_revision_id IS NOT NULL
+                   AND document.status != 'archived'
+                 ORDER BY published.created_at DESC, document.id DESC LIMIT ?3",
+            )
+            .map_err(storage_error)?;
+        let ids = statement
+            .query_map(
+                params![
+                    site_id.to_string(),
+                    category_id.to_string(),
+                    limit.min(500) as i64
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?;
+        ids.into_iter()
+            .map(|id| load_document(&connection, parse_uuid(&id)?, RevisionSelector::Published))
+            .collect()
+    }
+
     pub fn create_document_in_owned_site(
         &self,
         owner_user_id: Uuid,
@@ -1624,7 +2202,7 @@ impl SqliteRepository {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
         ensure_site_owner(&transaction, owner_user_id, input.site_id)?;
-        let document = create_document_in_transaction(&transaction, input, Utc::now())?;
+        let document = create_document_in_transaction(&transaction, input, Utc::now(), None)?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -1640,7 +2218,32 @@ impl SqliteRepository {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
         ensure_site_writer(&transaction, actor_user_id, input.site_id)?;
-        let document = create_document_in_transaction(&transaction, input, Utc::now())?;
+        let document = create_document_in_transaction(&transaction, input, Utc::now(), None)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(document)
+    }
+
+    /// Atomically creates the first revision and its optional category
+    /// placement. This avoids exposing a transient root-slug draft to another
+    /// writer and permits the same post slug in different categories.
+    pub fn create_document_in_writable_site_with_category(
+        &self,
+        actor_user_id: Uuid,
+        input: NewDocument,
+        category_id: Option<Uuid>,
+    ) -> Result<DocumentSnapshot, RepositoryError> {
+        input
+            .validate()
+            .map_err(|error| RepositoryError::Validation(error.to_string()))?;
+        let site_id = input.site_id;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_writer(&transaction, actor_user_id, site_id)?;
+        let initial_category = category_id.map(|category_id| (actor_user_id, category_id));
+        let document =
+            create_document_in_transaction(&transaction, input, Utc::now(), initial_category)?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -1691,6 +2294,153 @@ impl SqliteRepository {
         list_documents_with_selector(&connection, Some(site_id), limit, RevisionSelector::Current)
     }
 
+    /// Lists closed metadata for documents whose exact current revision is in
+    /// `category_id`. Passing `None` selects only uncategorized current
+    /// revisions; it does not include documents based on an older published
+    /// revision's placement.
+    pub fn list_current_document_metadata_page(
+        &self,
+        site_id: Uuid,
+        category_id: Option<Uuid>,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<CurrentDocumentMetadataRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        ensure_site_exists(&connection, site_id)?;
+        if let Some(category_id) = category_id {
+            ensure_category_in_site(&connection, site_id, category_id)?;
+        }
+        let category_id = category_id.map(|id| id.to_string());
+        let mut statement = connection
+            .prepare(
+                "SELECT document.id, document.site_id, document.status,
+                        document.current_revision_id, document.published_revision_id,
+                        json_extract(current.snapshot_json, '$.title'), current.slug,
+                        current.revision_number, placement.category_id,
+                        document.created_at, document.updated_at
+                 FROM documents document
+                 JOIN revisions current
+                   ON current.id = document.current_revision_id
+                  AND current.document_id = document.id
+                 JOIN revision_categories placement
+                   ON placement.revision_id = document.current_revision_id
+                  AND placement.document_id = document.id
+                  AND placement.site_id = document.site_id
+                 WHERE document.site_id = ?1
+                   AND ((?2 IS NULL AND placement.category_id IS NULL)
+                        OR placement.category_id = ?2)
+                 ORDER BY document.updated_at DESC, document.id DESC
+                 LIMIT ?3 OFFSET ?4",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![
+                    site_id.to_string(),
+                    category_id,
+                    page_parameter(limit)?,
+                    page_parameter(offset)?,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, i64>(7)?,
+                        row.get::<_, Option<String>>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?
+            .map(|row| {
+                let (
+                    id,
+                    site_id,
+                    status,
+                    current_revision_id,
+                    published_revision_id,
+                    title,
+                    slug,
+                    revision_number,
+                    category_id,
+                    created_at,
+                    updated_at,
+                ) = row.map_err(storage_error)?;
+                Ok(CurrentDocumentMetadataRecord {
+                    id: parse_uuid(&id)?,
+                    site_id: parse_uuid(&site_id)?,
+                    status: parse_status(&status)?,
+                    current_revision_id: parse_uuid(&current_revision_id)?,
+                    published_revision_id: published_revision_id
+                        .map(|id| parse_uuid(&id))
+                        .transpose()?,
+                    title,
+                    slug,
+                    revision_number: u64::try_from(revision_number).map_err(storage_error)?,
+                    category_id: category_id.map(|id| parse_uuid(&id)).transpose()?,
+                    created_at: parse_datetime(&created_at)?,
+                    updated_at: parse_datetime(&updated_at)?,
+                })
+            })
+            .collect()
+    }
+
+    /// Lists closed revision metadata with true SQL offset/limit pagination.
+    pub fn list_revision_metadata_page(
+        &self,
+        document_id: Uuid,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<RevisionMetadataRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        ensure_document_exists(&connection, document_id)?;
+        let mut statement = connection
+            .prepare(
+                "SELECT id, document_id, revision_number, slug, created_at
+                 FROM revisions
+                 WHERE document_id = ?1
+                 ORDER BY revision_number DESC
+                 LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![
+                    document_id.to_string(),
+                    page_parameter(limit)?,
+                    page_parameter(offset)?,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .map_err(storage_error)?
+            .map(|row| {
+                let (id, document_id, revision_number, slug, created_at) =
+                    row.map_err(storage_error)?;
+                Ok(RevisionMetadataRecord {
+                    id: parse_uuid(&id)?,
+                    document_id: parse_uuid(&document_id)?,
+                    revision_number: u64::try_from(revision_number).map_err(storage_error)?,
+                    slug,
+                    created_at: parse_datetime(&created_at)?,
+                })
+            })
+            .collect()
+    }
+
     pub fn revise_document_in_owned_site(
         &self,
         owner_user_id: Uuid,
@@ -1723,6 +2473,38 @@ impl SqliteRepository {
         ensure_site_writer(&transaction, actor_user_id, site_id)?;
         ensure_document_in_site(&transaction, site_id, input.document_id)?;
         let revision = append_revision_in_transaction(&transaction, input, Utc::now())?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(revision)
+    }
+
+    /// Appends and optionally moves a revision in one transaction.
+    ///
+    /// `None` inherits the parent placement through the migration-v8 trigger,
+    /// `Some(None)` explicitly moves to the site root, and
+    /// `Some(Some(category_id))` moves to that active site category.
+    pub fn revise_document_in_writable_site_with_category(
+        &self,
+        actor_user_id: Uuid,
+        site_id: Uuid,
+        input: ProposedRevision,
+        category_selection: Option<Option<Uuid>>,
+    ) -> Result<RevisionSnapshot, RepositoryError> {
+        input
+            .validate()
+            .map_err(|error| RepositoryError::Validation(error.to_string()))?;
+        let document_id = input.document_id;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_writer(&transaction, actor_user_id, site_id)?;
+        ensure_document_in_site(&transaction, site_id, document_id)?;
+        let revision = append_revision_in_transaction_with_category(
+            &transaction,
+            input,
+            Utc::now(),
+            category_selection.map(|category_id| (actor_user_id, category_id)),
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(revision)
     }
@@ -2001,7 +2783,7 @@ impl ContentRepository for SqliteRepository {
 
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
-        let document = create_document_in_transaction(&transaction, input, Utc::now())?;
+        let document = create_document_in_transaction(&transaction, input, Utc::now(), None)?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -2220,6 +3002,7 @@ fn create_document_in_transaction(
     transaction: &Transaction<'_>,
     input: NewDocument,
     now: DateTime<Utc>,
+    initial_category: Option<(Uuid, Uuid)>,
 ) -> Result<DocumentSnapshot, RepositoryError> {
     let document_id = Uuid::now_v7();
     let revision_id = Uuid::now_v7();
@@ -2236,11 +3019,29 @@ fn create_document_in_transaction(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        ai_summary: input.ai_summary,
         authorship: input.authorship,
         actor: input.actor,
         content_hash: String::new(),
         created_at: now,
     });
+
+    let initial_category_record = initial_category
+        .map(|(_, category_id)| load_category_by_id(transaction, site_id, category_id))
+        .transpose()?;
+    if initial_category_record
+        .as_ref()
+        .is_some_and(|category| category.status != CategoryStatus::Active)
+    {
+        return Err(RepositoryError::Validation(
+            "archived categories cannot receive revisions".into(),
+        ));
+    }
+    if initial_category_record.is_none() {
+        ensure_root_slug_not_category(transaction, site_id, &revision.slug)?;
+    }
+    let initial_route_path = category_route_path(initial_category_record.as_ref(), &revision.slug);
+    ensure_document_route_available(transaction, site_id, document_id, &initial_route_path)?;
 
     transaction
         .execute(
@@ -2252,12 +3053,23 @@ fn create_document_in_transaction(
                 document_id.to_string(),
                 site_id.to_string(),
                 revision_id.to_string(),
-                revision.slug,
+                initial_route_path,
                 now.to_rfc3339(),
             ],
         )
         .map_err(map_constraint_error)?;
     insert_revision(transaction, &revision, None)?;
+    if let Some((actor_user_id, category_id)) = initial_category {
+        assign_revision_category_in_transaction(
+            transaction,
+            actor_user_id,
+            site_id,
+            document_id,
+            revision_id,
+            Some(category_id),
+            now,
+        )?;
+    }
 
     Ok(DocumentSnapshot {
         schema_version: CONTENT_SCHEMA_VERSION.into(),
@@ -2270,6 +3082,93 @@ fn create_document_in_transaction(
         created_at: now,
         updated_at: now,
     })
+}
+
+fn assign_revision_category_in_transaction(
+    connection: &Connection,
+    actor_user_id: Uuid,
+    site_id: Uuid,
+    document_id: Uuid,
+    revision_id: Uuid,
+    category_id: Option<Uuid>,
+    now: DateTime<Utc>,
+) -> Result<RevisionCategoryPlacement, RepositoryError> {
+    let (current_revision_id, published_revision_id): (String, Option<String>) = connection
+        .query_row(
+            "SELECT current_revision_id, published_revision_id
+             FROM documents WHERE id = ?1 AND site_id = ?2",
+            params![document_id.to_string(), site_id.to_string()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)?;
+    if current_revision_id != revision_id.to_string() {
+        return Err(RepositoryError::RevisionConflict);
+    }
+    if published_revision_id.as_deref() == Some(current_revision_id.as_str()) {
+        return Err(RepositoryError::Validation(
+            "published revision placement is immutable; create a new revision before moving it"
+                .into(),
+        ));
+    }
+    let category = category_id
+        .map(|id| load_category_by_id(connection, site_id, id))
+        .transpose()?;
+    if category
+        .as_ref()
+        .is_some_and(|category| category.status != CategoryStatus::Active)
+    {
+        return Err(RepositoryError::Validation(
+            "archived categories cannot receive revisions".into(),
+        ));
+    }
+    let revision_slug: String = connection
+        .query_row(
+            "SELECT slug FROM revisions WHERE id = ?1 AND document_id = ?2",
+            params![revision_id.to_string(), document_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)?;
+    let route_path = category_route_path(category.as_ref(), &revision_slug);
+    ensure_document_route_available(connection, site_id, document_id, &route_path)?;
+    if category.is_none() {
+        ensure_root_slug_not_category(connection, site_id, &revision_slug)?;
+    }
+    let changed = connection
+        .execute(
+            "UPDATE revision_categories
+             SET category_id = ?1, assigned_by_user_id = ?2, assigned_at = ?3
+             WHERE revision_id = ?4 AND document_id = ?5 AND site_id = ?6",
+            params![
+                category_id.map(|id| id.to_string()),
+                actor_user_id.to_string(),
+                now.to_rfc3339(),
+                revision_id.to_string(),
+                document_id.to_string(),
+                site_id.to_string(),
+            ],
+        )
+        .map_err(map_category_constraint_error)?;
+    if changed != 1 {
+        return Err(RepositoryError::NotFound);
+    }
+    connection
+        .execute(
+            "UPDATE documents SET current_slug = ?1, updated_at = ?2
+             WHERE id = ?3 AND site_id = ?4 AND current_revision_id = ?5",
+            params![
+                route_path,
+                now.to_rfc3339(),
+                document_id.to_string(),
+                site_id.to_string(),
+                revision_id.to_string(),
+            ],
+        )
+        .map_err(map_constraint_error)?;
+    load_revision_category_placement(connection, site_id, document_id, revision_id)
 }
 
 fn publish_in_transaction(
@@ -2297,6 +3196,16 @@ fn publish_in_transaction(
         .optional()
         .map_err(storage_error)?
         .ok_or(RepositoryError::NotFound)?;
+    let site_uuid = parse_uuid(&site_id)?;
+    let route_path = revision_category_route_path(
+        transaction,
+        site_uuid,
+        document_id,
+        revision_id,
+        &revision.slug,
+        true,
+    )?;
+    ensure_document_route_available(transaction, site_uuid, document_id, &route_path)?;
     let now = Utc::now();
 
     transaction
@@ -2320,7 +3229,7 @@ fn publish_in_transaction(
                END",
             params![
                 site_id,
-                revision.slug,
+                route_path,
                 document_id.to_string(),
                 now.to_rfc3339()
             ],
@@ -2329,7 +3238,7 @@ fn publish_in_transaction(
     let routed_document: String = transaction
         .query_row(
             "SELECT document_id FROM routes WHERE site_id = ?1 AND path = ?2",
-            params![site_id, revision.slug],
+            params![site_id, route_path],
             |row| row.get(0),
         )
         .map_err(storage_error)?;
@@ -2355,6 +3264,15 @@ fn append_revision_in_transaction(
     input: ProposedRevision,
     now: DateTime<Utc>,
 ) -> Result<RevisionSnapshot, RepositoryError> {
+    append_revision_in_transaction_with_category(transaction, input, now, None)
+}
+
+fn append_revision_in_transaction_with_category(
+    transaction: &Transaction<'_>,
+    input: ProposedRevision,
+    now: DateTime<Utc>,
+    category_assignment: Option<(Uuid, Option<Uuid>)>,
+) -> Result<RevisionSnapshot, RepositoryError> {
     input
         .validate()
         .map_err(|error| RepositoryError::Validation(error.to_string()))?;
@@ -2367,22 +3285,24 @@ fn append_revision_in_transaction(
         embeds,
         intent,
         ontology,
+        ai_summary,
         authorship,
         actor,
         idempotency_key,
     } = input;
-    let current: Option<(String, i64)> = transaction
+    let current: Option<(String, i64, String)> = transaction
         .query_row(
-            "SELECT d.current_revision_id, r.revision_number
+            "SELECT d.current_revision_id, r.revision_number, d.site_id
              FROM documents d
              JOIN revisions r ON r.id = d.current_revision_id
              WHERE d.id = ?1",
             params![document_id.to_string()],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()
         .map_err(storage_error)?;
-    let (current_revision_id, revision_number) = current.ok_or(RepositoryError::NotFound)?;
+    let (current_revision_id, revision_number, site_id) =
+        current.ok_or(RepositoryError::NotFound)?;
     if current_revision_id != base_revision_id.to_string() {
         return Err(RepositoryError::RevisionConflict);
     }
@@ -2399,12 +3319,54 @@ fn append_revision_in_transaction(
         embeds,
         intent,
         ontology,
+        ai_summary,
         authorship,
         actor,
         content_hash: String::new(),
         created_at: now,
     });
     insert_revision(transaction, &revision, idempotency_key.as_deref())?;
+    let site_id = parse_uuid(&site_id)?;
+    if let Some((actor_user_id, category_id)) = category_assignment {
+        let category = category_id
+            .map(|id| load_category_by_id(transaction, site_id, id))
+            .transpose()?;
+        if category
+            .as_ref()
+            .is_some_and(|category| category.status != CategoryStatus::Active)
+        {
+            return Err(RepositoryError::Validation(
+                "archived categories cannot receive revisions".into(),
+            ));
+        }
+        let changed = transaction
+            .execute(
+                "UPDATE revision_categories
+                 SET category_id = ?1, assigned_by_user_id = ?2, assigned_at = ?3
+                 WHERE revision_id = ?4 AND document_id = ?5 AND site_id = ?6",
+                params![
+                    category_id.map(|id| id.to_string()),
+                    actor_user_id.to_string(),
+                    now.to_rfc3339(),
+                    revision.id.to_string(),
+                    revision.document_id.to_string(),
+                    site_id.to_string(),
+                ],
+            )
+            .map_err(map_category_constraint_error)?;
+        if changed != 1 {
+            return Err(RepositoryError::NotFound);
+        }
+    }
+    let route_path = revision_category_route_path(
+        transaction,
+        site_id,
+        revision.document_id,
+        revision.id,
+        &revision.slug,
+        false,
+    )?;
+    ensure_document_route_available(transaction, site_id, revision.document_id, &route_path)?;
     transaction
         .execute(
             "UPDATE documents
@@ -2418,7 +3380,7 @@ fn append_revision_in_transaction(
              WHERE id = ?4",
             params![
                 revision.id.to_string(),
-                revision.slug,
+                route_path,
                 revision.created_at.to_rfc3339(),
                 revision.document_id.to_string(),
             ],
@@ -2428,13 +3390,14 @@ fn append_revision_in_transaction(
 }
 
 fn with_computed_hash(mut revision: RevisionSnapshot) -> RevisionSnapshot {
-    revision.content_hash = content_hash(
+    revision.content_hash = content_hash_with_ai_summary(
         &revision.title,
         &revision.slug,
         &revision.source_markdown,
         &revision.embeds,
         revision.intent.as_ref(),
         revision.ontology.as_ref(),
+        revision.ai_summary.as_ref(),
     );
     revision
 }
@@ -3124,6 +4087,187 @@ fn load_sites(
         .collect()
 }
 
+type StoredCategoryRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+);
+
+fn stored_category_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredCategoryRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+    ))
+}
+
+fn parse_category_row(raw: StoredCategoryRow) -> Result<CategoryRecord, RepositoryError> {
+    let (
+        id,
+        site_id,
+        slug,
+        title,
+        description,
+        theme_profile,
+        status,
+        created_by_user_id,
+        created_at,
+        updated_at,
+    ) = raw;
+    Ok(CategoryRecord {
+        id: parse_uuid(&id)?,
+        site_id: parse_uuid(&site_id)?,
+        slug,
+        title,
+        description,
+        theme_profile: theme_profile
+            .as_deref()
+            .map(ThemeProfile::from_str)
+            .transpose()?,
+        status: CategoryStatus::from_str(&status)?,
+        created_by_user_id: parse_uuid(&created_by_user_id)?,
+        created_at: parse_datetime(&created_at)?,
+        updated_at: parse_datetime(&updated_at)?,
+    })
+}
+
+fn load_category_by_id(
+    connection: &Connection,
+    site_id: Uuid,
+    category_id: Uuid,
+) -> Result<CategoryRecord, RepositoryError> {
+    connection
+        .query_row(
+            "SELECT id, site_id, slug, title, description, theme_profile, status,
+                    created_by_user_id, created_at, updated_at
+             FROM categories WHERE id = ?1 AND site_id = ?2",
+            params![category_id.to_string(), site_id.to_string()],
+            stored_category_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)
+        .and_then(parse_category_row)
+}
+
+fn load_category_by_slug(
+    connection: &Connection,
+    site_id: Uuid,
+    slug: &str,
+) -> Result<CategoryRecord, RepositoryError> {
+    connection
+        .query_row(
+            "SELECT id, site_id, slug, title, description, theme_profile, status,
+                    created_by_user_id, created_at, updated_at
+             FROM categories WHERE site_id = ?1 AND slug = ?2 COLLATE NOCASE",
+            params![site_id.to_string(), slug],
+            stored_category_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)
+        .and_then(parse_category_row)
+}
+
+type StoredRevisionCategoryPlacementRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+fn load_revision_category_placement(
+    connection: &Connection,
+    site_id: Uuid,
+    document_id: Uuid,
+    revision_id: Uuid,
+) -> Result<RevisionCategoryPlacement, RepositoryError> {
+    let raw: Option<StoredRevisionCategoryPlacementRow> = connection
+        .query_row(
+            "SELECT revision_id, document_id, site_id, category_id,
+                    assigned_by_user_id, assigned_at
+             FROM revision_categories
+             WHERE revision_id = ?1 AND document_id = ?2 AND site_id = ?3",
+            params![
+                revision_id.to_string(),
+                document_id.to_string(),
+                site_id.to_string()
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let (revision_id, document_id, site_id, category_id, assigned_by_user_id, assigned_at) =
+        raw.ok_or(RepositoryError::NotFound)?;
+    Ok(RevisionCategoryPlacement {
+        revision_id: parse_uuid(&revision_id)?,
+        document_id: parse_uuid(&document_id)?,
+        site_id: parse_uuid(&site_id)?,
+        category_id: category_id.map(|id| parse_uuid(&id)).transpose()?,
+        assigned_by_user_id: assigned_by_user_id.map(|id| parse_uuid(&id)).transpose()?,
+        assigned_at: parse_datetime(&assigned_at)?,
+    })
+}
+
+fn load_document_category(
+    connection: &Connection,
+    site_id: Uuid,
+    document_id: Uuid,
+    selector: RevisionSelector,
+) -> Result<Option<CategoryRecord>, RepositoryError> {
+    let revision_column = match selector {
+        RevisionSelector::Current => "document.current_revision_id",
+        RevisionSelector::Published => "document.published_revision_id",
+    };
+    let sql = format!(
+        "SELECT placement.category_id
+         FROM documents document
+         JOIN revision_categories placement
+           ON placement.revision_id = {revision_column}
+          AND placement.document_id = document.id
+          AND placement.site_id = document.site_id
+         WHERE document.id = ?1 AND document.site_id = ?2
+           AND {revision_column} IS NOT NULL"
+    );
+    let category_id: Option<String> = connection
+        .query_row(
+            &sql,
+            params![document_id.to_string(), site_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)?;
+    category_id
+        .map(|id| load_category_by_id(connection, site_id, parse_uuid(&id)?))
+        .transpose()
+}
+
 type StoredSiteMembershipRow = (String, String, String, String);
 
 fn stored_site_membership_row(
@@ -3332,6 +4476,45 @@ fn ensure_user_exists(connection: &Connection, user_id: Uuid) -> Result<(), Repo
     }
 }
 
+fn ensure_site_exists(connection: &Connection, site_id: Uuid) -> Result<(), RepositoryError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM sites WHERE id = ?1",
+            params![site_id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .is_some();
+    if exists {
+        Ok(())
+    } else {
+        Err(RepositoryError::NotFound)
+    }
+}
+
+fn ensure_category_in_site(
+    connection: &Connection,
+    site_id: Uuid,
+    category_id: Uuid,
+) -> Result<(), RepositoryError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM categories WHERE id = ?1 AND site_id = ?2",
+            params![category_id.to_string(), site_id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .is_some();
+    if exists {
+        Ok(())
+    } else {
+        // Tenant-scope misses intentionally look identical to absent records.
+        Err(RepositoryError::NotFound)
+    }
+}
+
 fn ensure_document_in_site(
     connection: &Connection,
     site_id: Uuid,
@@ -3373,6 +4556,141 @@ fn ensure_published_document_in_site(
         Ok(())
     } else {
         Err(RepositoryError::NotFound)
+    }
+}
+
+fn normalize_category_slug(value: &str) -> Result<String, RepositoryError> {
+    let slug = normalize_handle(value, "category slug")?;
+    const RESERVED: &[&str] = &[
+        "api",
+        "assets",
+        "blog",
+        "docs",
+        "healthz",
+        "livez",
+        "login",
+        "media",
+        "onboarding",
+        "openapi",
+        "providers",
+        "readyz",
+        "schemas",
+        "studio",
+        "vendor",
+    ];
+    if RESERVED.contains(&slug.as_str()) {
+        return Err(RepositoryError::Validation(format!(
+            "category slug '{slug}' is reserved by the application"
+        )));
+    }
+    Ok(slug)
+}
+
+fn category_route_path(category: Option<&CategoryRecord>, revision_slug: &str) -> String {
+    category
+        .map(|category| format!("{}/{revision_slug}", category.slug))
+        .unwrap_or_else(|| revision_slug.to_owned())
+}
+
+fn revision_category_route_path(
+    connection: &Connection,
+    site_id: Uuid,
+    document_id: Uuid,
+    revision_id: Uuid,
+    revision_slug: &str,
+    require_active: bool,
+) -> Result<String, RepositoryError> {
+    let placement =
+        load_revision_category_placement(connection, site_id, document_id, revision_id)?;
+    let category = placement
+        .category_id
+        .map(|id| load_category_by_id(connection, site_id, id))
+        .transpose()?;
+    if require_active
+        && category
+            .as_ref()
+            .is_some_and(|category| category.status != CategoryStatus::Active)
+    {
+        return Err(RepositoryError::Validation(
+            "archived categories cannot receive publications".into(),
+        ));
+    }
+    if category.is_none() {
+        ensure_root_slug_not_category(connection, site_id, revision_slug)?;
+    }
+    Ok(category_route_path(category.as_ref(), revision_slug))
+}
+
+fn ensure_category_landing_available(
+    connection: &Connection,
+    site_id: Uuid,
+    category_slug: &str,
+) -> Result<(), RepositoryError> {
+    let occupied = connection
+        .query_row(
+            "SELECT 1
+             WHERE EXISTS (
+               SELECT 1 FROM documents WHERE site_id = ?1 AND current_slug = ?2
+             ) OR EXISTS (
+               SELECT 1 FROM routes WHERE site_id = ?1 AND path = ?2
+             )",
+            params![site_id.to_string(), category_slug],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .is_some();
+    if occupied {
+        Err(RepositoryError::DuplicateSlug)
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_root_slug_not_category(
+    connection: &Connection,
+    site_id: Uuid,
+    revision_slug: &str,
+) -> Result<(), RepositoryError> {
+    let occupied = connection
+        .query_row(
+            "SELECT 1 FROM categories WHERE site_id = ?1 AND slug = ?2 COLLATE NOCASE",
+            params![site_id.to_string(), revision_slug],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .is_some();
+    if occupied {
+        Err(RepositoryError::DuplicateSlug)
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_document_route_available(
+    connection: &Connection,
+    site_id: Uuid,
+    document_id: Uuid,
+    route_path: &str,
+) -> Result<(), RepositoryError> {
+    let owner: Option<String> = connection
+        .query_row(
+            "SELECT id FROM documents
+             WHERE site_id = ?1 AND current_slug = ?2 AND id != ?3
+             UNION ALL
+             SELECT document_id FROM routes
+             WHERE site_id = ?1 AND path = ?2 AND document_id != ?3
+             LIMIT 1",
+            params![site_id.to_string(), route_path, document_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    if owner.is_some() {
+        Err(RepositoryError::DuplicateSlug)
+    } else {
+        Ok(())
     }
 }
 
@@ -3682,6 +5000,11 @@ fn parse_uuid(value: &str) -> Result<Uuid, RepositoryError> {
     Uuid::parse_str(value).map_err(storage_error)
 }
 
+fn page_parameter(value: usize) -> Result<i64, RepositoryError> {
+    i64::try_from(value)
+        .map_err(|_| RepositoryError::Validation("pagination offset or limit is too large".into()))
+}
+
 fn parse_datetime(value: &str) -> Result<DateTime<Utc>, RepositoryError> {
     DateTime::parse_from_rfc3339(value)
         .map(|value| value.with_timezone(&Utc))
@@ -3723,6 +5046,21 @@ fn map_constraint_error(error: rusqlite::Error) -> RepositoryError {
     let text = error.to_string();
     if text.contains("UNIQUE constraint failed") {
         RepositoryError::DuplicateSlug
+    } else {
+        storage_error(error)
+    }
+}
+
+fn map_category_constraint_error(error: rusqlite::Error) -> RepositoryError {
+    let text = error.to_string();
+    if text.contains("categories.site_id, categories.slug")
+        || text.contains("documents.site_id, documents.current_slug")
+    {
+        RepositoryError::DuplicateSlug
+    } else if text.contains("FOREIGN KEY constraint failed") {
+        RepositoryError::NotFound
+    } else if text.contains("CHECK constraint failed") {
+        RepositoryError::Validation("category record violates a storage constraint".into())
     } else {
         storage_error(error)
     }
@@ -4119,6 +5457,100 @@ INSERT INTO schema_migrations(version, applied_at)
 VALUES (7, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#;
 
+const MIGRATION_8: &str = r#"
+CREATE TABLE categories (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL,
+  slug TEXT COLLATE NOCASE NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  theme_profile TEXT CHECK (
+    theme_profile IS NULL OR theme_profile IN ('paper', 'ink', 'forest', 'terminal')
+  ),
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+  created_by_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (site_id, slug),
+  UNIQUE (id, site_id),
+  CHECK (slug = lower(slug)),
+  CHECK (length(slug) BETWEEN 1 AND 40),
+  CHECK (slug NOT GLOB '*[^a-z0-9-]*'),
+  CHECK (substr(slug, 1, 1) != '-' AND substr(slug, -1, 1) != '-'),
+  FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX categories_site_status_idx
+  ON categories(site_id, status, title, slug);
+
+CREATE TRIGGER categories_slug_immutable
+BEFORE UPDATE OF slug ON categories
+WHEN NEW.slug != OLD.slug
+BEGIN
+  SELECT RAISE(ABORT, 'category slugs are immutable');
+END;
+
+CREATE TABLE revision_categories (
+  revision_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  site_id TEXT NOT NULL,
+  category_id TEXT,
+  assigned_by_user_id TEXT,
+  assigned_at TEXT NOT NULL,
+  FOREIGN KEY (revision_id, document_id)
+    REFERENCES revisions(id, document_id) ON DELETE CASCADE,
+  FOREIGN KEY (document_id, site_id)
+    REFERENCES documents(id, site_id) ON DELETE CASCADE,
+  FOREIGN KEY (category_id, site_id)
+    REFERENCES categories(id, site_id) ON DELETE RESTRICT,
+  FOREIGN KEY (assigned_by_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE INDEX revision_categories_category_idx
+  ON revision_categories(site_id, category_id, revision_id);
+CREATE INDEX revision_categories_document_idx
+  ON revision_categories(document_id, revision_id);
+
+-- Existing revisions are intentionally uncategorized. Their public paths stay
+-- byte-for-byte compatible after upgrading a delivery database.
+INSERT INTO revision_categories (
+  revision_id, document_id, site_id, category_id, assigned_by_user_id, assigned_at
+)
+SELECT revision.id, revision.document_id, document.site_id, NULL, NULL, revision.created_at
+FROM revisions revision
+JOIN documents document ON document.id = revision.document_id;
+
+-- A new draft inherits its parent's placement. The placement is still stored
+-- independently on the new immutable revision and can be moved before publish.
+CREATE TRIGGER revisions_default_category_placement
+AFTER INSERT ON revisions
+BEGIN
+  INSERT INTO revision_categories (
+    revision_id, document_id, site_id, category_id, assigned_by_user_id, assigned_at
+  )
+  SELECT NEW.id, NEW.document_id, document.site_id, parent.category_id, NULL, NEW.created_at
+  FROM documents document
+  LEFT JOIN revision_categories parent ON parent.revision_id = NEW.parent_revision_id
+  WHERE document.id = NEW.document_id;
+END;
+
+-- Once a revision is the delivery pointer its placement is immutable. Studio
+-- must append a new revision, which preserves published-vs-current separation.
+CREATE TRIGGER published_revision_category_immutable
+BEFORE UPDATE ON revision_categories
+WHEN EXISTS (
+  SELECT 1 FROM documents
+  WHERE id = OLD.document_id AND published_revision_id = OLD.revision_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'published revision category placement is immutable');
+END;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (8, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"#;
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -4169,6 +5601,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
                 idempotency_key: None,
@@ -4246,6 +5679,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            ai_summary: None,
             authorship: Default::default(),
             actor: actor(),
         }
@@ -4274,6 +5708,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            ai_summary: None,
             authorship: Default::default(),
             actor: actor(),
             content_hash: String::new(),
@@ -4351,6 +5786,994 @@ mod tests {
                 .unwrap();
             std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o644)).unwrap();
         }
+    }
+
+    #[test]
+    fn migration_eight_backfills_revision_placements_and_gates_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("legacy-v7.db");
+        let mut connection = Connection::open(&database).unwrap();
+        for migration in [
+            MIGRATION_1,
+            MIGRATION_2,
+            MIGRATION_3,
+            MIGRATION_4,
+            MIGRATION_5,
+            MIGRATION_6,
+            MIGRATION_7,
+        ] {
+            connection.execute_batch(migration).unwrap();
+        }
+
+        let owner_id = Uuid::now_v7();
+        let site_id = Uuid::now_v7();
+        let document_id = Uuid::now_v7();
+        let revision_id = Uuid::now_v7();
+        let now = Utc::now();
+        let revision = with_computed_hash(RevisionSnapshot {
+            schema_version: CONTENT_SCHEMA_VERSION.into(),
+            id: revision_id,
+            document_id,
+            revision_number: 1,
+            parent_revision_id: None,
+            title: "Version seven post".into(),
+            slug: "version-seven-post".into(),
+            source_markdown: "Still readable after migration.".into(),
+            embeds: vec![],
+            intent: None,
+            ontology: None,
+            ai_summary: None,
+            authorship: Default::default(),
+            actor: actor(),
+            content_hash: String::new(),
+            created_at: now,
+        });
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO users (
+                    id, email, handle, display_name, password_phc, created_at, updated_at
+                 ) VALUES (?1, 'v7-owner@example.test', 'v7-owner', 'V7 owner',
+                           '$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA', ?2, ?2)",
+                params![owner_id.to_string(), now.to_rfc3339()],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO sites (
+                    id, handle, title, description, current_theme_revision, created_at, updated_at
+                 ) VALUES (?1, 'v7-site', 'V7 site', NULL, 1, ?2, ?2)",
+                params![site_id.to_string(), now.to_rfc3339()],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO site_memberships (site_id, user_id, role, created_at)
+                 VALUES (?1, ?2, 'owner', ?3)",
+                params![site_id.to_string(), owner_id.to_string(), now.to_rfc3339()],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO site_theme_revisions (
+                    site_id, revision, profile, custom_css, created_by_user_id, created_at
+                 ) VALUES (?1, 1, 'paper', NULL, ?2, ?3)",
+                params![site_id.to_string(), owner_id.to_string(), now.to_rfc3339()],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO documents (
+                    id, site_id, status, current_revision_id, published_revision_id,
+                    current_slug, created_at, updated_at
+                 ) VALUES (?1, ?2, 'draft', ?3, NULL, ?4, ?5, ?5)",
+                params![
+                    document_id.to_string(),
+                    site_id.to_string(),
+                    revision_id.to_string(),
+                    revision.slug,
+                    now.to_rfc3339(),
+                ],
+            )
+            .unwrap();
+        insert_revision(&transaction, &revision, None).unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            SqliteRepository::open_read_only(&database),
+            Err(RepositoryError::Storage(_))
+        ));
+        let repository = SqliteRepository::open(&database).unwrap();
+        let placement = repository
+            .get_revision_category_placement(site_id, document_id, revision_id)
+            .unwrap();
+        assert_eq!(placement.category_id, None);
+        assert_eq!(placement.assigned_by_user_id, None);
+
+        let next = repository
+            .revise_document_in_owned_site(
+                owner_id,
+                site_id,
+                ProposedRevision {
+                    document_id,
+                    base_revision_id: revision_id,
+                    title: "Version eight draft".into(),
+                    slug: "version-eight-draft".into(),
+                    source_markdown: "The trigger creates this placement.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .get_revision_category_placement(site_id, document_id, next.id)
+                .unwrap()
+                .category_id,
+            None
+        );
+        repository.migrate().unwrap();
+        let placement_count: i64 = repository
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM revision_categories", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(placement_count, 2);
+        drop(repository);
+
+        let delivery = SqliteRepository::open_read_only(&database).unwrap();
+        assert_eq!(
+            delivery
+                .get_revision_category_placement(site_id, document_id, next.id)
+                .unwrap()
+                .category_id,
+            None
+        );
+    }
+
+    #[test]
+    fn categories_are_site_scoped_atomic_and_keep_published_placement_stable() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "category-owner");
+        let site = community_site(&repository, owner.id, "category-site");
+        let other_owner = community_user(&repository, "other-category-owner");
+        let other_site = community_site(&repository, other_owner.id, "other-category-site");
+
+        let yangja = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: " Yangja ".into(),
+                    title: "Yangja".into(),
+                    description: Some("Long-form notes".into()),
+                    theme_profile: Some(ThemeProfile::Forest),
+                },
+            )
+            .unwrap();
+        assert_eq!(yangja.slug, "yangja");
+        let lab = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "lab".into(),
+                    title: "Lab".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let other_category = repository
+            .create_category(
+                other_owner.id,
+                other_site.id,
+                CreateCategoryInput {
+                    slug: "elsewhere".into(),
+                    title: "Elsewhere".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .list_categories(site.id, false, 10)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(matches!(
+            repository.create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "YANGJA".into(),
+                    title: "Duplicate".into(),
+                    description: None,
+                    theme_profile: None,
+                }
+            ),
+            Err(RepositoryError::DuplicateSlug)
+        ));
+        assert!(matches!(
+            repository.create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "studio".into(),
+                    title: "Reserved".into(),
+                    description: None,
+                    theme_profile: None,
+                }
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert!(matches!(
+            repository.get_category_by_id(other_site.id, yangja.id),
+            Err(RepositoryError::NotFound)
+        ));
+        assert!(matches!(
+            repository.update_category(
+                other_owner.id,
+                site.id,
+                yangja.id,
+                UpdateCategoryInput {
+                    title: "Cross-site".into(),
+                    description: None,
+                    theme_profile: None,
+                }
+            ),
+            Err(RepositoryError::NotFound)
+        ));
+
+        assert!(matches!(
+            repository.create_document_in_owned_site(
+                owner.id,
+                new_document(site.id, "Landing collision", "yangja")
+            ),
+            Err(RepositoryError::DuplicateSlug)
+        ));
+        repository
+            .create_document_in_owned_site(
+                owner.id,
+                new_document(site.id, "Existing root", "existing-root"),
+            )
+            .unwrap();
+        assert!(matches!(
+            repository.create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "existing-root".into(),
+                    title: "Collision".into(),
+                    description: None,
+                    theme_profile: None,
+                }
+            ),
+            Err(RepositoryError::DuplicateSlug)
+        ));
+
+        let before_failed_create = repository
+            .list_documents_in_writable_site(owner.id, site.id, 100)
+            .unwrap()
+            .len();
+        assert!(matches!(
+            repository.create_document_in_writable_site_with_category(
+                owner.id,
+                new_document(site.id, "Wrong category", "wrong-category"),
+                Some(other_category.id),
+            ),
+            Err(RepositoryError::NotFound)
+        ));
+        assert_eq!(
+            repository
+                .list_documents_in_writable_site(owner.id, site.id, 100)
+                .unwrap()
+                .len(),
+            before_failed_create
+        );
+
+        let document = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                new_document(site.id, "First public title", "hello"),
+                Some(yangja.id),
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .get_current_category(site.id, document.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            yangja.id
+        );
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                document.id,
+                document.current_revision_id,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .get_published_by_slug(site.id, "yangja/hello")
+                .unwrap()
+                .revision
+                .title,
+            "First public title"
+        );
+        assert!(matches!(
+            repository.assign_revision_category_in_writable_site(
+                owner.id,
+                site.id,
+                document.id,
+                document.current_revision_id,
+                Some(lab.id)
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+
+        let inherited = repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: document.id,
+                    base_revision_id: document.current_revision_id,
+                    title: "Inherited draft".into(),
+                    slug: "hello".into(),
+                    source_markdown: "The category is inherited.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .get_current_category(site.id, document.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            yangja.id
+        );
+        let moved = repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: document.id,
+                    base_revision_id: inherited.id,
+                    title: "Moved draft".into(),
+                    slug: "hello".into(),
+                    source_markdown: "Only the draft moves to Lab.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                Some(Some(lab.id)),
+            )
+            .unwrap();
+        assert!(matches!(
+            repository.assign_revision_category_in_writable_site(
+                owner.id,
+                site.id,
+                document.id,
+                moved.id,
+                Some(other_category.id)
+            ),
+            Err(RepositoryError::NotFound)
+        ));
+        assert_eq!(
+            repository
+                .get_current_category(site.id, document.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            lab.id
+        );
+        assert_eq!(
+            repository
+                .get_published_category(site.id, document.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            yangja.id
+        );
+        assert_eq!(
+            repository
+                .list_published_in_category(site.id, yangja.id, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            repository
+                .list_published_in_category(site.id, lab.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            repository.get_published_by_slug(site.id, "lab/hello"),
+            Err(RepositoryError::NotFound)
+        ));
+
+        let archived_yangja = repository
+            .archive_category(owner.id, site.id, yangja.id)
+            .unwrap();
+        assert_eq!(archived_yangja.status, CategoryStatus::Archived);
+        assert_eq!(
+            repository
+                .get_published_by_slug(site.id, "yangja/hello")
+                .unwrap()
+                .revision
+                .title,
+            "First public title"
+        );
+        repository
+            .publish_document_in_owned_site(owner.id, site.id, document.id, moved.id)
+            .unwrap();
+        assert_eq!(
+            repository
+                .get_published_category(site.id, document.id)
+                .unwrap()
+                .unwrap()
+                .id,
+            lab.id
+        );
+        assert!(
+            repository
+                .list_published_in_category(site.id, yangja.id, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .list_published_in_category(site.id, lab.id, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            repository
+                .get_published_by_slug(site.id, "yangja/hello")
+                .unwrap()
+                .revision
+                .title,
+            "Moved draft"
+        );
+        assert_eq!(
+            repository
+                .get_published_by_slug(site.id, "lab/hello")
+                .unwrap()
+                .revision
+                .title,
+            "Moved draft"
+        );
+
+        repository
+            .archive_category(owner.id, site.id, lab.id)
+            .unwrap();
+        let archived_inherited = repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: document.id,
+                    base_revision_id: moved.id,
+                    title: "Archived category draft".into(),
+                    slug: "hello-next".into(),
+                    source_markdown: "Drafting remains possible before moving it elsewhere.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                None,
+            )
+            .unwrap();
+        assert!(matches!(
+            repository.publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                document.id,
+                archived_inherited.id
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert_eq!(
+            repository
+                .list_categories(site.id, false, 10)
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            repository.list_categories(site.id, true, 10).unwrap().len(),
+            2
+        );
+    }
+
+    #[test]
+    fn metadata_pages_cross_legacy_site_and_category_caps_without_private_hydration() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "metadata-page-owner");
+        let base_time = Utc::now() - chrono::Duration::days(1);
+        let mut site_ids = Vec::with_capacity(501);
+        {
+            let mut connection = repository.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            for index in 0..501 {
+                let site_id = Uuid::now_v7();
+                let timestamp = (base_time + chrono::Duration::seconds(index)).to_rfc3339();
+                let handle = format!("metadata-site-{index:04}");
+                transaction
+                    .execute(
+                        "INSERT INTO sites (
+                            id, handle, title, description, current_theme_revision,
+                            created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, 'PRIVATE DESCRIPTION', 1, ?4, ?4)",
+                        params![
+                            site_id.to_string(),
+                            handle,
+                            format!("Metadata site {index:04}"),
+                            timestamp,
+                        ],
+                    )
+                    .unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO site_theme_revisions (
+                            site_id, revision, profile, custom_css,
+                            created_by_user_id, created_at
+                         ) VALUES (?1, 1, 'paper', '/* PRIVATE CSS */', ?2, ?3)",
+                        params![site_id.to_string(), owner.id.to_string(), timestamp],
+                    )
+                    .unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO site_memberships (site_id, user_id, role, created_at)
+                         VALUES (?1, ?2, 'owner', ?3)",
+                        params![site_id.to_string(), owner.id.to_string(), timestamp],
+                    )
+                    .unwrap();
+                site_ids.push(site_id);
+            }
+            transaction.commit().unwrap();
+        }
+
+        let first_sites = repository.list_site_metadata_page(0, 2).unwrap();
+        assert_eq!(first_sites[0].handle, "metadata-site-0500");
+        assert_eq!(first_sites[1].handle, "metadata-site-0499");
+        let site_beyond_old_cap = repository.list_site_metadata_page(500, 2).unwrap();
+        assert_eq!(site_beyond_old_cap.len(), 1);
+        assert_eq!(site_beyond_old_cap[0].handle, "metadata-site-0000");
+
+        let category_site_id = site_ids[0];
+        {
+            let mut connection = repository.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            for index in 0..501 {
+                let category_id = Uuid::now_v7();
+                let timestamp = (base_time + chrono::Duration::seconds(index)).to_rfc3339();
+                transaction
+                    .execute(
+                        "INSERT INTO categories (
+                            id, site_id, slug, title, description, theme_profile,
+                            status, created_by_user_id, created_at, updated_at
+                         ) VALUES (?1, ?2, ?3, ?4, 'PRIVATE CATEGORY DESCRIPTION',
+                                   NULL, 'active', ?5, ?6, ?6)",
+                        params![
+                            category_id.to_string(),
+                            category_site_id.to_string(),
+                            format!("category-{index:04}"),
+                            format!("Category {index:04}"),
+                            owner.id.to_string(),
+                            timestamp,
+                        ],
+                    )
+                    .unwrap();
+            }
+            transaction.commit().unwrap();
+        }
+
+        let category_beyond_old_cap = repository
+            .list_category_metadata_page(category_site_id, true, 500, 2)
+            .unwrap();
+        assert_eq!(category_beyond_old_cap.len(), 1);
+        assert_eq!(category_beyond_old_cap[0].slug, "category-0500");
+        assert!(matches!(
+            repository.list_category_metadata_page(Uuid::now_v7(), true, 0, 2),
+            Err(RepositoryError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn current_document_and_revision_metadata_pages_cross_legacy_caps_and_stay_scoped() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "document-page-owner");
+        let site = community_site(&repository, owner.id, "document-page-site");
+        let category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "selected".into(),
+                    title: "Selected".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let other_owner = community_user(&repository, "other-document-page-owner");
+        let other_site = community_site(&repository, other_owner.id, "other-document-page-site");
+        let other_category = repository
+            .create_category(
+                other_owner.id,
+                other_site.id,
+                CreateCategoryInput {
+                    slug: "other-selected".into(),
+                    title: "Other selected".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let base_time = Utc::now() - chrono::Duration::days(1);
+        let mut document_ids = Vec::with_capacity(501);
+        let mut first_revision_ids = Vec::with_capacity(501);
+        let categorized_document_id;
+        {
+            let mut connection = repository.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            for index in 0..501 {
+                let document_id = Uuid::now_v7();
+                let revision_id = Uuid::now_v7();
+                let slug = format!("document-{index:04}");
+                let timestamp = (base_time + chrono::Duration::seconds(index)).to_rfc3339();
+                transaction
+                    .execute(
+                        "INSERT INTO documents (
+                            id, site_id, status, current_revision_id,
+                            published_revision_id, current_slug, created_at, updated_at
+                         ) VALUES (?1, ?2, 'draft', ?3, NULL, ?4, ?5, ?5)",
+                        params![
+                            document_id.to_string(),
+                            site.id.to_string(),
+                            revision_id.to_string(),
+                            slug,
+                            timestamp,
+                        ],
+                    )
+                    .unwrap();
+                transaction
+                    .execute(
+                        "INSERT INTO revisions (
+                            id, document_id, revision_number, parent_revision_id,
+                            slug, snapshot_json, idempotency_key, created_at
+                         ) VALUES (?1, ?2, 1, NULL, ?3, ?4, NULL, ?5)",
+                        params![
+                            revision_id.to_string(),
+                            document_id.to_string(),
+                            slug,
+                            serde_json::json!({ "title": format!("Document {index:04}") })
+                                .to_string(),
+                            timestamp,
+                        ],
+                    )
+                    .unwrap();
+                document_ids.push(document_id);
+                first_revision_ids.push(revision_id);
+            }
+
+            let document_id = Uuid::now_v7();
+            let revision_id = Uuid::now_v7();
+            let timestamp = (base_time + chrono::Duration::seconds(1_000)).to_rfc3339();
+            transaction
+                .execute(
+                    "INSERT INTO documents (
+                        id, site_id, status, current_revision_id,
+                        published_revision_id, current_slug, created_at, updated_at
+                     ) VALUES (?1, ?2, 'draft', ?3, NULL, 'categorized-decoy', ?4, ?4)",
+                    params![
+                        document_id.to_string(),
+                        site.id.to_string(),
+                        revision_id.to_string(),
+                        timestamp,
+                    ],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "INSERT INTO revisions (
+                        id, document_id, revision_number, parent_revision_id,
+                        slug, snapshot_json, idempotency_key, created_at
+                     ) VALUES (?1, ?2, 1, NULL, 'categorized-decoy',
+                               '{\"title\":\"Categorized decoy\"}', NULL, ?3)",
+                    params![revision_id.to_string(), document_id.to_string(), timestamp,],
+                )
+                .unwrap();
+            transaction
+                .execute(
+                    "UPDATE revision_categories SET category_id = ?1
+                     WHERE revision_id = ?2",
+                    params![category.id.to_string(), revision_id.to_string()],
+                )
+                .unwrap();
+            categorized_document_id = document_id;
+            transaction.commit().unwrap();
+        }
+
+        let first_uncategorized = repository
+            .list_current_document_metadata_page(site.id, None, 0, 2)
+            .unwrap();
+        assert_eq!(first_uncategorized[0].title, "Document 0500");
+        assert_eq!(first_uncategorized[1].title, "Document 0499");
+        let document_beyond_old_cap = repository
+            .list_current_document_metadata_page(site.id, None, 500, 2)
+            .unwrap();
+        assert_eq!(document_beyond_old_cap.len(), 1);
+        assert_eq!(document_beyond_old_cap[0].title, "Document 0000");
+        assert_eq!(document_beyond_old_cap[0].category_id, None);
+        let categorized = repository
+            .list_current_document_metadata_page(site.id, Some(category.id), 0, 2)
+            .unwrap();
+        assert_eq!(categorized.len(), 1);
+        assert_eq!(categorized[0].id, categorized_document_id);
+        assert_eq!(categorized[0].category_id, Some(category.id));
+        assert!(matches!(
+            repository.list_current_document_metadata_page(site.id, Some(other_category.id), 0, 2),
+            Err(RepositoryError::NotFound)
+        ));
+
+        let history_document_id = document_ids[0];
+        let first_revision_id = first_revision_ids[0];
+        let latest_revision_id;
+        {
+            let mut connection = repository.lock().unwrap();
+            let transaction = connection.transaction().unwrap();
+            let mut last_revision_id = first_revision_id;
+            for revision_number in 2..=1_001_i64 {
+                let revision_id = Uuid::now_v7();
+                let timestamp =
+                    (base_time + chrono::Duration::seconds(revision_number)).to_rfc3339();
+                let slug = format!("history-{revision_number:04}");
+                transaction
+                    .execute(
+                        "INSERT INTO revisions (
+                            id, document_id, revision_number, parent_revision_id,
+                            slug, snapshot_json, idempotency_key, created_at
+                         ) VALUES (?1, ?2, ?3, ?4, ?5, '{\"title\":\"History\"}', NULL, ?6)",
+                        params![
+                            revision_id.to_string(),
+                            history_document_id.to_string(),
+                            revision_number,
+                            last_revision_id.to_string(),
+                            slug,
+                            timestamp,
+                        ],
+                    )
+                    .unwrap();
+                last_revision_id = revision_id;
+            }
+            transaction
+                .execute(
+                    "UPDATE documents
+                     SET current_revision_id = ?1, current_slug = 'history-1001'
+                     WHERE id = ?2 AND site_id = ?3",
+                    params![
+                        last_revision_id.to_string(),
+                        history_document_id.to_string(),
+                        site.id.to_string(),
+                    ],
+                )
+                .unwrap();
+            latest_revision_id = last_revision_id;
+            transaction.commit().unwrap();
+        }
+
+        let newest_revisions = repository
+            .list_revision_metadata_page(history_document_id, 0, 2)
+            .unwrap();
+        assert_eq!(newest_revisions[0].id, latest_revision_id);
+        assert_eq!(newest_revisions[0].revision_number, 1_001);
+        assert_eq!(newest_revisions[1].revision_number, 1_000);
+        let revision_beyond_old_cap = repository
+            .list_revision_metadata_page(history_document_id, 1_000, 2)
+            .unwrap();
+        assert_eq!(revision_beyond_old_cap.len(), 1);
+        assert_eq!(revision_beyond_old_cap[0].id, first_revision_id);
+        assert_eq!(revision_beyond_old_cap[0].revision_number, 1);
+        assert!(matches!(
+            repository.list_revision_metadata_page(Uuid::now_v7(), 0, 2),
+            Err(RepositoryError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn atomic_category_move_checks_only_the_final_route() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "atomic-move-owner");
+        let site = community_site(&repository, owner.id, "atomic-move-site");
+        let old_category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "old".into(),
+                    title: "Old".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let new_category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "new".into(),
+                    title: "New".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                new_document(site.id, "Occupied old route", "target"),
+                Some(old_category.id),
+            )
+            .unwrap();
+        let moving = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                new_document(site.id, "Moving document", "source"),
+                Some(old_category.id),
+            )
+            .unwrap();
+
+        let moved = repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: moving.id,
+                    base_revision_id: moving.current_revision_id,
+                    title: "Moved document".into(),
+                    slug: "target".into(),
+                    source_markdown: "The final route is new/target.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                Some(Some(new_category.id)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            repository
+                .get_revision_category_placement(site.id, moving.id, moved.id)
+                .unwrap()
+                .category_id,
+            Some(new_category.id)
+        );
+        assert_eq!(
+            repository
+                .get_document_in_writable_site(owner.id, site.id, moving.id)
+                .unwrap()
+                .revision
+                .slug,
+            "target"
+        );
+    }
+
+    #[test]
+    fn site_export_v3_preserves_categories_and_revision_placements() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "category-export-owner");
+        let site = community_site(&repository, owner.id, "category-export-site");
+        let category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "notes".into(),
+                    title: "Notes".into(),
+                    description: Some("Exported category metadata".into()),
+                    theme_profile: Some(ThemeProfile::Forest),
+                },
+            )
+            .unwrap();
+        let empty_archived = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "archive".into(),
+                    title: "Empty archive".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        repository
+            .archive_category(owner.id, site.id, empty_archived.id)
+            .unwrap();
+        let document = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                new_document(site.id, "Categorized", "entry"),
+                Some(category.id),
+            )
+            .unwrap();
+        let root_revision = repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: document.id,
+                    base_revision_id: document.current_revision_id,
+                    title: "Moved to root".into(),
+                    slug: "entry-root".into(),
+                    source_markdown: "Placement history remains portable.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                Some(None),
+            )
+            .unwrap();
+
+        let export = repository.export_site(site.id).unwrap();
+        assert_eq!(export.schema_version, "open-soverign-blog-export/3");
+        assert_eq!(export.categories.len(), 2);
+        assert!(export.categories.iter().any(|item| {
+            item.id == empty_archived.id && item.status == CategoryStatus::Archived
+        }));
+        assert_eq!(export.documents.len(), 1);
+        let placements = &export.documents[0].revision_category_placements;
+        assert_eq!(placements.len(), 2);
+        assert_eq!(placements[0].category_id, Some(category.id));
+        assert_eq!(placements[1].revision_id, root_revision.id);
+        assert_eq!(placements[1].category_id, None);
+
+        let encoded = serde_json::to_string(&export).unwrap();
+        let decoded: SiteExport = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, export);
     }
 
     #[test]
@@ -5182,6 +7605,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    ai_summary: None,
                     authorship: Default::default(),
                     actor: actor(),
                     idempotency_key: None,
@@ -5258,6 +7682,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            ai_summary: None,
             authorship: Default::default(),
             actor: actor(),
             idempotency_key: None,
@@ -5390,6 +7815,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    ai_summary: None,
                     authorship: Default::default(),
                     actor: actor(),
                     idempotency_key: Some("private-rewrite".into()),
@@ -5604,6 +8030,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
             })
@@ -5627,6 +8054,7 @@ mod tests {
                     provenance: None,
                 }),
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
                 idempotency_key: Some("rename-1".into()),
@@ -5681,6 +8109,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
             })
@@ -5694,6 +8123,7 @@ mod tests {
             embeds: vec![],
             intent: None,
             ontology: None,
+            ai_summary: None,
             authorship: Default::default(),
             actor: actor(),
             idempotency_key: None,
@@ -5731,6 +8161,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
             })
@@ -5758,7 +8189,7 @@ mod tests {
         assert_eq!(records[0].envelope, envelope);
 
         let export = repository.export_site(site_id).unwrap();
-        assert_eq!(export.schema_version, "open-soverign-blog-export/2");
+        assert_eq!(export.schema_version, "open-soverign-blog-export/3");
         assert_eq!(export.documents[0].ai_proposals, records);
     }
 
@@ -5774,6 +8205,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
             })
@@ -5820,6 +8252,7 @@ mod tests {
                 embeds: vec![],
                 intent: None,
                 ontology: None,
+                ai_summary: None,
                 authorship: Default::default(),
                 actor: actor(),
             })
@@ -5862,6 +8295,7 @@ mod tests {
                     embeds: vec![],
                     intent: None,
                     ontology: None,
+                    ai_summary: None,
                     authorship: Default::default(),
                     actor: actor(),
                 })

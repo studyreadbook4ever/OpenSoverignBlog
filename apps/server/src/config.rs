@@ -378,6 +378,7 @@ impl RuntimeConfig {
                 "remote administrator authentication requires an https public URL; plain HTTP is allowed only on localhost/loopback"
             );
         }
+        validate_browser_secret_transport(&public_url, &requested_features)?;
         let admin_auth = AdminAuthSettings {
             mode: admin_auth_mode,
             access_key_phc,
@@ -597,6 +598,22 @@ fn is_loopback_url(url: &Url) -> bool {
         url.host_str(),
         Some("localhost") | Some("127.0.0.1") | Some("[::1]") | Some("::1")
     )
+}
+
+pub(crate) fn validate_browser_secret_transport(
+    public_url: &Url,
+    requested_features: &str,
+) -> Result<()> {
+    let ai_summary_requested = requested_features
+        .split(',')
+        .map(str::trim)
+        .any(|feature| feature == "ai_summary");
+    if ai_summary_requested && public_url.scheme() != "https" && !is_loopback_url(public_url) {
+        anyhow::bail!(
+            "the ai_summary feature accepts a one-shot browser credential and therefore requires an https public URL; plain HTTP is allowed only on localhost/loopback"
+        );
+    }
+    Ok(())
 }
 
 fn env_value(name: &str) -> Option<String> {
@@ -1123,6 +1140,7 @@ struct FeaturesConfig {
     seo: bool,
     code_runner: bool,
     ads: bool,
+    ai_summary: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1234,6 +1252,7 @@ impl FeaturesConfig {
             ("seo", self.seo),
             ("code_runner", self.code_runner),
             ("ads", self.ads),
+            ("ai_summary", self.ai_summary),
         ]
         .into_iter()
         .filter_map(|(name, enabled)| enabled.then_some(name))
@@ -1245,6 +1264,35 @@ impl FeaturesConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_supplied_ai_credentials_require_https_away_from_loopback() {
+        assert!(
+            validate_browser_secret_transport(
+                &Url::parse("https://blog.example").unwrap(),
+                "seo,ai_summary",
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_browser_secret_transport(
+                &Url::parse("http://127.0.0.1:8787").unwrap(),
+                "ai_summary",
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_browser_secret_transport(
+                &Url::parse("http://blog.example").unwrap(),
+                "seo,ai_summary",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_browser_secret_transport(&Url::parse("http://blog.example").unwrap(), "seo",)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn unknown_configuration_keys_are_rejected() {

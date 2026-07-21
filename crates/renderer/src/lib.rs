@@ -10,7 +10,7 @@ use std::{
 };
 
 use ammonia::Builder;
-use osb_kernel::{EmbedReference, RevisionSnapshot};
+use osb_kernel::{AiSummary, EmbedReference, RevisionSnapshot};
 use pulldown_cmark::{CowStr, Event, Options, Parser, html};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,7 +41,7 @@ pub struct PublishArtifact {
 }
 
 pub fn render_revision(revision: &RevisionSnapshot, view: ViewMode) -> PublishArtifact {
-    let (html, source_hash) = match view {
+    let (body_html, source_hash) = match view {
         ViewMode::Intent => revision.intent.as_ref().map_or_else(
             || {
                 (
@@ -71,6 +71,11 @@ pub fn render_revision(revision: &RevisionSnapshot, view: ViewMode) -> PublishAr
             )
         }
     };
+    let html = if let Some(summary) = render_ai_summary(revision.publishable_ai_summary()) {
+        format!("{summary}{body_html}")
+    } else {
+        body_html
+    };
     let artifact_hash = hash_bytes(html.as_bytes());
     PublishArtifact {
         view,
@@ -88,6 +93,14 @@ pub fn render_revision(revision: &RevisionSnapshot, view: ViewMode) -> PublishAr
             "/assets/osb-content.js".into(),
         ],
     }
+}
+
+fn render_ai_summary(summary: Option<&AiSummary>) -> Option<String> {
+    let summary = summary?;
+    let text = escape_html(summary.text.trim());
+    Some(format!(
+        "<aside class=\"osb-ai-summary\" aria-label=\"AI summary\"><p class=\"osb-ai-summary__label\">AI summary</p><p class=\"osb-ai-summary__text\">{text}</p></aside>"
+    ))
 }
 
 pub fn render_markdown(source: &str) -> String {
@@ -349,6 +362,53 @@ fn escape_html(source: &str) -> String {
 mod tests {
     use super::*;
 
+    fn revision_with_summary(text: &str) -> RevisionSnapshot {
+        let title = "Summary safety";
+        let markdown = "# Body\n\nPortable source.";
+        let summary = AiSummary {
+            text: text.into(),
+            source_hash: osb_kernel::ai_summary_source_hash(title, markdown),
+            provenance: osb_kernel::AiSummaryProvenance {
+                provider: "openai".into(),
+                model: "example-model".into(),
+                prompt_version: "summary-v1".into(),
+                generated_at: "2026-07-22T00:00:00Z".parse().unwrap(),
+                human_reviewed: true,
+            },
+        };
+        let content_hash = osb_kernel::content_hash_with_ai_summary(
+            title,
+            "summary-safety",
+            markdown,
+            &[],
+            None,
+            None,
+            Some(&summary),
+        );
+        RevisionSnapshot {
+            schema_version: osb_kernel::CONTENT_SCHEMA_VERSION.into(),
+            id: "01982344-cd80-7000-8000-000000000001".parse().unwrap(),
+            document_id: "01982344-cd80-7000-8000-000000000002".parse().unwrap(),
+            revision_number: 1,
+            parent_revision_id: None,
+            title: title.into(),
+            slug: "summary-safety".into(),
+            source_markdown: markdown.into(),
+            embeds: vec![],
+            intent: None,
+            ontology: None,
+            ai_summary: Some(summary),
+            authorship: Default::default(),
+            actor: osb_kernel::RevisionActor {
+                kind: osb_kernel::RevisionActorKind::Human,
+                id: "owner".into(),
+                display_name: None,
+            },
+            content_hash,
+            created_at: "2026-07-22T00:00:00Z".parse().unwrap(),
+        }
+    }
+
     #[test]
     fn raw_html_in_markdown_is_not_executed() {
         let output = render_markdown("hello <img src=x onerror='alert(1)'><script>x</script>");
@@ -413,5 +473,47 @@ mod tests {
     fn seo_summary_contains_text_but_never_raw_html() {
         let summary = summarize_markdown("# Title\n\nHello **world** <script>x</script>", 80);
         assert_eq!(summary, "Title Hello world");
+    }
+
+    #[test]
+    fn reviewed_ai_summary_is_plain_text_above_the_body() {
+        let revision = revision_with_summary("<script>alert(1)</script> **not Markdown**");
+        let artifact = render_revision(&revision, ViewMode::Markdown);
+        let summary_position = artifact.html.find("osb-ai-summary").unwrap();
+        let body_position = artifact.html.find("<h1").unwrap();
+
+        assert!(summary_position < body_position, "{}", artifact.html);
+        assert!(
+            artifact
+                .html
+                .contains("&lt;script&gt;alert(1)&lt;/script&gt;")
+        );
+        assert!(artifact.html.contains("**not Markdown**"));
+        assert!(!artifact.html.contains("<script>"));
+        assert!(!artifact.html.contains("<strong>not Markdown</strong>"));
+    }
+
+    #[test]
+    fn stale_or_unreviewed_ai_summary_fails_closed() {
+        let mut stale = revision_with_summary("Stale summary");
+        stale.source_markdown.push_str("\nChanged");
+        assert!(
+            !render_revision(&stale, ViewMode::Markdown)
+                .html
+                .contains("osb-ai-summary")
+        );
+
+        let mut unreviewed = revision_with_summary("Unreviewed summary");
+        unreviewed
+            .ai_summary
+            .as_mut()
+            .unwrap()
+            .provenance
+            .human_reviewed = false;
+        assert!(
+            !render_revision(&unreviewed, ViewMode::Markdown)
+                .html
+                .contains("osb-ai-summary")
+        );
     }
 }

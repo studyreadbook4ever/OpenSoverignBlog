@@ -23,6 +23,13 @@ const openApi = openApiDocument.toJS();
 if (openApi?.openapi !== "3.1.0" || typeof openApi.paths !== "object") {
   throw new Error(`${openApiPath}: expected an OpenAPI 3.1.0 document with paths`);
 }
+const blogSummarySchema = openApi.components?.schemas?.BlogSummary;
+if (
+  blogSummarySchema?.properties?.isPrimary?.type !== "boolean"
+  || !blogSummarySchema.required?.includes("isPrimary")
+) {
+  throw new Error(`${openApiPath}: BlogSummary must require the boolean isPrimary route identity`);
+}
 
 const httpMethods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 const documentedRoutes = new Map();
@@ -141,6 +148,7 @@ if (missingFromContract.length > 0 || missingFromServer.length > 0) {
 }
 
 const ownerRoutes = new Set([
+  "GET /api/v1/admin/tree",
   "GET /api/v1/admin/documents",
   "GET /api/v1/admin/documents/{id}",
   "GET /api/v1/admin/documents/{id}/revisions",
@@ -228,7 +236,13 @@ const sessionRoutes = new Set([
   "POST /api/v1/studio/documents",
   "POST /api/v1/studio/documents/{id}/revisions",
   "POST /api/v1/studio/documents/{id}/publish",
+  "GET /api/v1/studio/categories",
+  "POST /api/v1/studio/categories",
+  "PUT /api/v1/studio/categories/{id}",
+  "POST /api/v1/studio/categories/{id}/archive",
   "POST /api/v1/studio/preview",
+  "GET /api/v1/studio/ai-summary/providers",
+  "POST /api/v1/studio/ai-summary/generate",
   "POST /api/v1/studio/assets",
   "GET /api/v1/studio/settings",
   "PUT /api/v1/studio/settings",
@@ -236,6 +250,10 @@ const sessionRoutes = new Set([
   "POST /api/v1/studio/collaborators",
   "DELETE /api/v1/studio/collaborators/{userId}",
   "POST /api/v1/posts/{id}/comments",
+]);
+const optionallyAnonymousSessionRoutes = new Set([
+  "GET /api/v1/session",
+  "POST /api/v1/auth/logout",
 ]);
 for (const [route, operation] of documentedRoutes) {
   const expectsSessionCookie = sessionRoutes.has(route);
@@ -247,6 +265,65 @@ for (const [route, operation] of documentedRoutes) {
   ) {
     throw new Error(`${openApiPath}: SessionCookie security drift at ${route}`);
   }
+  if (
+    expectsSessionCookie
+    && !optionallyAnonymousSessionRoutes.has(route)
+    && !mcpContentRoutes.has(route)
+    && securityAlternatives(operation).length !== 1
+  ) {
+    throw new Error(`${openApiPath}: protected session route has an extra auth alternative at ${route}`);
+  }
+}
+for (const route of optionallyAnonymousSessionRoutes) {
+  const alternatives = securityAlternatives(documentedRoutes.get(route));
+  if (
+    alternatives.length !== 2
+    || !alternatives.some((requirement) =>
+      typeof requirement === "object"
+        && requirement !== null
+        && Object.keys(requirement).length === 0
+    )
+  ) {
+    throw new Error(`${openApiPath}: ${route} must retain anonymous and cookie alternatives`);
+  }
+}
+
+const aiSummaryGeneration = documentedRoutes.get(
+  "POST /api/v1/studio/ai-summary/generate",
+);
+const aiSummaryParameters = (aiSummaryGeneration?.parameters ?? []).map((parameter) =>
+  typeof parameter?.$ref === "string" ? resolveLocalReference(parameter.$ref) : parameter,
+);
+const oneShotKeyParameter = aiSummaryParameters.find(
+  (parameter) => parameter?.in === "header"
+    && parameter?.name === "X-OSB-AI-One-Shot-Key",
+);
+if (
+  !oneShotKeyParameter?.required
+  || oneShotKeyParameter.schema?.type !== "string"
+  || oneShotKeyParameter.schema?.format !== "password"
+  || oneShotKeyParameter.schema?.writeOnly !== true
+  || oneShotKeyParameter.schema?.minLength !== 8
+  || oneShotKeyParameter.schema?.maxLength !== 4096
+) {
+  throw new Error(`${openApiPath}: AI summary generation lacks its bounded sensitive one-shot header`);
+}
+const aiSummaryRequestReference =
+  aiSummaryGeneration?.requestBody?.content?.["application/json"]?.schema?.$ref;
+const aiSummaryRequestSchema = typeof aiSummaryRequestReference === "string"
+  ? resolveLocalReference(aiSummaryRequestReference)
+  : undefined;
+const aiSummaryRequestProperties = aiSummaryRequestSchema?.properties;
+if (
+  !aiSummaryRequestSchema
+  || aiSummaryRequestSchema.additionalProperties !== false
+  || typeof aiSummaryRequestProperties !== "object"
+  || aiSummaryRequestProperties === null
+  || Object.keys(aiSummaryRequestProperties).some((name) =>
+    ["apikey", "oneshotapikey", "key", "secret", "token"].includes(name.toLowerCase())
+  )
+) {
+  throw new Error(`${openApiPath}: AI one-shot credential must never appear in the JSON schema`);
 }
 if (!serverSource.includes('absolute_public_url(&state.seo_policy, "/openapi/openapi.yaml")')) {
   throw new Error("AI2AI discovery does not link to /openapi/openapi.yaml");

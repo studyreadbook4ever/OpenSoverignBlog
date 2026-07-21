@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 
 use serde::Serialize;
 
-const KNOWN_FEATURES: [&str; 10] = [
+const KNOWN_FEATURES: [&str; 11] = [
     "ads",
     "ai_authorship",
+    "ai_summary",
     "code_runner",
     "comments",
     "external_auth",
@@ -23,6 +24,7 @@ pub fn runtime_feature_for_dlc(id: &str) -> Option<&'static str> {
     match id {
         "org.open-soverign-blog.monetization-policy" => Some("ads"),
         "org.open-soverign-blog.ai-authorship" => Some("ai_authorship"),
+        "org.open-soverign-blog.ai-summary" => Some("ai_summary"),
         "org.open-soverign-blog.code-runner-client" => Some("code_runner"),
         "org.open-soverign-blog.comments" => Some("comments"),
         "org.open-soverign-blog.external-auth" => Some("external_auth"),
@@ -98,6 +100,12 @@ impl FeatureRegistry {
                 requested.contains("ai_authorship"),
                 true,
                 "portable public revision authorship provenance is enabled",
+            ),
+            module(
+                "ai_summary",
+                requested.contains("ai_summary"),
+                true,
+                "reviewed per-revision summaries can be generated through fixed provider adapters without persisting credentials",
             ),
             module(
                 "social_embeds",

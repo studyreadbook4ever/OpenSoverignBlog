@@ -87,6 +87,7 @@ comments = false
 seo = true
 code_runner = false
 ads = false
+ai_summary = false
 
 # Ontology remains an optional sidecar on each revision rather than a global
 # runtime switch. An isolated code runner can be added with the documented

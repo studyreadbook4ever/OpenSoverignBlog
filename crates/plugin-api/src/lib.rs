@@ -1751,7 +1751,7 @@ extension = "seo"
             parsed += 1;
         }
         assert_eq!(
-            parsed, 10,
+            parsed, 11,
             "all official optional modules must have manifests"
         );
     }

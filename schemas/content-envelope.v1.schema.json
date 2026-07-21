@@ -45,6 +45,9 @@
     "ontology": {
       "oneOf": [{ "$ref": "#/$defs/ontology" }, { "type": "null" }]
     },
+    "aiSummary": {
+      "oneOf": [{ "$ref": "#/$defs/aiSummary" }, { "type": "null" }]
+    },
     "authorship": { "$ref": "#/$defs/publicAuthorship" },
     "contentHash": { "$ref": "#/$defs/digest" },
     "createdAt": { "type": "string", "format": "date-time" }
@@ -125,6 +128,35 @@
           "then": { "required": ["generator"] }
         }
       ]
+    },
+    "aiSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text", "sourceHash", "provenance"],
+      "properties": {
+        "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "sourceHash": { "$ref": "#/$defs/digest" },
+        "provenance": { "$ref": "#/$defs/aiSummaryProvenance" }
+      },
+      "description": "A human-reviewed AI summary. Provider credentials are never content metadata."
+    },
+    "aiSummaryProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "model",
+        "promptVersion",
+        "generatedAt",
+        "humanReviewed"
+      ],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "promptVersion": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "humanReviewed": { "const": true }
+      }
     },
     "ontology": {
       "type": "object",

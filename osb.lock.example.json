@@ -4,7 +4,7 @@
   "engine": {
     "version": "0.1.0",
     "configSchemaVersion": "open-soverign-blog/2",
-    "databaseSchemaVersion": 7,
+    "databaseSchemaVersion": 8,
     "pluginApi": "1",
     "source": "source-checkout"
   },
@@ -45,5 +45,5 @@
       "engineVersion": "0.1.0"
     }
   ],
-  "lockDigest": "166299a0fde92c4a4cd88083d3a396aa5b524caf0b12924d262dff6f518e804f"
+  "lockDigest": "5b743ddf5a290c3fa76b76d469e6ab1b98200291c20d307df17f40a351786eb3"
 }

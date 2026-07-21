@@ -23,14 +23,15 @@ use osb_feature_comments::{
     Comment as ValidatedComment, CommentStatus as ValidatedCommentStatus, CommentSubmission,
 };
 use osb_kernel::{
-    CONTENT_SCHEMA_VERSION, ContentRepository, DocumentSnapshot, EmbedReference, IntentLayer,
-    NewDocument, OntologySidecar, ProposedRevision, PublicAuthorship, RepositoryError,
-    RevisionActor, RevisionActorKind, RevisionSnapshot, content_hash,
+    AiSummary, CONTENT_SCHEMA_VERSION, ContentRepository, DocumentSnapshot, EmbedReference,
+    IntentLayer, NewDocument, OntologySidecar, ProposedRevision, PublicAuthorship, RepositoryError,
+    RevisionActor, RevisionActorKind, RevisionSnapshot, content_hash_with_ai_summary,
 };
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
-    AdminAuthMode as StoredAdminAuthMode, CommentRecord, SessionAuthMethod, SiteMembershipRecord,
-    SiteMembershipRole, SiteRecord, SqliteRepository, ThemeProfile, UserRecord,
+    AdminAuthMode as StoredAdminAuthMode, CategoryRecord, CategoryStatus, CommentRecord,
+    CreateCategoryInput, SessionAuthMethod, SiteMembershipRecord, SiteMembershipRole, SiteRecord,
+    SqliteRepository, ThemeProfile, UpdateCategoryInput, UserRecord,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,8 @@ const PUBLIC_CACHE: &str = "public, max-age=0, s-maxage=60, stale-while-revalida
 const MEMBER_AUTH_BODY_LIMIT: usize = 8 * 1024;
 const MEMBER_AUTH_BUCKET_LIMIT: usize = 4_096;
 const MEMBER_AUTH_ATTEMPTS_PER_MINUTE: usize = 10;
+const AI_SUMMARY_BUCKET_LIMIT: usize = 4_096;
+const AI_SUMMARY_REQUESTS_PER_MINUTE: usize = 4;
 
 #[derive(Clone)]
 pub(super) struct MemberAuthAdmission {
@@ -77,13 +80,69 @@ impl MemberAuthAdmission {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct AiSummaryAdmission {
+    requests: Arc<Mutex<KeyedRateLimiter>>,
+}
+
+impl AiSummaryAdmission {
+    pub(super) fn new() -> Self {
+        Self {
+            requests: Arc::new(Mutex::new(KeyedRateLimiter::new(
+                AI_SUMMARY_BUCKET_LIMIT,
+                AI_SUMMARY_REQUESTS_PER_MINUTE,
+                StdDuration::from_secs(60),
+            ))),
+        }
+    }
+
+    async fn admit(&self, user_id: Uuid) -> Result<(), CommunityApiError> {
+        let key: [u8; 32] = Sha256::digest(user_id.as_bytes()).into();
+        self.requests
+            .lock()
+            .await
+            .admit(key)
+            .then_some(())
+            .ok_or(CommunityApiError::AiSummaryRateLimited)
+    }
+}
+
 pub fn routes(state: AppState) -> Router<AppState> {
     let mut public = Router::new()
         .route("/api/v1/feed", get(feed))
         .route("/api/v1/blogs", get(list_blogs))
         .route("/api/v1/blogs/{handle}", get(get_blog))
         .route("/api/v1/blogs/{handle}/posts", get(list_blog_posts))
-        .route("/api/v1/blogs/{handle}/posts/{slug}", get(get_blog_post));
+        .route("/api/v1/blogs/{handle}/posts/{slug}", get(get_blog_post))
+        .route(
+            "/api/v1/blogs/{handle}/categories",
+            get(list_blog_categories),
+        )
+        .route(
+            "/api/v1/blogs/{handle}/categories/{category}",
+            get(get_blog_category),
+        )
+        .route(
+            "/api/v1/blogs/{handle}/categories/{category}/posts",
+            get(list_blog_category_posts),
+        )
+        .route(
+            "/api/v1/blogs/{handle}/categories/{category}/posts/{slug}",
+            get(get_blog_category_post),
+        )
+        .route("/api/v1/primary/categories", get(list_primary_categories))
+        .route(
+            "/api/v1/primary/categories/{category}",
+            get(get_primary_category),
+        )
+        .route(
+            "/api/v1/primary/categories/{category}/posts",
+            get(list_primary_category_posts),
+        )
+        .route(
+            "/api/v1/primary/categories/{category}/posts/{slug}",
+            get(get_primary_category_post),
+        );
     if state.custom_css_enabled {
         public = public.route(
             "/api/v1/blogs/{handle}/custom.css",
@@ -98,6 +157,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/api/v1/session", get(session))
         .route("/api/v1/studio/documents", get(list_studio_documents))
         .route("/api/v1/studio/documents/{id}", get(get_studio_document))
+        .route("/api/v1/studio/categories", get(list_studio_categories))
         .route("/api/v1/studio/settings", get(get_studio_settings));
     if state.collaboration_enabled {
         private_reads = private_reads.route(
@@ -118,7 +178,32 @@ pub fn routes(state: AppState) -> Router<AppState> {
         )
         .route("/api/v1/studio/preview", post(preview_studio))
         .route("/api/v1/studio/assets", post(upload_studio_asset))
+        .route("/api/v1/studio/categories", post(create_studio_category))
+        .route(
+            "/api/v1/studio/categories/{id}",
+            put(update_studio_category),
+        )
+        .route(
+            "/api/v1/studio/categories/{id}/archive",
+            post(archive_studio_category),
+        )
         .route("/api/v1/studio/settings", put(update_studio_settings));
+    if state.features.is_active("ai_summary") {
+        private_reads = private_reads.route(
+            "/api/v1/studio/ai-summary/providers",
+            get(ai_summary_providers),
+        );
+        authenticated_mutations = authenticated_mutations.merge(
+            Router::new()
+                .route(
+                    "/api/v1/studio/ai-summary/generate",
+                    post(generate_ai_summary),
+                )
+                .layer(DefaultBodyLimit::max(
+                    super::ai_summary::MAXIMUM_REQUEST_BYTES,
+                )),
+        );
+    }
     if state.features.is_active("home_curation") {
         public = public.route("/api/v1/home", get(home));
         private_reads = private_reads.route("/api/v1/admin/home/pins", get(get_home_pins));
@@ -420,6 +505,7 @@ async fn session_payload(
     let repository = Arc::clone(&state.repository);
     let user_id = user.id;
     let collaboration_enabled = state.collaboration_enabled;
+    let primary_site_id = state.site_id;
     let (blog, membership_role) = repository_task(move || {
         match repository.get_admin_control_plane() {
             Ok(control) if control.owner_user_id == user_id && !control.setup_complete => {
@@ -438,7 +524,10 @@ async fn session_payload(
         };
         let membership = repository.get_site_membership(user_id, site.id)?;
         let owner = repository.get_user_by_id(site.owner_user_id)?;
-        Ok((Some(blog_summary(site, owner)), Some(membership.role)))
+        Ok((
+            Some(blog_summary(site, owner, primary_site_id)),
+            Some(membership.role),
+        ))
     })
     .await?;
     Ok(SessionPayload::Authenticated {
@@ -539,13 +628,14 @@ async fn list_blogs(
     headers: HeaderMap,
 ) -> Result<Response, CommunityApiError> {
     let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
     let blogs = repository_task(move || {
         repository
             .list_sites(500)?
             .into_iter()
             .map(|site| {
                 let owner = repository.get_user_by_id(site.owner_user_id)?;
-                Ok(blog_summary(site, owner))
+                Ok(blog_summary(site, owner, primary_site_id))
             })
             .collect::<Result<Vec<_>, RepositoryError>>()
     })
@@ -561,14 +651,17 @@ async fn get_blog(
     validate_handle(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let custom_css_enabled = state.custom_css_enabled;
+    let primary_site_id = state.site_id;
+    let seo_policy = Arc::clone(&state.seo_policy);
     let blog = repository_task(move || {
         let site = repository.get_site_by_handle(&handle)?;
         let owner = repository.get_user_by_id(site.owner_user_id)?;
         Ok(blog_summary_with_css(
             site,
             owner,
+            primary_site_id,
             custom_css_enabled,
-            &state.seo_policy,
+            &seo_policy,
         ))
     })
     .await?;
@@ -626,6 +719,7 @@ async fn create_blog(
     let _cache_mutation = begin_public_mutation(&state);
     let repository = Arc::clone(&state.repository);
     let user_id = user.id;
+    let primary_site_id = state.site_id;
     let handle = input.handle;
     let site = repository_task(move || {
         match repository.get_admin_control_plane() {
@@ -655,7 +749,11 @@ async fn create_blog(
         )
     })
     .await?;
-    Ok((StatusCode::CREATED, Json(blog_summary(site, user))).into_response())
+    Ok((
+        StatusCode::CREATED,
+        Json(blog_summary(site, user, primary_site_id)),
+    )
+        .into_response())
 }
 
 async fn feed(
@@ -663,11 +761,12 @@ async fn feed(
     headers: HeaderMap,
 ) -> Result<Response, CommunityApiError> {
     let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
     let items = repository_task(move || {
         repository
             .list_published_across_sites(100)?
             .into_iter()
-            .map(|document| feed_item(&repository, document))
+            .map(|document| feed_item(&repository, document, primary_site_id))
             .collect::<Result<Vec<_>, RepositoryError>>()
     })
     .await?;
@@ -679,17 +778,18 @@ async fn home(
     headers: HeaderMap,
 ) -> Result<Response, CommunityApiError> {
     let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
     let response = repository_task(move || {
         let home = repository.home_feed(100)?;
         let pinned_items = home
             .pinned
             .into_iter()
-            .map(|document| feed_item(&repository, document))
+            .map(|document| feed_item(&repository, document, primary_site_id))
             .collect::<Result<Vec<_>, RepositoryError>>()?;
         let recent_items = home
             .recent
             .into_iter()
-            .map(|document| feed_item(&repository, document))
+            .map(|document| feed_item(&repository, document, primary_site_id))
             .collect::<Result<Vec<_>, RepositoryError>>()?;
         Ok(HomeResponse {
             pinned_items,
@@ -743,12 +843,153 @@ async fn list_blog_posts(
 ) -> Result<Response, CommunityApiError> {
     validate_handle(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
     let items = repository_task(move || {
         let site = repository.get_site_by_handle(&handle)?;
         repository
             .list_published(site.id, 500)?
             .into_iter()
-            .map(|document| feed_item(&repository, document))
+            .map(|document| feed_item(&repository, document, primary_site_id))
+            .collect::<Result<Vec<_>, RepositoryError>>()
+    })
+    .await?;
+    public_json(&headers, &FeedResponse { items })
+}
+
+async fn list_blog_categories(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(handle): Path<String>,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let response = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let items = repository
+            .list_categories(site.id, false, 500)?
+            .into_iter()
+            .map(category_summary)
+            .collect();
+        Ok(CategoryListResponse { items })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn list_primary_categories(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let response = repository_task(move || {
+        // Resolving by the configured site id makes short public routes usable
+        // by anonymous readers without disclosing or guessing an owner handle.
+        repository.get_site_by_id(site_id)?;
+        let items = repository
+            .list_categories(site_id, false, 500)?
+            .into_iter()
+            .map(category_summary)
+            .collect();
+        Ok(CategoryListResponse { items })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn get_blog_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((handle, category_slug)): Path<(String, String)>,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let custom_css_enabled = state.custom_css_enabled;
+    let primary_site_id = state.site_id;
+    let seo_policy = Arc::clone(&state.seo_policy);
+    let response = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let category = repository.get_category_by_slug(site.id, &category_slug)?;
+        let post_count = repository
+            .list_published_in_category(site.id, category.id, 500)?
+            .len();
+        Ok(BlogCategoryResponse {
+            category: category_summary(category),
+            blog: blog_summary_with_css(
+                site,
+                owner,
+                primary_site_id,
+                custom_css_enabled,
+                &seo_policy,
+            ),
+            post_count,
+        })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn get_primary_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(category_slug): Path<String>,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let custom_css_enabled = state.custom_css_enabled;
+    let seo_policy = Arc::clone(&state.seo_policy);
+    let response = repository_task(move || {
+        let site = repository.get_site_by_id(site_id)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let category = repository.get_category_by_slug(site.id, &category_slug)?;
+        let post_count = repository
+            .list_published_in_category(site.id, category.id, 500)?
+            .len();
+        Ok(BlogCategoryResponse {
+            category: category_summary(category),
+            blog: blog_summary_with_css(site, owner, site_id, custom_css_enabled, &seo_policy),
+            post_count,
+        })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn list_blog_category_posts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((handle, category_slug)): Path<(String, String)>,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
+    let items = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let category = repository.get_category_by_slug(site.id, &category_slug)?;
+        repository
+            .list_published_in_category(site.id, category.id, 500)?
+            .into_iter()
+            .map(|document| feed_item(&repository, document, primary_site_id))
+            .collect::<Result<Vec<_>, RepositoryError>>()
+    })
+    .await?;
+    public_json(&headers, &FeedResponse { items })
+}
+
+async fn list_primary_category_posts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(category_slug): Path<String>,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let items = repository_task(move || {
+        let category = repository.get_category_by_slug(site_id, &category_slug)?;
+        repository
+            .list_published_in_category(site_id, category.id, 500)?
+            .into_iter()
+            .map(|document| feed_item(&repository, document, site_id))
             .collect::<Result<Vec<_>, RepositoryError>>()
     })
     .await?;
@@ -758,10 +999,14 @@ async fn list_blog_posts(
 fn feed_item(
     repository: &SqliteRepository,
     document: DocumentSnapshot,
+    primary_site_id: Uuid,
 ) -> Result<FeedPostSummary, RepositoryError> {
     let site = repository.get_site_by_id(document.site_id)?;
     let owner = repository.get_user_by_id(site.owner_user_id)?;
     let comment_count = repository.count_approved_comments(site.id, document.id)?;
+    let category = repository
+        .get_published_category(site.id, document.id)?
+        .map(category_summary);
     let published_at = document.revision.created_at;
     Ok(FeedPostSummary {
         id: document.id,
@@ -773,11 +1018,12 @@ fn feed_item(
         // its ETag. A new draft cannot perturb the currently published object.
         updated_at: published_at,
         author: user_summary(owner.clone()),
-        blog: blog_summary(site, owner),
+        blog: blog_summary(site, owner, primary_site_id),
         tags: Vec::new(),
         comment_count,
         has_intent_view: document.revision.intent.is_some(),
         authorship: document.revision.authorship,
+        category,
         cover_image_url: None,
     })
 }
@@ -788,24 +1034,44 @@ async fn get_blog_post(
     Path((handle, slug)): Path<(String, String)>,
     Query(query): Query<ViewQuery>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
     let view = query.view.unwrap_or(ViewMode::Intent);
+    blog_post_at_path(state, headers, handle, slug.clone(), slug, view).await
+}
+
+async fn get_blog_category_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((handle, category_slug, slug)): Path<(String, String, String)>,
+    Query(query): Query<ViewQuery>,
+) -> Result<Response, CommunityApiError> {
+    let view = query.view.unwrap_or(ViewMode::Intent);
+    let path = format!("{category_slug}/{slug}");
+    blog_post_at_path(state, headers, handle, path, slug, view).await
+}
+
+async fn get_primary_category_post(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((category_slug, slug)): Path<(String, String)>,
+    Query(query): Query<ViewQuery>,
+) -> Result<Response, CommunityApiError> {
+    let view = query.view.unwrap_or(ViewMode::Intent);
+    let route_path = format!("{category_slug}/{slug}");
     let repository = Arc::clone(&state.repository);
-    let lookup_slug = slug.clone();
-    let (document, site, owner) = repository_task(move || {
-        let site = repository.get_site_by_handle(&handle)?;
+    let site_id = state.site_id;
+    let (document, site, owner, category) = repository_task(move || {
+        let site = repository.get_site_by_id(site_id)?;
         let owner = repository.get_user_by_id(site.owner_user_id)?;
-        let document = repository.get_published_by_slug(site.id, &lookup_slug)?;
-        Ok((document, site, owner))
+        let document = repository.get_published_by_slug(site.id, &route_path)?;
+        let category = repository
+            .get_published_category(site.id, document.id)?
+            .map(category_summary);
+        Ok((document, site, owner, category))
     })
     .await?;
     let artifact = render_revision(&document.revision, view);
     let published_at = document.revision.created_at;
-    let etag_seed = (
-        document.revision.id,
-        site.theme_revision,
-        artifact.artifact_hash.clone(),
-    );
+    let theme_revision = site.theme_revision;
     let response = BlogPostView {
         id: document.id,
         title: document.revision.title.clone(),
@@ -816,31 +1082,99 @@ async fn get_blog_post(
         embeds: document.revision.embeds.clone(),
         artifact,
         ontology: document.revision.ontology.clone(),
+        ai_summary: document.revision.publishable_ai_summary().cloned(),
         authorship: document.revision.authorship.clone(),
+        slug: document.revision.slug.clone(),
+        excerpt: Some(summarize_markdown(&document.revision.source_markdown, 220)),
+        published_at,
+        updated_at: published_at,
+        author: user_summary(owner.clone()),
+        blog: blog_summary_with_css(
+            site,
+            owner,
+            state.site_id,
+            state.custom_css_enabled,
+            &state.seo_policy,
+        ),
+        tags: Vec::new(),
+        category,
+        cover_image_url: None,
+    };
+    let etag_seed = blog_post_etag_seed(&response, theme_revision);
+    public_json_with_seed(&headers, &response, &etag_seed)
+}
+
+async fn blog_post_at_path(
+    state: AppState,
+    headers: HeaderMap,
+    handle: String,
+    route_path: String,
+    requested_slug: String,
+    view: ViewMode,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let (document, site, owner, category) = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let document = repository.get_published_by_slug(site.id, &route_path)?;
+        let category = repository
+            .get_published_category(site.id, document.id)?
+            .map(category_summary);
+        Ok((document, site, owner, category))
+    })
+    .await?;
+    let artifact = render_revision(&document.revision, view);
+    let published_at = document.revision.created_at;
+    let theme_revision = site.theme_revision;
+    let response = BlogPostView {
+        id: document.id,
+        title: document.revision.title.clone(),
+        canonical_slug: document.revision.slug.clone(),
+        requested_slug,
+        revision_id: document.revision.id,
+        markdown: document.revision.source_markdown.clone(),
+        embeds: document.revision.embeds.clone(),
+        artifact,
+        ontology: document.revision.ontology.clone(),
+        ai_summary: document.revision.publishable_ai_summary().cloned(),
+        authorship: document.revision.authorship.clone(),
+        category,
         slug: document.revision.slug,
         excerpt: Some(summarize_markdown(&document.revision.source_markdown, 220)),
         published_at,
         updated_at: published_at,
         author: user_summary(owner.clone()),
-        blog: blog_summary_with_css(site, owner, state.custom_css_enabled, &state.seo_policy),
+        blog: blog_summary_with_css(
+            site,
+            owner,
+            state.site_id,
+            state.custom_css_enabled,
+            &state.seo_policy,
+        ),
         tags: Vec::new(),
         cover_image_url: None,
     };
     // The article cache key follows immutable publication/theme artifacts.
     // Comment activity is fetched and cached independently.
+    let etag_seed = blog_post_etag_seed(&response, theme_revision);
     public_json_with_seed(&headers, &response, &etag_seed)
 }
 
 async fn list_studio_documents(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Vec<DocumentSnapshot>>, CommunityApiError> {
+) -> Result<Json<Vec<StudioDocumentView>>, CommunityApiError> {
     let user = require_user(&state, &headers).await?;
     let access = studio_access(&state, user.id).await?;
     let repository = Arc::clone(&state.repository);
     Ok(Json(
         repository_task(move || {
-            repository.list_documents_in_writable_site(user.id, access.site.id, 500)
+            repository
+                .list_documents_in_writable_site(user.id, access.site.id, 500)?
+                .into_iter()
+                .map(|document| studio_document_view(&repository, document))
+                .collect()
         })
         .await?,
     ))
@@ -850,16 +1184,105 @@ async fn get_studio_document(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(document_id): Path<Uuid>,
-) -> Result<Json<DocumentSnapshot>, CommunityApiError> {
+) -> Result<Json<StudioDocumentView>, CommunityApiError> {
     let user = require_user(&state, &headers).await?;
     let access = studio_access(&state, user.id).await?;
     let repository = Arc::clone(&state.repository);
     Ok(Json(
         repository_task(move || {
-            repository.get_document_in_writable_site(user.id, access.site.id, document_id)
+            let document =
+                repository.get_document_in_writable_site(user.id, access.site.id, document_id)?;
+            studio_document_view(&repository, document)
         })
         .await?,
     ))
+}
+
+async fn list_studio_categories(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<CategoryListResponse>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = studio_access(&state, user.id).await?;
+    let repository = Arc::clone(&state.repository);
+    let items = repository_task(move || repository.list_categories(access.site.id, true, 500))
+        .await?
+        .into_iter()
+        .map(category_summary)
+        .collect();
+    Ok(Json(CategoryListResponse { items }))
+}
+
+async fn create_studio_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CreateStudioCategoryRequest>,
+) -> Result<(StatusCode, Json<CategorySummary>), CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    if category_slug_conflicts_with_article_route(&input.slug, &state.seo_policy.article_base_path)
+    {
+        return Err(CommunityApiError::BadRequest(
+            "category slug conflicts with the configured article route".into(),
+        ));
+    }
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let category = repository_task(move || {
+        repository.create_category(
+            user.id,
+            access.site.id,
+            CreateCategoryInput {
+                slug: input.slug,
+                title: input.title,
+                description: input.description,
+                theme_profile: input.theme_preset,
+            },
+        )
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(category_summary(category))))
+}
+
+async fn update_studio_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(category_id): Path<Uuid>,
+    Json(input): Json<UpdateStudioCategoryRequest>,
+) -> Result<Json<CategorySummary>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let category = repository_task(move || {
+        repository.update_category(
+            user.id,
+            access.site.id,
+            category_id,
+            UpdateCategoryInput {
+                title: input.title,
+                description: input.description,
+                theme_profile: input.theme_preset,
+            },
+        )
+    })
+    .await?;
+    Ok(Json(category_summary(category)))
+}
+
+async fn archive_studio_category(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(category_id): Path<Uuid>,
+) -> Result<Json<CategorySummary>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let category =
+        repository_task(move || repository.archive_category(user.id, access.site.id, category_id))
+            .await?;
+    Ok(Json(category_summary(category)))
 }
 
 async fn create_studio_document(
@@ -873,12 +1296,21 @@ async fn create_studio_document(
         super::social_embeds::validate_official_embeds(&input.embeds)
             .map_err(CommunityApiError::BadRequest)?;
     }
+    let category_id = input.category_id;
     let document = new_document(access.site.id, &user, input);
     let repository = Arc::clone(&state.repository);
     let actor_id = user.id;
-    let document =
-        repository_task(move || repository.create_document_in_writable_site(actor_id, document))
-            .await?;
+    let document = repository_task(move || {
+        let document = repository.create_document_in_writable_site_with_category(
+            actor_id,
+            document,
+            category_id,
+        )?;
+        let document =
+            repository.get_document_in_writable_site(actor_id, document.site_id, document.id)?;
+        studio_document_view(&repository, document)
+    })
+    .await?;
     Ok((StatusCode::CREATED, Json(document)).into_response())
 }
 
@@ -894,6 +1326,7 @@ async fn create_studio_revision(
         super::social_embeds::validate_official_embeds(&input.embeds)
             .map_err(CommunityApiError::BadRequest)?;
     }
+    let category_update = input.category_id;
     let proposal = ProposedRevision {
         document_id,
         base_revision_id: input.base_revision_id,
@@ -903,6 +1336,7 @@ async fn create_studio_revision(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        ai_summary: input.ai_summary,
         authorship: input.authorship,
         actor: revision_actor(&user),
         idempotency_key: input.idempotency_key,
@@ -910,8 +1344,15 @@ async fn create_studio_revision(
     let repository = Arc::clone(&state.repository);
     let actor_id = user.id;
     let document = repository_task(move || {
-        repository.revise_document_in_writable_site(actor_id, access.site.id, proposal)?;
-        repository.get_document_in_writable_site(actor_id, access.site.id, document_id)
+        repository.revise_document_in_writable_site_with_category(
+            actor_id,
+            access.site.id,
+            proposal,
+            category_update.provided.then_some(category_update.value),
+        )?;
+        let document =
+            repository.get_document_in_writable_site(actor_id, access.site.id, document_id)?;
+        studio_document_view(&repository, document)
     })
     .await?;
     Ok((StatusCode::CREATED, Json(document)).into_response())
@@ -922,19 +1363,20 @@ async fn publish_studio_document(
     headers: HeaderMap,
     Path(document_id): Path<Uuid>,
     Json(input): Json<PublishInput>,
-) -> Result<Json<DocumentSnapshot>, CommunityApiError> {
+) -> Result<Json<StudioDocumentView>, CommunityApiError> {
     let user = require_user(&state, &headers).await?;
     let access = owner_studio_access(&state, user.id).await?;
     let _cache_mutation = begin_public_mutation(&state);
     let repository = Arc::clone(&state.repository);
     Ok(Json(
         repository_task(move || {
-            repository.publish_document_in_owned_site(
+            let document = repository.publish_document_in_owned_site(
                 user.id,
                 access.site.id,
                 document_id,
                 input.revision_id,
-            )
+            )?;
+            studio_document_view(&repository, document)
         })
         .await?,
     ))
@@ -969,23 +1411,85 @@ async fn preview_studio(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        ai_summary: input.ai_summary,
         authorship: input.authorship,
         actor: input.actor,
         content_hash: String::new(),
         created_at: Utc::now(),
     };
     let mut revision = revision;
-    revision.content_hash = content_hash(
+    revision.content_hash = content_hash_with_ai_summary(
         &revision.title,
         &revision.slug,
         &revision.source_markdown,
         &revision.embeds,
         revision.intent.as_ref(),
         revision.ontology.as_ref(),
+        revision.ai_summary.as_ref(),
     );
     Ok(Json(PreviewResponse {
         artifact: render_revision(&revision, ViewMode::Intent),
     }))
+}
+
+async fn ai_summary_providers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<super::ai_summary::AiSummaryProvidersResponse>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    studio_access(&state, user.id).await?;
+    Ok(Json(super::ai_summary::providers()))
+}
+
+async fn generate_ai_summary(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<super::ai_summary::GenerateAiSummaryInput>,
+) -> Result<Json<super::ai_summary::GenerateAiSummaryResponse>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    studio_access(&state, user.id).await?;
+    state.ai_summary_admission.admit(user.id).await?;
+    let provided = headers
+        .get(super::ai_summary::ONE_SHOT_KEY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            CommunityApiError::BadRequest("a one-shot provider key is required".into())
+        })?;
+    let key = super::ai_summary::OneShotApiKey::parse(provided).map_err(map_ai_summary_error)?;
+    let service = state
+        .ai_summary
+        .as_ref()
+        .ok_or(CommunityApiError::AiSummaryUnavailable)?;
+    service
+        .generate(input, key)
+        .await
+        .map(Json)
+        .map_err(map_ai_summary_error)
+}
+
+fn map_ai_summary_error(error: super::ai_summary::AiSummaryError) -> CommunityApiError {
+    use super::ai_summary::AiSummaryError;
+    match error {
+        AiSummaryError::InvalidCredential
+        | AiSummaryError::InvalidProviderOrModel
+        | AiSummaryError::InvalidSource => CommunityApiError::BadRequest(error.to_string()),
+        AiSummaryError::Busy | AiSummaryError::ProviderRateLimited => {
+            CommunityApiError::AiSummaryRateLimited
+        }
+        AiSummaryError::ProviderTimeout => CommunityApiError::AiSummaryTimeout,
+        AiSummaryError::ProviderAuthenticationFailed => {
+            CommunityApiError::AiSummaryProviderFailed("provider_auth_failed")
+        }
+        AiSummaryError::ProviderResponseTooLarge => {
+            CommunityApiError::AiSummaryProviderFailed("provider_response_too_large")
+        }
+        AiSummaryError::InvalidProviderOutput => {
+            CommunityApiError::AiSummaryProviderFailed("invalid_provider_output")
+        }
+        AiSummaryError::Unavailable | AiSummaryError::ProviderFailed => {
+            CommunityApiError::AiSummaryUnavailable
+        }
+    }
 }
 
 async fn upload_studio_asset(
@@ -1240,6 +1744,7 @@ fn new_document(site_id: Uuid, user: &UserRecord, input: StudioDocumentInput) ->
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        ai_summary: input.ai_summary,
         authorship: input.authorship,
         actor: revision_actor(user),
     }
@@ -1286,7 +1791,8 @@ fn user_summary(user: UserRecord) -> UserSummary {
     }
 }
 
-fn blog_summary(site: SiteRecord, owner: UserRecord) -> BlogSummary {
+fn blog_summary(site: SiteRecord, owner: UserRecord, primary_site_id: Uuid) -> BlogSummary {
+    let is_primary = site.id == primary_site_id;
     BlogSummary {
         id: site.id,
         handle: site.handle,
@@ -1297,13 +1803,63 @@ fn blog_summary(site: SiteRecord, owner: UserRecord) -> BlogSummary {
             preset_id: site.theme_profile,
             custom_css_url: None,
         },
+        is_primary,
         created_at: Some(site.created_at),
     }
+}
+
+fn category_summary(category: CategoryRecord) -> CategorySummary {
+    CategorySummary {
+        id: category.id,
+        slug: category.slug,
+        title: category.title,
+        description: category.description,
+        theme_preset: category.theme_profile,
+        status: category.status,
+    }
+}
+
+/// Keeps conditional public-post responses coherent with mutable category
+/// presentation. A category title or theme can change without creating a new
+/// content revision or site-theme revision, so it must be part of the ETag
+/// seed rather than relying only on immutable publication artifacts.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlogPostEtagSeed<'a> {
+    revision_id: Uuid,
+    theme_revision: u64,
+    artifact_hash: &'a str,
+    is_primary: bool,
+    category: Option<&'a CategorySummary>,
+}
+
+fn blog_post_etag_seed(response: &BlogPostView, theme_revision: u64) -> BlogPostEtagSeed<'_> {
+    BlogPostEtagSeed {
+        revision_id: response.revision_id,
+        theme_revision,
+        artifact_hash: &response.artifact.artifact_hash,
+        is_primary: response.blog.is_primary,
+        category: response.category.as_ref(),
+    }
+}
+
+fn studio_document_view(
+    repository: &SqliteRepository,
+    document: DocumentSnapshot,
+) -> Result<StudioDocumentView, RepositoryError> {
+    let category_id = repository
+        .get_current_category(document.site_id, document.id)?
+        .map(|category| category.id);
+    Ok(StudioDocumentView {
+        document,
+        category_id,
+    })
 }
 
 fn blog_summary_with_css(
     site: SiteRecord,
     owner: UserRecord,
+    primary_site_id: Uuid,
     custom_css_enabled: bool,
     policy: &osb_feature_seo::SeoPolicy,
 ) -> BlogSummary {
@@ -1313,7 +1869,7 @@ fn blog_summary_with_css(
             .expect("validated policy and persisted handle form a safe public CSS URL")
             .to_string()
     });
-    let mut summary = blog_summary(site, owner);
+    let mut summary = blog_summary(site, owner, primary_site_id);
     summary.theme.custom_css_url = custom_css_url;
     summary
 }
@@ -1564,6 +2120,20 @@ fn validate_handle(value: &str, label: &str) -> Result<(), CommunityApiError> {
     }
 }
 
+fn category_slug_conflicts_with_article_route(slug: &str, article_base_path: &str) -> bool {
+    // SQLite deliberately accepts surrounding whitespace and ASCII case then
+    // persists the canonical lowercase slug. Compare the same canonical form
+    // here so an API client cannot bypass the route-namespace reservation with
+    // a value such as ` writing `.
+    let normalized_slug = slug.trim().to_ascii_lowercase();
+    let article_root = article_base_path
+        .trim_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    normalized_slug.eq_ignore_ascii_case(article_root)
+}
+
 fn validate_text(value: &str, label: &str, maximum: usize) -> Result<String, CommunityApiError> {
     let value = value.trim();
     let length = value.chars().count();
@@ -1687,7 +2257,32 @@ struct StudioDocumentInput {
     #[serde(default)]
     ontology: Option<OntologySidecar>,
     #[serde(default)]
+    ai_summary: Option<AiSummary>,
+    #[serde(default)]
+    category_id: Option<Uuid>,
+    #[serde(default)]
     authorship: PublicAuthorship,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateStudioCategoryRequest {
+    slug: String,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    theme_preset: Option<ThemeProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdateStudioCategoryRequest {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    theme_preset: Option<ThemeProfile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1704,9 +2299,31 @@ struct StudioRevisionInput {
     #[serde(default)]
     ontology: Option<OntologySidecar>,
     #[serde(default)]
+    ai_summary: Option<AiSummary>,
+    #[serde(default)]
+    category_id: CategoryUpdate,
+    #[serde(default)]
     authorship: PublicAuthorship,
     #[serde(default)]
     idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct CategoryUpdate {
+    provided: bool,
+    value: Option<Uuid>,
+}
+
+impl<'de> Deserialize<'de> for CategoryUpdate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self {
+            provided: true,
+            value: Option::<Uuid>::deserialize(deserializer)?,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1777,8 +2394,35 @@ struct BlogSummary {
     description: Option<String>,
     owner: UserSummary,
     theme: BlogTheme,
+    is_primary: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CategorySummary {
+    id: Uuid,
+    slug: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    theme_preset: Option<ThemeProfile>,
+    status: CategoryStatus,
+}
+
+#[derive(Debug, Serialize)]
+struct CategoryListResponse {
+    items: Vec<CategorySummary>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlogCategoryResponse {
+    category: CategorySummary,
+    blog: BlogSummary,
+    post_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1821,6 +2465,8 @@ struct FeedPostSummary {
     has_intent_view: bool,
     authorship: PublicAuthorship,
     #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<CategorySummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cover_image_url: Option<String>,
 }
 
@@ -1837,7 +2483,11 @@ struct BlogPostView {
     artifact: PublishArtifact,
     #[serde(skip_serializing_if = "Option::is_none")]
     ontology: Option<OntologySidecar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_summary: Option<AiSummary>,
     authorship: PublicAuthorship,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<CategorySummary>,
     slug: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     excerpt: Option<String>,
@@ -1853,6 +2503,15 @@ struct BlogPostView {
 #[derive(Debug, Serialize)]
 struct PreviewResponse {
     artifact: PublishArtifact,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StudioDocumentView {
+    #[serde(flatten)]
+    document: DocumentSnapshot,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1921,6 +2580,10 @@ pub(super) enum CommunityApiError {
     BadRequest(String),
     PayloadTooLarge(String),
     UnsupportedMediaType(String),
+    AiSummaryRateLimited,
+    AiSummaryTimeout,
+    AiSummaryProviderFailed(&'static str),
+    AiSummaryUnavailable,
     Internal(String),
 }
 
@@ -1939,6 +2602,11 @@ impl From<RepositoryError> for CommunityApiError {
 
 impl IntoResponse for CommunityApiError {
     fn into_response(self) -> Response {
+        let retry_after = match &self {
+            Self::RateLimited => Some("60"),
+            Self::AiSummaryRateLimited => Some("15"),
+            _ => None,
+        };
         let (status, code, message) = match self {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
@@ -1954,6 +2622,26 @@ impl IntoResponse for CommunityApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "authentication_rate_limited",
                 "try again shortly".to_owned(),
+            ),
+            Self::AiSummaryRateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "ai_summary_rate_limited",
+                "AI summary generation is busy; try again shortly".to_owned(),
+            ),
+            Self::AiSummaryTimeout => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "provider_timeout",
+                "the AI provider did not respond in time".to_owned(),
+            ),
+            Self::AiSummaryProviderFailed(code) => (
+                StatusCode::BAD_GATEWAY,
+                code,
+                "the AI provider did not return a usable summary".to_owned(),
+            ),
+            Self::AiSummaryUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ai_summary_unavailable",
+                "AI summary generation is temporarily unavailable".to_owned(),
             ),
             Self::Forbidden(message) => (StatusCode::FORBIDDEN, "forbidden", message),
             Self::RegistrationClosed => (
@@ -1990,11 +2678,17 @@ impl IntoResponse for CommunityApiError {
                 )
             }
         };
-        (
+        let mut response = (
             status,
             Json(serde_json::json!({ "error": code, "message": message })),
         )
-            .into_response()
+            .into_response();
+        if let Some(value) = retry_after {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static(value));
+        }
+        response
     }
 }
 
@@ -2038,13 +2732,26 @@ mod tests {
             article_base_path: "blog".into(),
             no_index: false,
         };
-        let enabled = blog_summary_with_css(site.clone(), user.clone(), true, &policy).theme;
+        let enabled =
+            blog_summary_with_css(site.clone(), user.clone(), site.id, true, &policy).theme;
         assert_eq!(
             enabled.custom_css_url.as_deref(),
             Some("https://blog.example/base/api/v1/blogs/css-site/custom.css")
         );
-        let disabled = blog_summary_with_css(site, user, false, &policy).theme;
+        let disabled = blog_summary_with_css(site.clone(), user, site.id, false, &policy).theme;
         assert_eq!(disabled.custom_css_url, None);
+    }
+
+    #[test]
+    fn blog_summary_marks_only_the_configured_site_as_primary() {
+        let site = site_with_css();
+        let user = owner(site.owner_user_id);
+        let primary = blog_summary(site.clone(), user.clone(), site.id);
+        assert!(primary.is_primary);
+
+        let different_primary_site_id = Uuid::now_v7();
+        let member = blog_summary(site, user, different_primary_site_id);
+        assert!(!member.is_primary);
     }
 
     #[test]
@@ -2070,5 +2777,63 @@ mod tests {
         .unwrap();
         assert!(clear.custom_css.provided);
         assert_eq!(clear.custom_css.value, None);
+    }
+
+    #[test]
+    fn public_post_etag_seed_tracks_mutable_category_presentation() {
+        let category_id = Uuid::parse_str("018f0000-0000-7000-8000-000000000456").unwrap();
+        let baseline = CategorySummary {
+            id: category_id,
+            slug: "notes".into(),
+            title: "Notes".into(),
+            description: Some("First description".into()),
+            theme_preset: Some(ThemeProfile::Paper),
+            status: CategoryStatus::Active,
+        };
+        let changed = CategorySummary {
+            title: "Renamed notes".into(),
+            theme_preset: Some(ThemeProfile::Ink),
+            ..baseline.clone()
+        };
+        let revision_id = Uuid::parse_str("018f0000-0000-7000-8000-000000000789").unwrap();
+        let baseline_seed = serde_json::to_vec(&BlogPostEtagSeed {
+            revision_id,
+            theme_revision: 4,
+            artifact_hash: "sha256:artifact",
+            is_primary: false,
+            category: Some(&baseline),
+        })
+        .unwrap();
+        let changed_seed = serde_json::to_vec(&BlogPostEtagSeed {
+            revision_id,
+            theme_revision: 4,
+            artifact_hash: "sha256:artifact",
+            is_primary: false,
+            category: Some(&changed),
+        })
+        .unwrap();
+        let primary_seed = serde_json::to_vec(&BlogPostEtagSeed {
+            revision_id,
+            theme_revision: 4,
+            artifact_hash: "sha256:artifact",
+            is_primary: true,
+            category: Some(&baseline),
+        })
+        .unwrap();
+
+        assert_ne!(baseline_seed, changed_seed);
+        assert_ne!(baseline_seed, primary_seed);
+    }
+
+    #[test]
+    fn article_route_collision_uses_the_persisted_category_slug_form() {
+        assert!(category_slug_conflicts_with_article_route(
+            "  WrItInG  ",
+            "writing/articles"
+        ));
+        assert!(!category_slug_conflicts_with_article_route(
+            "research",
+            "writing/articles"
+        ));
     }
 }

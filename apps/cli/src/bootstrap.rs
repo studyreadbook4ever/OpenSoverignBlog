@@ -414,7 +414,7 @@ struct OfficialDlc {
     manifest: &'static str,
 }
 
-const OFFICIAL_DLCS: [OfficialDlc; 10] = [
+const OFFICIAL_DLCS: [OfficialDlc; 11] = [
     OfficialDlc {
         alias: "ads",
         id: "org.open-soverign-blog.monetization-policy",
@@ -428,6 +428,13 @@ const OFFICIAL_DLCS: [OfficialDlc; 10] = [
         runtime_feature: "ai_authorship",
         source: "plugins/official/ai-authorship/plugin.toml",
         manifest: include_str!("../../../plugins/official/ai-authorship/plugin.toml"),
+    },
+    OfficialDlc {
+        alias: "ai-summary",
+        id: "org.open-soverign-blog.ai-summary",
+        runtime_feature: "ai_summary",
+        source: "plugins/official/ai-summary/plugin.toml",
+        manifest: include_str!("../../../plugins/official/ai-summary/plugin.toml"),
     },
     OfficialDlc {
         alias: "code-runner",
@@ -597,7 +604,7 @@ fn resolve_prompted_args_with(
         let answer = prompt(
             reader,
             writer,
-            "Optional DLC aliases, comma-separated (seo, home-curation, ai-authorship, social-embeds, release-check, comments, rbac, external-auth, code-runner, ads; or none)",
+            "Optional DLC aliases, comma-separated (seo, home-curation, ai-authorship, ai-summary, social-embeds, release-check, comments, rbac, external-auth, code-runner, ads; or none)",
             default_dlcs,
         )?;
         if answer.eq_ignore_ascii_case("none") {
@@ -1713,6 +1720,7 @@ comments = {comments_feature}
 seo = {seo}
 code_runner = {code_runner}
 ads = {ads}
+ai_summary = {ai_summary}
 "#,
         intent = args.intent.as_str(),
         public_url = config.public_url,
@@ -1735,6 +1743,7 @@ ads = {ads}
         seo = feature_enabled("seo"),
         code_runner = feature_enabled("code_runner"),
         ads = feature_enabled("ads"),
+        ai_summary = feature_enabled("ai_summary"),
         redis_enabled = redis_enabled,
         content_release = config.content_release,
         comments = config.comments,
@@ -1786,6 +1795,7 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
                 "seo"
                     | "home_curation"
                     | "ai_authorship"
+                    | "ai_summary"
                     | "social_embeds"
                     | "release_check"
                     | "comments"
@@ -2585,6 +2595,7 @@ struct DoctorFeatures {
     code_runner: bool,
     ads: bool,
     ai_authorship: bool,
+    ai_summary: bool,
     home_curation: bool,
     release_check: bool,
     social_embeds: bool,
@@ -2600,6 +2611,7 @@ impl DoctorFeatures {
             ("code-runner", self.code_runner),
             ("ads", self.ads),
             ("ai-authorship", self.ai_authorship),
+            ("ai-summary", self.ai_summary),
             ("home-curation", self.home_curation),
             ("release-check", self.release_check),
             ("social-embeds", self.social_embeds),
