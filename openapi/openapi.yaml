@@ -184,6 +184,25 @@ paths:
               schema:
                 $ref: "#/components/schemas/Capabilities"
 
+  /api/v1/references:
+    get:
+      tags: [Content]
+      operationId: getGlobalReferences
+      summary: Read the instance-wide references and policy page
+      description: Returns the configured portable Markdown and its sanitized publish artifact. The human route is always `/references` when this page is enabled.
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable global references, attribution, licensing, privacy, and policy content.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferencesPage" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { description: The global references page is disabled. }
+
   /api/v1/session:
     get:
       tags: [Identity]
@@ -2277,6 +2296,8 @@ components:
           description: Authoritative control-plane policy for rendering Studio access.
         auth:
           $ref: "#/components/schemas/AdminAuthCapabilities"
+        references:
+          $ref: "#/components/schemas/ReferencesDescriptor"
         views:
           type: array
           items:
@@ -2305,6 +2326,40 @@ components:
           type: string
           enum: [authenticated_members, read_only]
           description: Coarse compatibility field. Use `studioAccess` and `auth` to render administrator controls.
+
+    ReferencesDescriptor:
+      type: object
+      additionalProperties: false
+      required: [href, label]
+      properties:
+        href:
+          type: string
+          const: /references
+        label:
+          type: string
+          minLength: 1
+          maxLength: 40
+
+    ReferencesPage:
+      type: object
+      additionalProperties: false
+      required: [label, sourceMarkdown, artifactHtml, sourceHash, rendererVersion]
+      properties:
+        label:
+          type: string
+          minLength: 1
+          maxLength: 40
+        sourceMarkdown:
+          type: string
+          minLength: 1
+          maxLength: 1048576
+        artifactHtml:
+          type: string
+        sourceHash:
+          type: string
+          pattern: '^sha256:[0-9a-f]{64}$'
+        rendererVersion:
+          type: string
 
     AdminAuthCapabilities:
       type: object

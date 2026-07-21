@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::{self, Read},
     path::{Path, PathBuf},
 };
@@ -13,6 +13,8 @@ use osb_kernel::{
 use osb_storage_sqlite::SqliteRepository;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::offline_import::{self, OfflineImportArgs};
 
 const MAX_MARKDOWN_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_CONFIG_BYTES: u64 = 256 * 1024;
@@ -31,17 +33,46 @@ pub(crate) struct LocalArgs {
 struct LocalDeploymentBoundary {
     schema_version: String,
     semantic: LocalSemanticBoundary,
+    #[serde(default)]
+    server: LocalServerBoundary,
     deployment: LocalWriteBoundary,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(default)]
+struct LocalServerBoundary {
+    article_base_path: String,
+}
+
+impl Default for LocalServerBoundary {
+    fn default() -> Self {
+        Self {
+            article_base_path: "blog".into(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LocalMaintenanceBoundary {
+    article_route_root: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct LocalSemanticBoundary {
-    intent: String,
+    intent: LocalDeploymentIntent,
 }
 
 #[derive(Debug, Deserialize)]
 struct LocalWriteBoundary {
     delivery_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalDeploymentIntent {
+    Personal,
+    Community,
+    Delivery,
 }
 
 #[derive(Debug, Subcommand)]
@@ -97,6 +128,8 @@ enum LocalAction {
         #[arg(long)]
         json: bool,
     },
+    /// Atomically import a versioned Markdown manifest and historical routes.
+    Import(OfflineImportArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -130,7 +163,7 @@ struct DocumentListEntry {
 }
 
 pub(crate) fn run(database: PathBuf, args: LocalArgs) -> Result<()> {
-    ensure_local_writes_allowed(&args.config)?;
+    let boundary = ensure_local_writes_allowed(&args.config)?;
     let repository = SqliteRepository::open(&database)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("failed to open local database {}", database.display()))?;
@@ -301,10 +334,24 @@ pub(crate) fn run(database: PathBuf, args: LocalArgs) -> Result<()> {
             }
             Ok(())
         }
+        LocalAction::Import(options) => offline_import::run(
+            &repository,
+            control.owner_user_id,
+            control.primary_site_id,
+            &boundary.article_route_root,
+            options,
+        ),
     }
 }
 
-fn ensure_local_writes_allowed(path: &Path) -> Result<()> {
+fn ensure_local_writes_allowed(path: &Path) -> Result<LocalMaintenanceBoundary> {
+    ensure_local_writes_allowed_with(path, |name| env::var(name).ok())
+}
+
+fn ensure_local_writes_allowed_with(
+    path: &Path,
+    environment: impl Fn(&str) -> Option<String>,
+) -> Result<LocalMaintenanceBoundary> {
     let metadata = fs::symlink_metadata(path).with_context(|| {
         format!(
             "failed to inspect local-maintenance config {}",
@@ -332,16 +379,81 @@ fn ensure_local_writes_allowed(path: &Path) -> Result<()> {
         boundary.schema_version == CONFIG_SCHEMA,
         "local maintenance requires config schema {CONFIG_SCHEMA}"
     );
+    let deployment_intent = nonempty_environment_value(&environment, "OSB_INTENT")
+        .map(|value| parse_local_deployment_intent("OSB_INTENT", &value))
+        .transpose()?
+        .unwrap_or(boundary.semantic.intent);
+    let delivery_only = nonempty_environment_value(&environment, "OSB_DELIVERY_ONLY")
+        .map(|value| parse_local_bool("OSB_DELIVERY_ONLY", &value))
+        .transpose()?
+        .unwrap_or(boundary.deployment.delivery_only);
     ensure!(
-        matches!(boundary.semantic.intent.as_str(), "personal" | "community"),
-        "local maintenance is forbidden for semantic intent {:?}",
-        boundary.semantic.intent
+        !delivery_only || deployment_intent == LocalDeploymentIntent::Delivery,
+        "deployment.delivery_only/OSB_DELIVERY_ONLY=true requires semantic.intent/OSB_INTENT=\"delivery\""
     );
     ensure!(
-        !boundary.deployment.delivery_only,
-        "local maintenance is forbidden for a delivery-only deployment"
+        deployment_intent != LocalDeploymentIntent::Delivery || delivery_only,
+        "semantic.intent/OSB_INTENT=\"delivery\" requires deployment.delivery_only/OSB_DELIVERY_ONLY=true"
     );
-    Ok(())
+    ensure!(
+        matches!(
+            deployment_intent,
+            LocalDeploymentIntent::Personal | LocalDeploymentIntent::Community
+        ),
+        "local maintenance is forbidden for effective semantic intent {deployment_intent:?}"
+    );
+    ensure!(
+        !delivery_only,
+        "local maintenance is forbidden for an effective delivery-only deployment"
+    );
+    let environment_article_base_path =
+        nonempty_environment_value(&environment, "OSB_ARTICLE_BASE_PATH");
+    let article_base_path = environment_article_base_path
+        .as_deref()
+        .unwrap_or(&boundary.server.article_base_path);
+    ensure!(
+        !article_base_path.is_empty()
+            && article_base_path.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment != "."
+                    && segment != ".."
+                    && segment.chars().all(|character| {
+                        character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                    })
+            }),
+        "server.article_base_path must contain safe non-empty path segments"
+    );
+    Ok(LocalMaintenanceBoundary {
+        article_route_root: article_base_path
+            .split('/')
+            .next()
+            .expect("a validated article base path has a first segment")
+            .to_owned(),
+    })
+}
+
+fn nonempty_environment_value(
+    environment: &impl Fn(&str) -> Option<String>,
+    name: &str,
+) -> Option<String> {
+    environment(name).filter(|value| !value.trim().is_empty())
+}
+
+fn parse_local_deployment_intent(name: &str, value: &str) -> Result<LocalDeploymentIntent> {
+    match value.to_ascii_lowercase().as_str() {
+        "personal" => Ok(LocalDeploymentIntent::Personal),
+        "community" => Ok(LocalDeploymentIntent::Community),
+        "delivery" => Ok(LocalDeploymentIntent::Delivery),
+        _ => anyhow::bail!("{name} must be personal, community, or delivery"),
+    }
+}
+
+fn parse_local_bool(name: &str, value: &str) -> Result<bool> {
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => anyhow::bail!("{name} must be true/false, yes/no, on/off, or 1/0"),
+    }
 }
 
 fn resolve_authorship(
@@ -487,6 +599,234 @@ delivery_only = false
         assert_eq!(site.handle, "my-notes");
         assert_eq!(site.theme_profile, ThemeProfile::Forest);
         assert!(control.setup_complete);
+    }
+
+    #[test]
+    fn local_config_extracts_the_effective_article_route_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let sparse = writable_config(temporary.path());
+        assert_eq!(
+            ensure_local_writes_allowed_with(&sparse, |_| None)
+                .unwrap()
+                .article_route_root,
+            "blog"
+        );
+
+        let custom = temporary.path().join("custom-config.toml");
+        fs::write(
+            &custom,
+            r#"schema_version = "open-soverign-blog/2"
+
+[semantic]
+intent = "personal"
+
+[server]
+article_base_path = "writing/articles"
+
+[deployment]
+delivery_only = false
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ensure_local_writes_allowed_with(&custom, |_| None)
+                .unwrap()
+                .article_route_root,
+            "writing"
+        );
+        assert_eq!(
+            ensure_local_writes_allowed_with(&custom, |name| {
+                (name == "OSB_ARTICLE_BASE_PATH").then(|| "journal/entries".into())
+            })
+            .unwrap()
+            .article_route_root,
+            "journal"
+        );
+        assert_eq!(
+            ensure_local_writes_allowed_with(&custom, |name| {
+                (name == "OSB_ARTICLE_BASE_PATH").then(String::new)
+            })
+            .unwrap()
+            .article_route_root,
+            "writing"
+        );
+        let invalid = ensure_local_writes_allowed_with(&custom, |name| {
+            (name == "OSB_ARTICLE_BASE_PATH").then(|| "../hidden".into())
+        })
+        .unwrap_err();
+        assert!(invalid.to_string().contains("safe non-empty path segments"));
+    }
+
+    #[test]
+    fn local_config_applies_effective_write_boundary_overrides_fail_closed() {
+        let temporary = tempfile::tempdir().unwrap();
+        let config = writable_config(temporary.path());
+
+        assert!(
+            ensure_local_writes_allowed_with(&config, |name| match name {
+                "OSB_INTENT" => Some("community".into()),
+                "OSB_DELIVERY_ONLY" => Some("off".into()),
+                _ => None,
+            })
+            .is_ok()
+        );
+        assert!(ensure_local_writes_allowed_with(&config, |_| Some("  ".into())).is_ok());
+
+        let delivery_without_intent = ensure_local_writes_allowed_with(&config, |name| {
+            (name == "OSB_DELIVERY_ONLY").then(|| "true".into())
+        })
+        .unwrap_err();
+        assert!(delivery_without_intent.to_string().contains("requires"));
+        assert!(delivery_without_intent.to_string().contains("OSB_INTENT"));
+
+        let intent_without_delivery = ensure_local_writes_allowed_with(&config, |name| {
+            (name == "OSB_INTENT").then(|| "delivery".into())
+        })
+        .unwrap_err();
+        assert!(
+            intent_without_delivery
+                .to_string()
+                .contains("OSB_DELIVERY_ONLY=true")
+        );
+
+        let consistent_delivery = ensure_local_writes_allowed_with(&config, |name| match name {
+            "OSB_INTENT" => Some("delivery".into()),
+            "OSB_DELIVERY_ONLY" => Some("true".into()),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(
+            consistent_delivery
+                .to_string()
+                .contains("local maintenance is forbidden")
+        );
+
+        let invalid_intent = ensure_local_writes_allowed_with(&config, |name| {
+            (name == "OSB_INTENT").then(|| "replica".into())
+        })
+        .unwrap_err();
+        assert!(
+            invalid_intent
+                .to_string()
+                .contains("personal, community, or delivery")
+        );
+
+        let invalid_delivery = ensure_local_writes_allowed_with(&config, |name| {
+            (name == "OSB_DELIVERY_ONLY").then(|| "sometimes".into())
+        })
+        .unwrap_err();
+        assert!(invalid_delivery.to_string().contains("true/false"));
+    }
+
+    #[test]
+    fn maintenance_compose_forwards_every_effective_write_boundary_override() {
+        let compose = include_str!("../../../compose.yaml");
+        let local = compose
+            .split_once("\n  osb-local:")
+            .and_then(|(_, tail)| tail.split_once("\n  redis-primary:"))
+            .map(|(service, _)| service)
+            .expect("compose.yaml must retain the osb-local service before redis-primary");
+        for name in ["OSB_INTENT", "OSB_DELIVERY_ONLY", "OSB_ARTICLE_BASE_PATH"] {
+            assert!(
+                local.contains(&format!("{name}: \"${{{name}:-}}\"")),
+                "osb-local must forward {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn offline_import_reserves_the_environment_article_root_for_categories_and_aliases() {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = temporary.path().join("blog.db");
+        let repository = repository(&database);
+        let control = repository.get_admin_control_plane().unwrap();
+        let config = writable_config(temporary.path());
+        let boundary = ensure_local_writes_allowed_with(&config, |name| {
+            (name == "OSB_ARTICLE_BASE_PATH").then(|| "journal/entries".into())
+        })
+        .unwrap();
+        assert_eq!(boundary.article_route_root, "journal");
+        fs::write(temporary.path().join("post.md"), "# Imported\n").unwrap();
+
+        let category_manifest = temporary.path().join("category-import.json");
+        fs::write(
+            &category_manifest,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": "open-soverign-blog-offline-import/1",
+                "source": "legacy-static-site",
+                "ownerDisplayName": "Owner",
+                "defaultAuthor": {"id": "me", "displayName": "Owner"},
+                "categories": [{"slug": "journal", "title": "Hidden category"}],
+                "posts": [{
+                    "sourceId": "journal:hidden",
+                    "title": "Hidden category post",
+                    "slug": "hidden",
+                    "markdownPath": "post.md",
+                    "createdAt": "2020-01-02T03:04:05Z",
+                    "primaryCategory": "journal"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let category_error = offline_import::run(
+            &repository,
+            control.owner_user_id,
+            control.primary_site_id,
+            &boundary.article_route_root,
+            OfflineImportArgs {
+                manifest: category_manifest,
+                dry_run: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{category_error:#}").contains("configured article base path"));
+
+        let alias_manifest = temporary.path().join("alias-import.json");
+        fs::write(
+            &alias_manifest,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": "open-soverign-blog-offline-import/1",
+                "source": "legacy-static-site",
+                "ownerDisplayName": "Owner",
+                "defaultAuthor": {"id": "me", "displayName": "Owner"},
+                "categories": [{"slug": "ontology", "title": "Ontology"}],
+                "posts": [{
+                    "sourceId": "ontology:hidden-alias",
+                    "title": "Hidden alias post",
+                    "slug": "hidden-alias",
+                    "markdownPath": "post.md",
+                    "createdAt": "2020-01-02T03:04:05Z",
+                    "primaryCategory": "ontology",
+                    "legacyPaths": [{"path": "journal/old-post.html"}]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let alias_error = offline_import::run(
+            &repository,
+            control.owner_user_id,
+            control.primary_site_id,
+            &boundary.article_route_root,
+            OfflineImportArgs {
+                manifest: alias_manifest,
+                dry_run: false,
+                json: false,
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{alias_error:#}").contains("overlaps an application route"));
+
+        assert!(matches!(
+            repository.get_category_by_slug(control.primary_site_id, "journal"),
+            Err(osb_kernel::RepositoryError::NotFound)
+        ));
+        assert!(matches!(
+            repository.get_category_by_slug(control.primary_site_id, "ontology"),
+            Err(osb_kernel::RepositoryError::NotFound)
+        ));
     }
 
     #[test]

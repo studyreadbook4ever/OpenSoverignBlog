@@ -19,7 +19,9 @@ import {
   LoginPage,
   NotFoundPage,
   OnboardingPage,
+  ReferencesPage,
 } from "./public-pages";
+import { isReferencesPath } from "./references";
 
 const StudioDashboard = lazy(async () => ({
   default: (await import("./studio")).StudioDashboard,
@@ -175,6 +177,9 @@ function resolvePage(pathname: string, capabilities: Capabilities | undefined): 
   if (pathname === "/" || pathname === "/index.html") return <FeedPage />;
   if (pathname === "/login") return <LoginPage />;
   if (pathname === "/onboarding") return <OnboardingPage />;
+  if (capabilities?.references && isReferencesPath(pathname)) {
+    return <ReferencesPage capabilities={capabilities} />;
+  }
   if (pathname === "/studio" || pathname === "/studio/") {
     return <Suspense fallback={<RouteLoading label="Studio를 불러오는 중" />}><StudioDashboard capabilities={capabilities} /></Suspense>;
   }
@@ -356,6 +361,9 @@ function SiteHeader() {
         </AppLink>
         <nav className="primary-nav" aria-label="주요 메뉴">
           <AppLink href="/">피드</AppLink>
+          {capabilities?.references ? (
+            <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
+          ) : null}
           {session?.state === "authenticated" && session.blog ? (
             <AppLink href={`/@${session.blog.handle}`}>
               {!session.membershipRole || session.membershipRole === "owner" ? "내 블로그" : "참여 블로그"}
@@ -405,6 +413,7 @@ function SiteHeader() {
 }
 
 function SiteFooter() {
+  const { capabilities } = useSession();
   const [version, setVersion] = useState<VersionInfo>();
   useEffect(() => {
     const controller = new AbortController();
@@ -424,6 +433,9 @@ function SiteFooter() {
         </p>
       </div>
       <div className="footer-links">
+        {capabilities?.references ? (
+          <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
+        ) : null}
         <a href={publicPath("/.well-known/open-soverign-blog.json")}>Discovery</a>
         <a href={publicPath("/openapi/openapi.yaml")}>OpenAPI</a>
         <a href={publicPath("/AI2AI.md")}>AI2AI</a>

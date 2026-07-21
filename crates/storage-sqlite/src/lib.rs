@@ -5,6 +5,7 @@
 //! repository transaction is held.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fmt,
     path::Path,
     str::FromStr,
@@ -16,8 +17,8 @@ use chrono::{DateTime, Utc};
 use osb_kernel::{
     AI_PROPOSAL_AUDIT_SCHEMA_VERSION, Ai2AiEnvelope, AiProposalAuditRecord, CONTENT_SCHEMA_VERSION,
     ContentRepository, DocumentSnapshot, DocumentStatus, NewDocument, ProposedRevision,
-    PublicAuthorship, PublicAuthorshipKind, RepositoryError, RevisionActorKind, RevisionSnapshot,
-    content_hash_with_ai_summary,
+    PublicAuthorship, PublicAuthorshipKind, RepositoryError, RevisionActor, RevisionActorKind,
+    RevisionSnapshot, content_hash_with_ai_summary,
 };
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -534,6 +535,79 @@ pub struct ExportedRoute {
     pub path: String,
     pub canonical: bool,
     pub created_at: DateTime<Utc>,
+}
+
+/// One category declaration in an offline import batch.
+///
+/// Existing active categories are reused only when their portable metadata is
+/// identical. This prevents a retry from silently changing a live navigation
+/// tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineImportCategory {
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+}
+
+/// A historical route that should permanently resolve to the imported post's
+/// canonical route. `created_at` is retained in exports and backup restores.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineImportAlias {
+    pub path: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Fully materialized post input for an atomic offline import.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineImportPost {
+    pub source_id: String,
+    pub title: String,
+    pub slug: String,
+    pub source_markdown: String,
+    pub created_at: DateTime<Utc>,
+    pub author_id: String,
+    pub author_display_name: String,
+    pub primary_category: String,
+    pub human_reviewed: bool,
+    pub aliases: Vec<OfflineImportAlias>,
+}
+
+/// A batch is committed or rolled back as a unit. `source` namespaces stable
+/// source IDs so retry safety is independent from filenames and post slugs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineImportBatch {
+    pub source: String,
+    pub owner_display_name: String,
+    pub categories: Vec<OfflineImportCategory>,
+    pub posts: Vec<OfflineImportPost>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OfflineImportPostStatus {
+    Imported,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineImportPostOutcome {
+    pub source_id: String,
+    pub canonical_path: String,
+    pub status: OfflineImportPostStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OfflineImportReport {
+    pub dry_run: bool,
+    pub owner_display_name_updated: bool,
+    pub categories_created: usize,
+    pub categories_reused: usize,
+    pub posts_imported: usize,
+    pub posts_unchanged: usize,
+    pub aliases_created: usize,
+    pub posts: Vec<OfflineImportPostOutcome>,
 }
 
 impl SqliteRepository {
@@ -1843,7 +1917,7 @@ impl SqliteRepository {
         site_id: Uuid,
         input: CreateCategoryInput,
     ) -> Result<CategoryRecord, RepositoryError> {
-        let slug = normalize_category_slug(&input.slug)?;
+        let slug = normalize_new_category_slug(&input.slug)?;
         let title = validate_required_text(&input.title, "category title", 200)?;
         let description =
             validate_optional_text(input.description.as_deref(), "category description", 2_000)?;
@@ -1875,6 +1949,219 @@ impl SqliteRepository {
             .map_err(map_category_constraint_error)?;
         transaction.commit().map_err(storage_error)?;
         load_category_by_id(&connection, site_id, id)
+    }
+
+    /// Imports a prevalidated set of Markdown posts without requiring a
+    /// network authentication surface.
+    ///
+    /// The complete batch is atomic. A stable `(site, source, source_id)` key
+    /// makes exact retries no-ops; reusing that key with different content,
+    /// category placement, authorship, timestamps, or aliases fails closed.
+    /// Dry runs execute the same constraints and SQL before rolling back.
+    pub fn import_offline_batch(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        batch: OfflineImportBatch,
+        dry_run: bool,
+    ) -> Result<OfflineImportReport, RepositoryError> {
+        self.import_offline_batch_with_reserved_roots(
+            owner_user_id,
+            site_id,
+            batch,
+            &["blog"],
+            dry_run,
+        )
+    }
+
+    /// Variant used by local maintenance after reading the effective article
+    /// base path from trusted deployment configuration. Existing source IDs
+    /// remain immutable while later batches may reconcile owner metadata and
+    /// append new category declarations and posts.
+    pub fn import_offline_batch_with_reserved_roots(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        batch: OfflineImportBatch,
+        reserved_route_roots: &[&str],
+        dry_run: bool,
+    ) -> Result<OfflineImportReport, RepositoryError> {
+        validate_offline_import_batch(site_id, &batch, reserved_route_roots)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+
+        let mut report = OfflineImportReport {
+            dry_run,
+            owner_display_name_updated: false,
+            categories_created: 0,
+            categories_reused: 0,
+            posts_imported: 0,
+            posts_unchanged: 0,
+            aliases_created: 0,
+            posts: Vec::with_capacity(batch.posts.len()),
+        };
+        let import_started_at = Utc::now();
+        let owner_display_name = validate_required_text(
+            &batch.owner_display_name,
+            "offline import owner display name",
+            200,
+        )?;
+        let current_owner_display_name: String = transaction
+            .query_row(
+                "SELECT display_name FROM users WHERE id = ?1",
+                params![owner_user_id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .ok_or(RepositoryError::NotFound)?;
+        if current_owner_display_name != owner_display_name {
+            transaction
+                .execute(
+                    "UPDATE users SET display_name = ?1, updated_at = ?2 WHERE id = ?3",
+                    params![
+                        owner_display_name,
+                        import_started_at.to_rfc3339(),
+                        owner_user_id.to_string(),
+                    ],
+                )
+                .map_err(map_community_constraint_error)?;
+            report.owner_display_name_updated = true;
+        }
+
+        for category in &batch.categories {
+            let slug = normalize_new_category_slug(&category.slug)?;
+            let title = validate_required_text(&category.title, "category title", 200)?;
+            let description = validate_optional_text(
+                category.description.as_deref(),
+                "category description",
+                2_000,
+            )?;
+            match load_category_by_slug(&transaction, site_id, &slug) {
+                Ok(existing) => {
+                    if existing.status != CategoryStatus::Active
+                        || existing.title != title
+                        || existing.description != description
+                    {
+                        return Err(RepositoryError::Validation(format!(
+                            "offline import category '{slug}' conflicts with existing metadata"
+                        )));
+                    }
+                    report.categories_reused += 1;
+                }
+                Err(RepositoryError::NotFound) => {
+                    ensure_category_landing_available(&transaction, site_id, &slug)?;
+                    transaction
+                        .execute(
+                            "INSERT INTO categories (
+                                id, site_id, slug, title, description, theme_profile, status,
+                                created_by_user_id, created_at, updated_at
+                             ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'active', ?6, ?7, ?7)",
+                            params![
+                                Uuid::now_v7().to_string(),
+                                site_id.to_string(),
+                                slug,
+                                title,
+                                description,
+                                owner_user_id.to_string(),
+                                import_started_at.to_rfc3339(),
+                            ],
+                        )
+                        .map_err(map_category_constraint_error)?;
+                    report.categories_created += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        for post in &batch.posts {
+            let category_slug = normalize_new_category_slug(&post.primary_category)?;
+            let category = load_category_by_slug(&transaction, site_id, &category_slug)?;
+            if category.status != CategoryStatus::Active {
+                return Err(RepositoryError::Validation(format!(
+                    "offline import post '{}' targets archived category '{category_slug}'",
+                    post.source_id
+                )));
+            }
+            let canonical_path = category_route_path(Some(&category), &post.slug);
+            let idempotency_key =
+                offline_import_idempotency_key(site_id, &batch.source, &post.source_id)?;
+            let existing = transaction
+                .query_row(
+                    "SELECT document_id, id FROM revisions WHERE idempotency_key = ?1",
+                    params![idempotency_key],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(storage_error)?;
+            if let Some((document_id, revision_id)) = existing {
+                ensure_offline_import_retry_matches(
+                    &transaction,
+                    site_id,
+                    &batch.source,
+                    post,
+                    &category,
+                    parse_uuid(&document_id)?,
+                    parse_uuid(&revision_id)?,
+                )?;
+                report.posts_unchanged += 1;
+                report.posts.push(OfflineImportPostOutcome {
+                    source_id: post.source_id.clone(),
+                    canonical_path,
+                    status: OfflineImportPostStatus::Unchanged,
+                });
+                continue;
+            }
+
+            let document = create_document_in_transaction(
+                &transaction,
+                offline_import_document(site_id, &batch.source, post),
+                post.created_at,
+                Some((owner_user_id, category.id)),
+                Some(&idempotency_key),
+            )?;
+            publish_in_transaction_at(
+                &transaction,
+                document.id,
+                document.current_revision_id,
+                post.created_at,
+            )?;
+            for alias in &post.aliases {
+                ensure_document_route_available(&transaction, site_id, document.id, &alias.path)?;
+                if !alias.path.contains('/') {
+                    ensure_root_slug_not_category(&transaction, site_id, &alias.path)?;
+                }
+                transaction
+                    .execute(
+                        "INSERT INTO routes (site_id, path, document_id, is_canonical, created_at)
+                         VALUES (?1, ?2, ?3, 0, ?4)",
+                        params![
+                            site_id.to_string(),
+                            alias.path,
+                            document.id.to_string(),
+                            alias.created_at.to_rfc3339(),
+                        ],
+                    )
+                    .map_err(map_constraint_error)?;
+                report.aliases_created += 1;
+            }
+            report.posts_imported += 1;
+            report.posts.push(OfflineImportPostOutcome {
+                source_id: post.source_id.clone(),
+                canonical_path,
+                status: OfflineImportPostStatus::Imported,
+            });
+        }
+
+        if dry_run {
+            transaction.rollback().map_err(storage_error)?;
+        } else {
+            transaction.commit().map_err(storage_error)?;
+        }
+        Ok(report)
     }
 
     pub fn list_categories(
@@ -2110,6 +2397,37 @@ impl SqliteRepository {
         )
     }
 
+    /// Reports whether an exact persisted path is a historical route for a
+    /// currently published document. Canonical storage paths are deliberately
+    /// excluded: an uncategorized post stored as `references`, for example,
+    /// is exposed below the configured article base and does not occupy the
+    /// application's root `/references` page.
+    pub fn published_noncanonical_route_exists(
+        &self,
+        site_id: Uuid,
+        path: &str,
+    ) -> Result<bool, RepositoryError> {
+        let connection = self.lock()?;
+        connection
+            .query_row(
+                "SELECT EXISTS (
+                   SELECT 1
+                   FROM routes route
+                   JOIN documents document
+                     ON document.id = route.document_id
+                    AND document.site_id = route.site_id
+                   WHERE route.site_id = ?1
+                     AND route.path = ?2
+                     AND route.is_canonical = 0
+                     AND document.published_revision_id IS NOT NULL
+                     AND document.status != 'archived'
+                 )",
+                params![site_id.to_string(), path],
+                |row| row.get(0),
+            )
+            .map_err(storage_error)
+    }
+
     /// Resolves a backwards-compatible leaf slug only when it identifies one
     /// currently published document in the site. Category routes deliberately
     /// allow the same leaf below different category roots, so callers must keep
@@ -2202,7 +2520,7 @@ impl SqliteRepository {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
         ensure_site_owner(&transaction, owner_user_id, input.site_id)?;
-        let document = create_document_in_transaction(&transaction, input, Utc::now(), None)?;
+        let document = create_document_in_transaction(&transaction, input, Utc::now(), None, None)?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -2218,7 +2536,7 @@ impl SqliteRepository {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
         ensure_site_writer(&transaction, actor_user_id, input.site_id)?;
-        let document = create_document_in_transaction(&transaction, input, Utc::now(), None)?;
+        let document = create_document_in_transaction(&transaction, input, Utc::now(), None, None)?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -2242,8 +2560,13 @@ impl SqliteRepository {
             .map_err(storage_error)?;
         ensure_site_writer(&transaction, actor_user_id, site_id)?;
         let initial_category = category_id.map(|category_id| (actor_user_id, category_id));
-        let document =
-            create_document_in_transaction(&transaction, input, Utc::now(), initial_category)?;
+        let document = create_document_in_transaction(
+            &transaction,
+            input,
+            Utc::now(),
+            initial_category,
+            None,
+        )?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -2783,7 +3106,7 @@ impl ContentRepository for SqliteRepository {
 
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(storage_error)?;
-        let document = create_document_in_transaction(&transaction, input, Utc::now(), None)?;
+        let document = create_document_in_transaction(&transaction, input, Utc::now(), None, None)?;
         transaction.commit().map_err(storage_error)?;
         Ok(document)
     }
@@ -3003,6 +3326,7 @@ fn create_document_in_transaction(
     input: NewDocument,
     now: DateTime<Utc>,
     initial_category: Option<(Uuid, Uuid)>,
+    idempotency_key: Option<&str>,
 ) -> Result<DocumentSnapshot, RepositoryError> {
     let document_id = Uuid::now_v7();
     let revision_id = Uuid::now_v7();
@@ -3058,7 +3382,7 @@ fn create_document_in_transaction(
             ],
         )
         .map_err(map_constraint_error)?;
-    insert_revision(transaction, &revision, None)?;
+    insert_revision(transaction, &revision, idempotency_key)?;
     if let Some((actor_user_id, category_id)) = initial_category {
         assign_revision_category_in_transaction(
             transaction,
@@ -3176,6 +3500,15 @@ fn publish_in_transaction(
     document_id: Uuid,
     revision_id: Uuid,
 ) -> Result<(), RepositoryError> {
+    publish_in_transaction_at(transaction, document_id, revision_id, Utc::now())
+}
+
+fn publish_in_transaction_at(
+    transaction: &Transaction<'_>,
+    document_id: Uuid,
+    revision_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
     let revision_json: Option<String> = transaction
         .query_row(
             "SELECT snapshot_json FROM revisions WHERE id = ?1 AND document_id = ?2",
@@ -3206,8 +3539,6 @@ fn publish_in_transaction(
         true,
     )?;
     ensure_document_route_available(transaction, site_uuid, document_id, &route_path)?;
-    let now = Utc::now();
-
     transaction
         .execute(
             "UPDATE routes SET is_canonical = 0 WHERE document_id = ?1",
@@ -4559,8 +4890,343 @@ fn ensure_published_document_in_site(
     }
 }
 
+fn offline_import_document(site_id: Uuid, source: &str, post: &OfflineImportPost) -> NewDocument {
+    NewDocument {
+        site_id,
+        title: post.title.clone(),
+        slug: post.slug.clone(),
+        source_markdown: post.source_markdown.clone(),
+        embeds: Vec::new(),
+        intent: None,
+        ontology: None,
+        ai_summary: None,
+        authorship: PublicAuthorship {
+            kind: PublicAuthorshipKind::Imported,
+            generator: Some(source.to_owned()),
+            human_reviewed: post.human_reviewed,
+        },
+        actor: RevisionActor {
+            kind: RevisionActorKind::Importer,
+            id: post.author_id.clone(),
+            display_name: Some(post.author_display_name.clone()),
+        },
+    }
+}
+
+fn offline_import_idempotency_key(
+    site_id: Uuid,
+    source: &str,
+    source_id: &str,
+) -> Result<String, RepositoryError> {
+    let key = format!(
+        "offline-import:{site_id}:{}:{source}:{source_id}",
+        source.len()
+    );
+    if key.len() > 200 {
+        return Err(RepositoryError::Validation(format!(
+            "offline import sourceId '{source_id}' produces an idempotency key longer than 200 bytes"
+        )));
+    }
+    Ok(key)
+}
+
+fn validate_offline_import_batch(
+    site_id: Uuid,
+    batch: &OfflineImportBatch,
+    reserved_route_roots: &[&str],
+) -> Result<(), RepositoryError> {
+    for root in reserved_route_roots {
+        validate_offline_import_reserved_root(root)?;
+    }
+    validate_offline_import_text(&batch.source, "offline import source", 100)?;
+    validate_offline_import_text(
+        &batch.owner_display_name,
+        "offline import owner display name",
+        200,
+    )?;
+    if batch.categories.len() > 500 {
+        return Err(RepositoryError::Validation(
+            "offline import cannot contain more than 500 category declarations".into(),
+        ));
+    }
+    if batch.posts.is_empty() || batch.posts.len() > 5_000 {
+        return Err(RepositoryError::Validation(
+            "offline import must contain 1-5000 posts".into(),
+        ));
+    }
+
+    let mut category_slugs = BTreeSet::new();
+    for category in &batch.categories {
+        let slug = normalize_new_category_slug(&category.slug)?;
+        ensure_offline_import_root_available(&slug, reserved_route_roots)?;
+        if !category_slugs.insert(slug.clone()) {
+            return Err(RepositoryError::Validation(format!(
+                "offline import category '{slug}' is declared more than once"
+            )));
+        }
+        validate_required_text(&category.title, "category title", 200)?;
+        validate_optional_text(
+            category.description.as_deref(),
+            "category description",
+            2_000,
+        )?;
+    }
+
+    let mut source_ids = BTreeSet::new();
+    let mut claimed_routes = BTreeMap::<String, String>::new();
+    for post in &batch.posts {
+        validate_offline_import_text(&post.source_id, "offline import sourceId", 100)?;
+        validate_offline_import_text(&post.author_id, "offline import author id", 200)?;
+        validate_offline_import_text(
+            &post.author_display_name,
+            "offline import author display name",
+            200,
+        )?;
+        offline_import_idempotency_key(site_id, &batch.source, &post.source_id)?;
+        if !source_ids.insert(post.source_id.clone()) {
+            return Err(RepositoryError::Validation(format!(
+                "offline import sourceId '{}' is duplicated",
+                post.source_id
+            )));
+        }
+        if post.aliases.len() > 1_000 {
+            return Err(RepositoryError::Validation(format!(
+                "offline import sourceId '{}' has more than 1000 aliases",
+                post.source_id
+            )));
+        }
+
+        let document = offline_import_document(site_id, &batch.source, post);
+        document.validate().map_err(|error| {
+            RepositoryError::Validation(format!(
+                "offline import sourceId '{}' is invalid: {error}",
+                post.source_id
+            ))
+        })?;
+        if post.slug != post.slug.trim() {
+            return Err(RepositoryError::Validation(format!(
+                "offline import sourceId '{}' has a slug with surrounding whitespace",
+                post.source_id
+            )));
+        }
+        let category_slug = normalize_new_category_slug(&post.primary_category)?;
+        ensure_offline_import_root_available(&category_slug, reserved_route_roots)?;
+        let canonical_path = format!("{category_slug}/{}", post.slug);
+        claim_offline_import_route(&mut claimed_routes, &canonical_path, &post.source_id)?;
+        for alias in &post.aliases {
+            validate_offline_import_alias_path(&alias.path, reserved_route_roots)?;
+            if alias.path == canonical_path {
+                return Err(RepositoryError::Validation(format!(
+                    "offline import sourceId '{}' repeats its canonical path as an alias",
+                    post.source_id
+                )));
+            }
+            claim_offline_import_route(&mut claimed_routes, &alias.path, &post.source_id)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_offline_import_reserved_root(root: &str) -> Result<(), RepositoryError> {
+    if root.is_empty()
+        || root.len() > 720
+        || matches!(root, "." | "..")
+        || root.contains(['/', '\\'])
+        || root.chars().any(char::is_control)
+    {
+        return Err(RepositoryError::Validation(format!(
+            "offline import reserved route root '{root}' is not a safe public path segment"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_offline_import_root_available(
+    root: &str,
+    reserved_route_roots: &[&str],
+) -> Result<(), RepositoryError> {
+    if reserved_route_roots.contains(&root) {
+        return Err(RepositoryError::Validation(format!(
+            "offline import route root '{root}' overlaps the configured article base path"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_offline_import_text(
+    value: &str,
+    field: &str,
+    max_chars: usize,
+) -> Result<(), RepositoryError> {
+    let length = value.chars().count();
+    if !(1..=max_chars).contains(&length)
+        || value != value.trim()
+        || value.chars().any(char::is_control)
+    {
+        return Err(RepositoryError::Validation(format!(
+            "{field} must contain 1-{max_chars} printable characters without surrounding whitespace"
+        )));
+    }
+    Ok(())
+}
+
+fn claim_offline_import_route(
+    claimed: &mut BTreeMap<String, String>,
+    path: &str,
+    source_id: &str,
+) -> Result<(), RepositoryError> {
+    if let Some(existing) = claimed.insert(path.to_owned(), source_id.to_owned()) {
+        return Err(RepositoryError::Validation(format!(
+            "offline import route '{path}' is claimed by sourceIds '{existing}' and '{source_id}'"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_offline_import_alias_path(
+    path: &str,
+    reserved_route_roots: &[&str],
+) -> Result<(), RepositoryError> {
+    let segments = path.split('/').collect::<Vec<_>>();
+    let unsafe_segment = segments.iter().any(|segment| {
+        segment.is_empty()
+            || *segment == "."
+            || *segment == ".."
+            || segment.len() > 720
+            || segment.contains('\\')
+            || segment.chars().any(char::is_control)
+    });
+    if path.len() > 2_048
+        || segments.len() > 32
+        || unsafe_segment
+        || path.starts_with('/')
+        || path.ends_with('/')
+    {
+        return Err(RepositoryError::Validation(format!(
+            "offline import alias '{path}' is not a safe relative public path"
+        )));
+    }
+    const RESERVED_ROOTS: &[&str] = &[
+        ".well-known",
+        "AI2AI.md",
+        "UNLICENSE",
+        "agent.txt",
+        "agents.txt",
+        "api",
+        "assets",
+        "blog",
+        "custom.css",
+        "docs",
+        "favicon.svg",
+        "healthz",
+        "index.html",
+        "livez",
+        "llms.txt",
+        "login",
+        "media",
+        "onboarding",
+        "openapi",
+        "providers",
+        "references",
+        "readyz",
+        "robots.txt",
+        "schemas",
+        "sitemap.xml",
+        "studio",
+        "vendor",
+    ];
+    if RESERVED_ROOTS.contains(&segments[0])
+        || reserved_route_roots.contains(&segments[0])
+        || segments[0].starts_with('@')
+    {
+        return Err(RepositoryError::Validation(format!(
+            "offline import alias '{path}' overlaps an application route"
+        )));
+    }
+    Ok(())
+}
+
+fn ensure_offline_import_retry_matches(
+    connection: &Connection,
+    site_id: Uuid,
+    source: &str,
+    post: &OfflineImportPost,
+    category: &CategoryRecord,
+    document_id: Uuid,
+    revision_id: Uuid,
+) -> Result<(), RepositoryError> {
+    let document = load_document(connection, document_id, RevisionSelector::Current)?;
+    let expected = offline_import_document(site_id, source, post);
+    let placement =
+        load_revision_category_placement(connection, site_id, document_id, revision_id)?;
+    let expected_canonical = category_route_path(Some(category), &post.slug);
+    let expected_routes = std::iter::once((expected_canonical, (true, post.created_at)))
+        .chain(
+            post.aliases
+                .iter()
+                .map(|alias| (alias.path.clone(), (false, alias.created_at))),
+        )
+        .collect::<BTreeMap<_, _>>();
+    let mut statement = connection
+        .prepare(
+            "SELECT path, is_canonical, created_at
+             FROM routes WHERE site_id = ?1 AND document_id = ?2",
+        )
+        .map_err(storage_error)?;
+    let actual_routes = statement
+        .query_map(
+            params![site_id.to_string(), document_id.to_string()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(storage_error)?
+        .map(|row| {
+            let (path, canonical, created_at) = row.map_err(storage_error)?;
+            Ok((path, (canonical, parse_datetime(&created_at)?)))
+        })
+        .collect::<Result<BTreeMap<_, _>, RepositoryError>>()?;
+    let exact = document.site_id == site_id
+        && document.status == DocumentStatus::Published
+        && document.current_revision_id == revision_id
+        && document.published_revision_id == Some(revision_id)
+        && document.created_at == post.created_at
+        && document.updated_at == post.created_at
+        && document.revision.id == revision_id
+        && document.revision.revision_number == 1
+        && document.revision.parent_revision_id.is_none()
+        && document.revision.title == expected.title
+        && document.revision.slug == expected.slug
+        && document.revision.source_markdown == expected.source_markdown
+        && document.revision.embeds.is_empty()
+        && document.revision.intent.is_none()
+        && document.revision.ontology.is_none()
+        && document.revision.ai_summary.is_none()
+        && document.revision.authorship == expected.authorship
+        && document.revision.actor == expected.actor
+        && document.revision.created_at == post.created_at
+        && placement.category_id == Some(category.id)
+        && placement.assigned_at == post.created_at
+        && actual_routes == expected_routes;
+    if !exact {
+        return Err(RepositoryError::Validation(format!(
+            "offline import sourceId '{}' conflicts with its previously imported record",
+            post.source_id
+        )));
+    }
+    Ok(())
+}
+
 fn normalize_category_slug(value: &str) -> Result<String, RepositoryError> {
-    let slug = normalize_handle(value, "category slug")?;
+    normalize_handle(value, "category slug")
+}
+
+fn normalize_new_category_slug(value: &str) -> Result<String, RepositoryError> {
+    let slug = normalize_category_slug(value)?;
     const RESERVED: &[&str] = &[
         "api",
         "assets",
@@ -4573,6 +5239,7 @@ fn normalize_category_slug(value: &str) -> Result<String, RepositoryError> {
         "onboarding",
         "openapi",
         "providers",
+        "references",
         "readyz",
         "schemas",
         "studio",
@@ -5685,6 +6352,33 @@ mod tests {
         }
     }
 
+    fn offline_batch(created_at: DateTime<Utc>) -> OfflineImportBatch {
+        OfflineImportBatch {
+            source: "legacy-static-site".into(),
+            owner_display_name: "me".into(),
+            categories: vec![OfflineImportCategory {
+                slug: "ontology".into(),
+                title: "Ontology".into(),
+                description: Some("Imported notes".into()),
+            }],
+            posts: vec![OfflineImportPost {
+                source_id: "ontology:intro".into(),
+                title: "An ontology introduction".into(),
+                slug: "intro".into(),
+                source_markdown: "# Ontology\n\nPreserved source.\n".into(),
+                created_at,
+                author_id: "legacy:me".into(),
+                author_display_name: "me".into(),
+                primary_category: "ontology".into(),
+                human_reviewed: true,
+                aliases: vec![OfflineImportAlias {
+                    path: "topics/knowledge/ontology-intro.html".into(),
+                    created_at,
+                }],
+            }],
+        }
+    }
+
     #[test]
     fn legacy_v2_sites_are_backfilled_and_delivery_can_open_read_only() {
         let directory = tempfile::tempdir().unwrap();
@@ -5940,12 +6634,340 @@ mod tests {
     }
 
     #[test]
+    fn offline_import_preserves_metadata_aliases_and_exact_retry_safety() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "import-owner");
+        let site = community_site(&repository, owner.id, "import-site");
+        let created_at = DateTime::parse_from_rfc3339("2019-04-03T02:01:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let batch = offline_batch(created_at);
+
+        let first = repository
+            .import_offline_batch(owner.id, site.id, batch.clone(), false)
+            .unwrap();
+        assert_eq!(first.posts_imported, 1);
+        assert_eq!(first.aliases_created, 1);
+        assert!(first.owner_display_name_updated);
+        assert_eq!(
+            repository.get_user_by_id(owner.id).unwrap().display_name,
+            "me"
+        );
+
+        let canonical = repository
+            .get_published_by_slug(site.id, "ontology/intro")
+            .unwrap();
+        let legacy = repository
+            .get_published_by_slug(site.id, "topics/knowledge/ontology-intro.html")
+            .unwrap();
+        assert_eq!(legacy.id, canonical.id);
+        assert_eq!(canonical.created_at, created_at);
+        assert_eq!(canonical.updated_at, created_at);
+        assert_eq!(canonical.revision.created_at, created_at);
+        assert_eq!(canonical.revision.actor.kind, RevisionActorKind::Importer);
+        assert_eq!(canonical.revision.actor.id, "legacy:me");
+        assert_eq!(canonical.revision.actor.display_name.as_deref(), Some("me"));
+        assert_eq!(
+            canonical.revision.authorship.kind,
+            PublicAuthorshipKind::Imported
+        );
+        assert_eq!(
+            canonical.revision.authorship.generator.as_deref(),
+            Some("legacy-static-site")
+        );
+        let category = repository
+            .get_published_category(site.id, canonical.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(category.slug, "ontology");
+        let exported = repository.export_site(site.id).unwrap();
+        let routes = &exported.documents[0].routes;
+        assert!(routes.iter().any(|route| {
+            route.path == "topics/knowledge/ontology-intro.html"
+                && !route.canonical
+                && route.created_at == created_at
+        }));
+
+        let retry = repository
+            .import_offline_batch(owner.id, site.id, batch.clone(), false)
+            .unwrap();
+        assert_eq!(retry.posts_imported, 0);
+        assert_eq!(retry.posts_unchanged, 1);
+        assert_eq!(retry.categories_reused, 1);
+        assert!(!retry.owner_display_name_updated);
+        assert_eq!(repository.list_published(site.id, 10).unwrap().len(), 1);
+
+        let mut appended = batch;
+        appended.owner_display_name = "Updated owner".into();
+        appended.categories.push(OfflineImportCategory {
+            slug: "yangja".into(),
+            title: "Yangja".into(),
+            description: None,
+        });
+        appended.posts.push(OfflineImportPost {
+            source_id: "yangja:intro".into(),
+            title: "A quantum introduction".into(),
+            slug: "intro".into(),
+            source_markdown: "# Quantum\n".into(),
+            created_at,
+            author_id: "legacy:me".into(),
+            author_display_name: "me".into(),
+            primary_category: "yangja".into(),
+            human_reviewed: true,
+            aliases: Vec::new(),
+        });
+        let append_report = repository
+            .import_offline_batch(owner.id, site.id, appended, false)
+            .unwrap();
+        assert_eq!(append_report.posts_unchanged, 1);
+        assert_eq!(append_report.posts_imported, 1);
+        assert_eq!(append_report.categories_reused, 1);
+        assert_eq!(append_report.categories_created, 1);
+        assert!(append_report.owner_display_name_updated);
+        assert_eq!(repository.list_published(site.id, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn offline_import_dry_run_and_conflicts_roll_back_every_change() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "rollback-owner");
+        let site = community_site(&repository, owner.id, "rollback-site");
+        let created_at = DateTime::parse_from_rfc3339("2020-05-06T07:08:09Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let batch = offline_batch(created_at);
+
+        let dry_run = repository
+            .import_offline_batch(owner.id, site.id, batch.clone(), true)
+            .unwrap();
+        assert_eq!(dry_run.posts_imported, 1);
+        assert!(matches!(
+            repository.get_category_by_slug(site.id, "ontology"),
+            Err(RepositoryError::NotFound)
+        ));
+        assert_eq!(
+            repository.get_user_by_id(owner.id).unwrap().display_name,
+            owner.display_name
+        );
+
+        repository
+            .import_offline_batch(owner.id, site.id, batch.clone(), false)
+            .unwrap();
+        let mut conflict = batch;
+        conflict.owner_display_name = "must roll back".into();
+        conflict.categories.push(OfflineImportCategory {
+            slug: "yangja".into(),
+            title: "Yangja".into(),
+            description: None,
+        });
+        conflict.posts[0].source_markdown.push_str("drift");
+        assert!(matches!(
+            repository.import_offline_batch(owner.id, site.id, conflict, false),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert_eq!(
+            repository.get_user_by_id(owner.id).unwrap().display_name,
+            "me"
+        );
+        assert!(matches!(
+            repository.get_category_by_slug(site.id, "yangja"),
+            Err(RepositoryError::NotFound)
+        ));
+        assert_eq!(
+            repository
+                .get_published_by_slug(site.id, "ontology/intro")
+                .unwrap()
+                .revision
+                .source_markdown,
+            "# Ontology\n\nPreserved source.\n"
+        );
+    }
+
+    #[test]
+    fn offline_import_rejects_effective_article_and_static_route_aliases() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "reserved-import-owner");
+        let site = community_site(&repository, owner.id, "reserved-import-site");
+        let created_at = DateTime::parse_from_rfc3339("2020-05-06T07:08:09Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        for alias in ["writing/legacy-post.html", "favicon.svg"] {
+            let mut batch = offline_batch(created_at);
+            batch.posts[0].aliases[0].path = alias.into();
+            let result = repository.import_offline_batch_with_reserved_roots(
+                owner.id,
+                site.id,
+                batch,
+                &["writing"],
+                false,
+            );
+            assert!(matches!(result, Err(RepositoryError::Validation(_))));
+            assert!(matches!(
+                repository.get_category_by_slug(site.id, "ontology"),
+                Err(RepositoryError::NotFound)
+            ));
+        }
+
+        let mut category_conflict = offline_batch(created_at);
+        category_conflict.categories[0].slug = "writing".into();
+        category_conflict.posts[0].primary_category = "writing".into();
+        assert!(matches!(
+            repository.import_offline_batch_with_reserved_roots(
+                owner.id,
+                site.id,
+                category_conflict,
+                &["writing"],
+                false,
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn published_noncanonical_route_query_excludes_the_current_storage_route() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "route-kind-owner");
+        let site = community_site(&repository, owner.id, "route-kind-site");
+        let document = repository
+            .create_document_in_writable_site(
+                owner.id,
+                new_document(site.id, "Policy", "references"),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                document.id,
+                document.current_revision_id,
+            )
+            .unwrap();
+
+        assert!(
+            !repository
+                .published_noncanonical_route_exists(site.id, "references")
+                .unwrap()
+        );
+
+        let revision = repository
+            .revise_document_in_owned_site(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: document.id,
+                    base_revision_id: document.current_revision_id,
+                    title: "Moved policy".into(),
+                    slug: "moved-policy".into(),
+                    source_markdown: "# Moved policy".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: Some("route-kind-revision".into()),
+                },
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(owner.id, site.id, document.id, revision.id)
+            .unwrap();
+
+        assert!(
+            repository
+                .published_noncanonical_route_exists(site.id, "references")
+                .unwrap()
+        );
+        assert!(
+            !repository
+                .published_noncanonical_route_exists(site.id, "moved-policy")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn legacy_reserved_category_slugs_remain_readable_but_cannot_be_created() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "legacy-category-owner");
+        let site = community_site(&repository, owner.id, "legacy-category-site");
+        let category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "legacy-references".into(),
+                    title: "Legacy references".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        {
+            let connection = repository.lock().unwrap();
+            connection
+                .execute_batch("DROP TRIGGER categories_slug_immutable;")
+                .unwrap();
+            connection
+                .execute(
+                    "UPDATE categories SET slug = 'references' WHERE id = ?1",
+                    [category.id.to_string()],
+                )
+                .unwrap();
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER categories_slug_immutable
+                     BEFORE UPDATE OF slug ON categories
+                     WHEN NEW.slug != OLD.slug
+                     BEGIN
+                       SELECT RAISE(ABORT, 'category slugs are immutable');
+                     END;",
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            repository
+                .get_category_by_slug(site.id, "references")
+                .unwrap()
+                .id,
+            category.id
+        );
+        let error = repository
+            .create_category(
+                owner.id,
+                site.id,
+                CreateCategoryInput {
+                    slug: "references".into(),
+                    title: "New references".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(error, RepositoryError::Validation(_)));
+        assert!(error.to_string().contains("reserved by the application"));
+    }
+
+    #[test]
     fn categories_are_site_scoped_atomic_and_keep_published_placement_stable() {
         let repository = SqliteRepository::open_in_memory().unwrap();
         let owner = community_user(&repository, "category-owner");
         let site = community_site(&repository, owner.id, "category-site");
         let other_owner = community_user(&repository, "other-category-owner");
         let other_site = community_site(&repository, other_owner.id, "other-category-site");
+
+        let reserved = repository.create_category(
+            owner.id,
+            site.id,
+            CreateCategoryInput {
+                slug: "references".into(),
+                title: "Reserved".into(),
+                description: None,
+                theme_profile: None,
+            },
+        );
+        assert!(matches!(reserved, Err(RepositoryError::Validation(_))));
 
         let yangja = repository
             .create_category(

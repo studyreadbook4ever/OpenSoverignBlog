@@ -60,6 +60,7 @@ mod community;
 mod config;
 mod feature_registry;
 mod installation;
+mod references;
 mod social_embeds;
 mod version;
 
@@ -70,6 +71,7 @@ use cache::SemanticCache;
 use config::{AdminAuthMode, AuthMode, DatabaseProfile, RuntimeConfig};
 use feature_registry::{FeatureRegistry, ModuleDescriptor, ModuleStatus};
 use installation::InstallationRuntime;
+use references::ReferencesPage;
 use version::VersionService;
 
 #[cfg(test)]
@@ -81,6 +83,10 @@ const SECURITY_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
 const BUILD_WEB_DIST: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../web/dist");
 const PASSWORD_WORKER_LIMIT: usize = 4;
 const CACHE_FILL_LIMIT: usize = 64;
+const PRIMARY_CATEGORY_LOOKUP_LIMIT: usize = 16;
+const LEGACY_ALIAS_LOOKUP_LIMIT: usize = 8;
+const CATEGORY_NAMESPACE_SCAN_LIMIT: usize = 50_000;
+const CATEGORY_NAMESPACE_PAGE_SIZE: usize = 500;
 const SITEMAP_URL_LIMIT: usize = 50_000;
 const PUBLIC_HTML_CACHE: &str = "public, max-age=0, s-maxage=60, stale-while-revalidate=300";
 
@@ -108,7 +114,7 @@ fn ensure_article_category_namespace(
         .split('/')
         .next()
         .unwrap_or_default();
-    match repository.get_category_by_slug(site_id, article_root) {
+    match persisted_category_by_slug(repository, site_id, article_root) {
         Ok(category) => anyhow::bail!(
             "configured article base path '{}' starts with persisted category '{}' ({})",
             article_base_path,
@@ -121,6 +127,68 @@ fn ensure_article_category_namespace(
         Err(RepositoryError::NotFound | RepositoryError::Validation(_)) => Ok(()),
         Err(error) => Err(anyhow::Error::msg(error.to_string()))
             .context("failed to validate the article/category route namespace"),
+    }
+}
+
+/// Reads persisted category identity without applying the current create-time
+/// slug validator. This keeps upgraded databases inspectable when a newly
+/// reserved application route existed as a category in an older release.
+fn persisted_category_by_slug(
+    repository: &SqliteRepository,
+    site_id: Uuid,
+    slug: &str,
+) -> Result<osb_storage_sqlite::CategoryRecord, RepositoryError> {
+    let mut offset = 0;
+    loop {
+        let page = repository.list_category_metadata_page(
+            site_id,
+            true,
+            offset,
+            CATEGORY_NAMESPACE_PAGE_SIZE,
+        )?;
+        if let Some(category) = page.iter().find(|category| category.slug == slug) {
+            return repository.get_category_by_id(site_id, category.id);
+        }
+        if page.len() < CATEGORY_NAMESPACE_PAGE_SIZE {
+            return Err(RepositoryError::NotFound);
+        }
+        offset += page.len();
+        if offset >= CATEGORY_NAMESPACE_SCAN_LIMIT {
+            return Err(RepositoryError::Storage(format!(
+                "category namespace exceeds the {CATEGORY_NAMESPACE_SCAN_LIMIT} entry startup validation limit"
+            )));
+        }
+    }
+}
+
+fn ensure_references_namespace(
+    repository: &SqliteRepository,
+    site_id: Uuid,
+    references_enabled: bool,
+) -> Result<()> {
+    if !references_enabled {
+        return Ok(());
+    }
+    match persisted_category_by_slug(repository, site_id, "references") {
+        Ok(category) => anyhow::bail!(
+            "global references page cannot claim '/references': persisted category '{}' ({}) already uses that route; disable [references] or migrate the category first",
+            category.slug,
+            category.id
+        ),
+        Err(RepositoryError::NotFound) => {}
+        Err(error) => {
+            return Err(anyhow::Error::msg(error.to_string()))
+                .context("failed to inspect the persisted category namespace for /references");
+        }
+    }
+    match repository.published_noncanonical_route_exists(site_id, "references") {
+        Ok(true) => anyhow::bail!(
+            "global references page cannot claim '/references': a published legacy alias already uses that route; disable [references] or migrate the alias first"
+        ),
+        Ok(false) => Ok(()),
+        Err(error) => Err(anyhow::Error::msg(error.to_string())).context(
+            "failed to inspect the persisted noncanonical publication namespace for /references",
+        ),
     }
 }
 
@@ -141,6 +209,8 @@ struct AppState {
     cache: Option<SemanticCache>,
     cache_signing_key: Arc<[u8; 32]>,
     cache_fill_slots: Arc<tokio::sync::Semaphore>,
+    primary_category_slots: Arc<tokio::sync::Semaphore>,
+    legacy_alias_slots: Arc<tokio::sync::Semaphore>,
     backup: Option<BackupService>,
     registration_open: bool,
     local_auth_enabled: bool,
@@ -149,6 +219,7 @@ struct AppState {
     collaboration_enabled: bool,
     custom_css_enabled: bool,
     custom_css_file: Arc<std::path::PathBuf>,
+    references: Option<Arc<ReferencesPage>>,
     agent_discovery_enabled: bool,
     delivery_only: bool,
     secure_session_cookie: bool,
@@ -405,6 +476,8 @@ async fn main() -> Result<()> {
     }
     ensure_article_category_namespace(&repository, site_id, &seo_policy.article_base_path)
         .context("article/category route namespace is invalid")?;
+    ensure_references_namespace(&repository, site_id, config.references.is_some())
+        .context("global references route namespace is invalid")?;
     if delivery_only && !config.blob_directory.join("sha256").is_dir() {
         anyhow::bail!(
             "delivery-only blob store must already contain the sha256 namespace: {}",
@@ -548,6 +621,10 @@ async fn main() -> Result<()> {
         cache,
         cache_signing_key: Arc::new(cache_signing_key),
         cache_fill_slots: Arc::new(tokio::sync::Semaphore::new(CACHE_FILL_LIMIT)),
+        primary_category_slots: Arc::new(tokio::sync::Semaphore::new(
+            PRIMARY_CATEGORY_LOOKUP_LIMIT,
+        )),
+        legacy_alias_slots: Arc::new(tokio::sync::Semaphore::new(LEGACY_ALIAS_LOOKUP_LIMIT)),
         backup,
         registration_open: config.registration_open,
         local_auth_enabled,
@@ -556,6 +633,7 @@ async fn main() -> Result<()> {
         collaboration_enabled: config.collaboration_enabled,
         custom_css_enabled: config.custom_css_enabled,
         custom_css_file: Arc::new(config.custom_css_file),
+        references: config.references.map(ReferencesPage::new).map(Arc::new),
         agent_discovery_enabled: config.agent_discovery_enabled,
         delivery_only,
         secure_session_cookie: config.secure_session_cookie,
@@ -627,6 +705,16 @@ fn app(state: AppState) -> Router {
         // Reject from request parts before Axum buffers and deserializes JSON.
         .route_layer(middleware::from_fn_with_state(state.clone(), admin_guard))
         .route_layer(middleware::from_fn(private_no_store));
+    let references_routes = if state.references.is_some() {
+        Router::new()
+            .route("/references", get(public_references))
+            .route(
+                "/references/",
+                get(public_references_trailing_slash_redirect),
+            )
+    } else {
+        Router::new()
+    };
     Router::new()
         .route("/", get(spa_home))
         .route("/index.html", get(spa_home))
@@ -639,6 +727,7 @@ fn app(state: AppState) -> Router {
         .route("/.well-known/open-soverign-blog.json", get(ai2ai_discovery))
         .route("/.well-known/agent-card.json", get(a2a_unavailable))
         .route("/api/v1/capabilities", get(capabilities))
+        .route("/api/v1/references", get(references::get))
         .route("/api/v1/code-runner/profiles", get(code_runner_profiles))
         .route("/api/v1/posts", get(list_posts))
         .route("/api/v1/posts/{slug}", get(get_post))
@@ -658,6 +747,7 @@ fn app(state: AppState) -> Router {
             get(public_community_category_post),
         )
         .route("/@{handle}/{slug}", get(public_community_post))
+        .merge(references_routes)
         .route(&article_route, get(public_post))
         .route("/robots.txt", get(robots))
         .route("/sitemap.xml", get(sitemap))
@@ -1107,6 +1197,8 @@ fn public_cache_path(state: &AppState, path: &str) -> bool {
     path.starts_with("/@")
         || primary_category_public_path(state, path)
         || path == "/api/v1/home"
+        || path == "/api/v1/references"
+        || (state.references.is_some() && matches!(path, "/references" | "/references/"))
         || path == "/api/v1/feed"
         || path == "/api/v1/blogs"
         || path.starts_with("/api/v1/blogs/")
@@ -1157,32 +1249,39 @@ fn primary_category_public_path(state: &AppState, path: &str) -> bool {
         "studio",
         "vendor",
     ];
-    !RESERVED.contains(&category)
-        && category
-            != state
-                .seo_policy
-                .article_base_path
-                .trim_matches('/')
-                .split('/')
-                .next()
-                .unwrap_or_default()
-        && (1..=40).contains(&category.len())
-        && !category.starts_with('-')
-        && !category.ends_with('-')
-        && category
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    let article_root = state
+        .seo_policy
+        .article_base_path
+        .trim_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    if RESERVED.contains(&category)
+        || (state.references.is_some() && category == "references")
+        || category == article_root
+        || !(1..=40).contains(&category.len())
+        || category.starts_with('-')
+        || category.ends_with('-')
+    {
+        return false;
+    }
+    category
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
 fn request_accepts_html(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|item| item.trim().starts_with("text/html"))
+        .map(|value| {
+            value.to_str().ok().is_some_and(|value| {
+                value.split(',').any(|item| {
+                    let media_range = item.split(';').next().map(str::trim).unwrap_or_default();
+                    media_range.eq_ignore_ascii_case("text/html") || media_range == "*/*"
+                })
+            })
         })
+        .unwrap_or(true)
 }
 
 /// Separates cache entries produced under different operator intent. Redis is
@@ -1204,6 +1303,7 @@ fn semantic_cache_variant(state: &AppState) -> String {
         "comments": state.comments_enabled,
         "collaboration": state.collaboration_enabled,
         "customCss": state.custom_css_enabled,
+        "references": state.references.as_ref().map(|page| page.cache_identity()),
         "agentDiscovery": state.agent_discovery_enabled,
         "deliveryOnly": state.delivery_only,
     });
@@ -1271,35 +1371,72 @@ async fn spa_index_fallback(
     ]
     .iter()
     .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")));
+    let references_client_route =
+        state.references.is_some() && matches!(path, "/references" | "/references/");
     let known_client_route = path == "/"
         || path == "/login"
         || path == "/onboarding"
+        || references_client_route
         || path == "/studio"
         || path.starts_with("/studio/")
         || path.starts_with("/@");
     let accepts_html = request_accepts_html(&headers);
     let primary_category_path = primary_category_public_path(&state, path);
-    if !matches!(method, Method::GET | Method::HEAD)
-        || reserved
-        || (!known_client_route && !accepts_html)
-    {
+    if !matches!(method, Method::GET | Method::HEAD) || reserved {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if accepts_html && primary_category_path {
-        match primary_category_post_from_uri(&state, method.clone(), &uri, &headers).await {
+    if primary_category_path {
+        let Ok(primary_permit) = Arc::clone(&state.primary_category_slots).try_acquire_owned()
+        else {
+            return primary_category_lookup_saturated_response();
+        };
+        match primary_category_post_from_uri(&state, method.clone(), &uri, &headers, accepts_html)
+            .await
+        {
             Ok(Some(response)) => return mark_primary_category_cacheable(response),
             Ok(None) => {}
             Err(error) => return error.into_response(),
         }
-        match primary_category_landing_from_uri(&state, method.clone(), &uri, &headers).await {
-            Ok(Some(response)) => return mark_primary_category_cacheable(response),
-            Ok(None) => {
-                return vary_on_accept(serve_spa_index(method, &state.seo_policy).await);
+        if accepts_html {
+            match primary_category_landing_from_uri(&state, method.clone(), &uri, &headers).await {
+                Ok(Some(response)) => return mark_primary_category_cacheable(response),
+                Ok(None) => {}
+                Err(error) => return error.into_response(),
             }
+        }
+        drop(primary_permit);
+        match primary_legacy_alias_redirect(&state, &uri).await {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
+            Err(error) => return error.into_response(),
+        }
+        if !accepts_html {
+            return vary_on_accept(StatusCode::NOT_FOUND.into_response());
+        }
+        return vary_on_accept(serve_spa_index(method, &state.seo_policy).await);
+    }
+    if !known_client_route {
+        match primary_legacy_alias_redirect(&state, &uri).await {
+            Ok(Some(response)) => return response,
+            Ok(None) => {}
             Err(error) => return error.into_response(),
         }
     }
+    if !known_client_route && !accepts_html {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     serve_spa_index(method, &state.seo_policy).await
+}
+
+fn primary_category_lookup_saturated_response() -> Response {
+    let mut response = ApiError::ServiceUnavailable(
+        "primary category lookup capacity is exhausted; retry shortly".into(),
+    )
+    .into_response();
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+    vary_on_accept(response)
 }
 
 fn vary_on_accept(mut response: Response) -> Response {
@@ -1370,6 +1507,7 @@ async fn primary_category_post_from_uri(
     method: Method,
     uri: &Uri,
     headers: &HeaderMap,
+    render_canonical: bool,
 ) -> Result<Option<Response>, ApiError> {
     let path = uri.path().trim_end_matches('/');
     let Some(path) = path.strip_prefix('/') else {
@@ -1422,6 +1560,9 @@ async fn primary_category_post_from_uri(
             public_projection_url(canonical, view).as_str(),
         )));
     }
+    if !render_canonical {
+        return Ok(None);
+    }
     Ok(Some(
         render_community_post_document(
             state,
@@ -1436,6 +1577,78 @@ async fn primary_category_post_from_uri(
         )
         .await?,
     ))
+}
+
+/// Resolves persisted non-canonical routes before the SPA fallback. Unlike the
+/// primary category renderer, this accepts deeply nested legacy paths (for
+/// example `topics/algorithms/grover.html`) and always redirects to the
+/// absolute current category URL.
+async fn primary_legacy_alias_redirect(
+    state: &AppState,
+    uri: &Uri,
+) -> Result<Option<Response>, ApiError> {
+    let raw_path = uri.path().trim_end_matches('/');
+    let Some(raw_path) = raw_path.strip_prefix('/') else {
+        return Ok(None);
+    };
+    if raw_path.is_empty() || raw_path.len() > 8_192 {
+        return Ok(None);
+    }
+    let raw_segments = raw_path.split('/').collect::<Vec<_>>();
+    if raw_segments.len() > 32 || raw_segments.iter().any(|segment| segment.is_empty()) {
+        return Ok(None);
+    }
+    let segments = raw_segments
+        .into_iter()
+        .map(|segment| percent_decode_str(segment).decode_utf8().map(String::from))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::BadRequest("public path is not valid UTF-8".into()))?;
+    if segments.iter().any(|segment| {
+        segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.len() > 720
+            || segment.contains(['/', '\\'])
+            || segment.chars().any(char::is_control)
+    }) {
+        return Ok(None);
+    }
+    let lookup_path = segments.join("/");
+    if lookup_path.len() > 2_048 {
+        return Ok(None);
+    }
+    let Ok(_permit) = Arc::clone(&state.legacy_alias_slots).try_acquire_owned() else {
+        // Deep legacy aliases are a compatibility path, not a reason to queue
+        // unbounded blocking SQLite work under a miss flood.
+        return Ok(None);
+    };
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let lookup = lookup_path.clone();
+    let result = repository_task(move || {
+        let document = repository.get_published_by_slug(site_id, &lookup)?;
+        let category = repository
+            .get_published_category(site_id, document.id)?
+            .ok_or(RepositoryError::NotFound)?;
+        Ok((document.revision.slug, category.slug))
+    })
+    .await;
+    let (canonical_slug, category_slug) = match result {
+        Ok(value) => value,
+        Err(ApiError::Repository(RepositoryError::NotFound)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let canonical_path = format!("{category_slug}/{canonical_slug}");
+    if lookup_path == canonical_path {
+        return Ok(None);
+    }
+    let canonical = category_public_url(
+        &state.seo_policy,
+        None,
+        &category_slug,
+        Some(&canonical_slug),
+    )?;
+    Ok(Some(public_legacy_moved_redirect(canonical.as_str())))
 }
 
 fn view_from_uri(uri: &Uri) -> Result<ViewMode, ApiError> {
@@ -1600,13 +1813,21 @@ async fn agents_txt(
     if !state.agent_discovery_enabled {
         return Ok(StatusCode::NOT_FOUND.into_response());
     }
+    let references = match state.references.as_ref() {
+        Some(_) => format!(
+            "- Global references and policies: {}\n",
+            absolute_public_url(&state.seo_policy, "/references")?
+        ),
+        None => String::new(),
+    };
     let source = format!(
-        "# OpenSoverignBlog agent compatibility index\n\nThis file is a compatibility pointer, not a claim of protocol conformance.\n\n- Authoritative machine manifest: {manifest}\n- Capabilities and runtime state: {capabilities}\n- OpenAPI: {openapi}\n- Human and agent safety contract: {instructions}\n- Reader-oriented LLM index: {llms}\n",
+        "# OpenSoverignBlog agent compatibility index\n\nThis file is a compatibility pointer, not a claim of protocol conformance.\n\n- Authoritative machine manifest: {manifest}\n- Capabilities and runtime state: {capabilities}\n- OpenAPI: {openapi}\n- Human and agent safety contract: {instructions}\n- Reader-oriented LLM index: {llms}\n{references}",
         manifest = absolute_public_url(&state.seo_policy, "/.well-known/open-soverign-blog.json")?,
         capabilities = absolute_public_url(&state.seo_policy, "/api/v1/capabilities")?,
         openapi = absolute_public_url(&state.seo_policy, "/openapi/openapi.yaml")?,
         instructions = absolute_public_url(&state.seo_policy, "/AI2AI.md")?,
         llms = absolute_public_url(&state.seo_policy, "/llms.txt")?,
+        references = references,
     );
     public_cached_response(
         Method::GET,
@@ -1625,11 +1846,19 @@ async fn llms_txt(State(state): State<AppState>, headers: HeaderMap) -> Result<R
     } else {
         "Redis is disabled for this installation; SQLite and first-party blobs remain authoritative."
     };
+    let references = match state.references.as_ref() {
+        Some(_) => format!(
+            "- [Global references and policies]({})\n",
+            absolute_public_url(&state.seo_policy, "/references")?
+        ),
+        None => String::new(),
+    };
     let source = format!(
-        "# OpenSoverignBlog\n\n> A self-owned on-premise Markdown publishing engine.\n\n## Public reading\n\n- [Published feed]({feed})\n- [Blogs]({blogs})\n- [Sitemap]({sitemap})\n\n## Agent integration\n\n- [Machine manifest]({manifest})\n- [Capabilities]({capabilities})\n- [OpenAPI]({openapi})\n- [AI2AI safety contract]({instructions})\n\n{cache_note}\n",
+        "# OpenSoverignBlog\n\n> A self-owned on-premise Markdown publishing engine.\n\n## Public reading\n\n- [Published feed]({feed})\n- [Blogs]({blogs})\n- [Sitemap]({sitemap})\n{references}\n## Agent integration\n\n- [Machine manifest]({manifest})\n- [Capabilities]({capabilities})\n- [OpenAPI]({openapi})\n- [AI2AI safety contract]({instructions})\n\n{cache_note}\n",
         feed = absolute_public_url(&state.seo_policy, "/api/v1/feed")?,
         blogs = absolute_public_url(&state.seo_policy, "/api/v1/blogs")?,
         sitemap = absolute_public_url(&state.seo_policy, "/sitemap.xml")?,
+        references = references,
         manifest = absolute_public_url(&state.seo_policy, "/.well-known/open-soverign-blog.json")?,
         capabilities = absolute_public_url(&state.seo_policy, "/api/v1/capabilities")?,
         openapi = absolute_public_url(&state.seo_policy, "/openapi/openapi.yaml")?,
@@ -1813,6 +2042,10 @@ async fn capabilities(State(state): State<AppState>) -> Json<Capabilities> {
         modules: state.features.modules().to_vec(),
         unavailable_by_default,
         mutation_mechanisms,
+        references: state.references.as_ref().map(|page| ReferencesDescriptor {
+            href: "/references",
+            label: page.label().to_owned(),
+        }),
         mutation_mode: if state.delivery_only {
             "read_only"
         } else if state.local_auth_enabled || has_admin_session {
@@ -3076,6 +3309,12 @@ fn public_permanent_redirect(location: &str) -> Response {
     response
 }
 
+fn public_legacy_moved_redirect(location: &str) -> Response {
+    let mut response = public_permanent_redirect(location);
+    *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
+    response
+}
+
 async fn public_post(
     State(state): State<AppState>,
     Path(slug): Path<String>,
@@ -3199,6 +3438,57 @@ async fn public_post(
     Ok(response)
 }
 
+async fn public_references(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let Some(page) = state.references.as_ref() else {
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let canonical = state
+        .seo_policy
+        .public_route_url("/references")
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let description = summarize_markdown(page.source_markdown(), 180);
+    let head = if state.features.is_active("seo") {
+        community_meta_head(
+            page.label(),
+            &description,
+            &canonical,
+            "website",
+            state.seo_policy.no_index,
+            None,
+        )
+    } else {
+        basic_page_head(page.label())
+    };
+    let root = format!(
+        "<main class=\"route-main\" id=\"main-content\"><div class=\"osb-site-frame references-page\">\
+         <article class=\"article-shell\"><header class=\"article-header references-header\">\
+         <p class=\"eyebrow\">Global references</p><h1>{}</h1>\
+         <p class=\"article-deck\">{}</p></header><div class=\"article-content\">{}</div>\
+         <details class=\"artifact-proof\"><summary>문서 무결성 정보</summary><div>\
+         <span>{}</span><code>{}</code></div></details></article></div></main>",
+        escape_xml(page.label()),
+        escape_xml(&description),
+        page.artifact_html(),
+        escape_xml(osb_renderer::RENDERER_VERSION),
+        escape_xml(page.source_hash()),
+    );
+    render_spa_document(method, &headers, &state.seo_policy, &head, &root).await
+}
+
+async fn public_references_trailing_slash_redirect(
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    let canonical = state
+        .seo_policy
+        .public_route_url("/references")
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    Ok(Redirect::permanent(canonical.as_str()).into_response())
+}
+
 async fn robots(State(state): State<AppState>, method: Method, headers: HeaderMap) -> Response {
     if !state.features.is_active("seo") {
         return StatusCode::NOT_FOUND.into_response();
@@ -3299,6 +3589,14 @@ async fn sitemap(
     let mut xml = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">",
     );
+    if state.references.is_some() {
+        xml.push_str("<url><loc>");
+        xml.push_str(&escape_xml(&absolute_public_url(
+            &state.seo_policy,
+            "/references",
+        )?));
+        xml.push_str("</loc></url>");
+    }
     for (url, updated_at) in urls {
         xml.push_str("<url><loc>");
         xml.push_str(&escape_xml(&url));
@@ -3473,7 +3771,16 @@ struct Capabilities {
     modules: Vec<ModuleDescriptor>,
     unavailable_by_default: Vec<&'static str>,
     mutation_mechanisms: Vec<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    references: Option<ReferencesDescriptor>,
     mutation_mode: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferencesDescriptor {
+    href: &'static str,
+    label: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -3788,6 +4095,20 @@ mod tests {
         assert!(error.to_string().contains("rebootstrap"));
     }
 
+    #[test]
+    fn html_acceptance_includes_http_defaults_but_not_json_only_requests() {
+        let mut headers = HeaderMap::new();
+        assert!(request_accepts_html(&headers));
+
+        for value in ["text/html", "text/html; charset=utf-8", "*/*"] {
+            headers.insert(header::ACCEPT, HeaderValue::from_static(value));
+            assert!(request_accepts_html(&headers), "{value}");
+        }
+
+        headers.insert(header::ACCEPT, HeaderValue::from_static("application/json"));
+        assert!(!request_accepts_html(&headers));
+    }
+
     fn test_state(token: Option<&str>) -> AppState {
         let mut features = FeatureRegistry::from_requested("seo").unwrap();
         features
@@ -3820,6 +4141,10 @@ mod tests {
             cache: None,
             cache_signing_key: Arc::new([0x5a; 32]),
             cache_fill_slots: Arc::new(tokio::sync::Semaphore::new(CACHE_FILL_LIMIT)),
+            primary_category_slots: Arc::new(tokio::sync::Semaphore::new(
+                PRIMARY_CATEGORY_LOOKUP_LIMIT,
+            )),
+            legacy_alias_slots: Arc::new(tokio::sync::Semaphore::new(LEGACY_ALIAS_LOOKUP_LIMIT)),
             backup: None,
             registration_open: true,
             local_auth_enabled: true,
@@ -3828,6 +4153,10 @@ mod tests {
             collaboration_enabled: false,
             custom_css_enabled: false,
             custom_css_file: Arc::new(std::env::temp_dir().join("osb-test-custom.css")),
+            references: Some(Arc::new(ReferencesPage::new(config::ReferencesSettings {
+                label: "레퍼런스".into(),
+                source_markdown: "## 출처\n\n테스트 참고 자료".into(),
+            }))),
             agent_discovery_enabled: true,
             delivery_only: false,
             secure_session_cookie: true,
@@ -3870,6 +4199,68 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn file_backed_access_key_state(database: &std::path::Path) -> AppState {
+        let mut state =
+            access_key_state("file-backed-test-administrator-access-key-with-enough-entropy");
+        let repository = Arc::new(SqliteRepository::open(database).unwrap());
+        repository
+            .provision_primary_owner_site(
+                &PrimaryOwnerBootstrap {
+                    site_id: state.site_id,
+                    site_handle: "test-blog".into(),
+                    site_title: "Test blog".into(),
+                    site_description: None,
+                    owner_display_name: "Test owner".into(),
+                    theme_profile: ThemeProfile::Paper,
+                },
+                StoredAdminAuthMode::AccessKey,
+                &state.admin_auth.binding_fingerprint(),
+            )
+            .unwrap();
+        state.repository = repository;
+        state
+    }
+
+    fn publish_primary_document(state: &AppState, slug: &str, title: &str) {
+        let control = state.repository.get_admin_control_plane().unwrap();
+        let owner = state
+            .repository
+            .get_user_by_id(control.owner_user_id)
+            .unwrap();
+        let document = state
+            .repository
+            .create_document_in_writable_site_with_category(
+                control.owner_user_id,
+                NewDocument {
+                    site_id: state.site_id,
+                    title: title.into(),
+                    slug: slug.into(),
+                    source_markdown: format!("# {title}"),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name),
+                    },
+                },
+                None,
+            )
+            .unwrap();
+        state
+            .repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                state.site_id,
+                document.id,
+                document.current_revision_id,
+            )
+            .unwrap();
     }
 
     fn ai_summary_state() -> (AppState, String) {
@@ -4315,6 +4706,8 @@ mod tests {
         assert_eq!(capabilities["studioAccess"], "members");
         assert_eq!(capabilities["auth"]["status"], "disabled");
         assert_eq!(capabilities["mutationMode"], "authenticated_members");
+        assert_eq!(capabilities["references"]["href"], "/references");
+        assert_eq!(capabilities["references"]["label"], "레퍼런스");
         assert_eq!(
             capabilities["mutationMechanisms"],
             serde_json::json!(["session"])
@@ -4340,6 +4733,439 @@ mod tests {
                 .iter()
                 .any(|feature| feature == "comments" || feature == "rbac")
         );
+    }
+
+    #[tokio::test]
+    async fn global_references_are_public_cacheable_and_discoverable() {
+        let mut state = test_state(None);
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/notes/").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        state.references = Some(Arc::new(ReferencesPage::new(config::ReferencesSettings {
+            label: "레퍼런스".into(),
+            source_markdown: "## 출처\n\n[UNLICENSE](UNLICENSE)".into(),
+        })));
+        let router = app(state);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/references")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], PUBLIC_HTML_CACHE);
+        let etag = response.headers()[header::ETAG].clone();
+        let page = json(response).await;
+        assert_eq!(page["label"], "레퍼런스");
+        assert_eq!(page["sourceMarkdown"], "## 출처\n\n[UNLICENSE](UNLICENSE)");
+        assert!(
+            page["artifactHtml"]
+                .as_str()
+                .unwrap()
+                .contains("<h2>출처</h2>")
+        );
+        assert!(page["sourceHash"].as_str().unwrap().starts_with("sha256:"));
+
+        let not_modified = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/references")
+                    .header(header::IF_NONE_MATCH, etag)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(not_modified.status(), StatusCode::NOT_MODIFIED);
+
+        let human = router
+            .clone()
+            .oneshot(
+                Request::get("/references")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(human.status(), StatusCode::OK);
+        let human = text(human).await;
+        assert!(human.contains("<h1>레퍼런스</h1>"));
+        assert!(human.contains("<h2>출처</h2>"));
+        assert!(human.contains("href=\"UNLICENSE\""));
+        assert!(
+            human.contains(
+                "<link rel=\"canonical\" href=\"https://blog.example/notes/references\">"
+            )
+        );
+
+        let trailing = router
+            .clone()
+            .oneshot(Request::get("/references/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(trailing.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            trailing.headers()[header::LOCATION],
+            "https://blog.example/notes/references"
+        );
+
+        let sitemap = router
+            .clone()
+            .oneshot(Request::get("/sitemap.xml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            text(sitemap)
+                .await
+                .contains("<loc>https://blog.example/notes/references</loc>")
+        );
+
+        let llms = router
+            .clone()
+            .oneshot(Request::get("/llms.txt").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert!(
+            text(llms).await.contains(
+                "[Global references and policies](https://blog.example/notes/references)"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_global_references_removes_the_api_and_capability() {
+        let mut state = test_state(None);
+        state.references = None;
+        let router = app(state);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/references")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let human = router
+            .clone()
+            .oneshot(
+                Request::get("/references")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(human.status(), StatusCode::OK);
+        assert!(!text(human).await.contains("Global references"));
+
+        let capabilities = router
+            .oneshot(
+                Request::get("/api/v1/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(json(capabilities).await.get("references").is_none());
+    }
+
+    #[tokio::test]
+    async fn disabled_references_preserve_an_upgraded_references_category() {
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("legacy.db");
+        let mut state = file_backed_access_key_state(&database);
+        let control = state.repository.get_admin_control_plane().unwrap();
+        let category = state
+            .repository
+            .create_category(
+                control.owner_user_id,
+                state.site_id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "legacy-references".into(),
+                    title: "Legacy references archive".into(),
+                    description: Some("Preserved after upgrade".into()),
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let owner = state
+            .repository
+            .get_user_by_id(control.owner_user_id)
+            .unwrap();
+        let post = state
+            .repository
+            .create_document_in_writable_site_with_category(
+                control.owner_user_id,
+                NewDocument {
+                    site_id: state.site_id,
+                    title: "Preserved reference note".into(),
+                    slug: "legacy-policy".into(),
+                    source_markdown: "# Preserved reference note".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name),
+                    },
+                },
+                Some(category.id),
+            )
+            .unwrap();
+        state
+            .repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                state.site_id,
+                post.id,
+                post.current_revision_id,
+            )
+            .unwrap();
+        let legacy_connection = rusqlite::Connection::open(&database).unwrap();
+        legacy_connection
+            .execute_batch("DROP TRIGGER categories_slug_immutable;")
+            .unwrap();
+        legacy_connection
+            .execute(
+                "UPDATE categories SET slug = 'references' WHERE id = ?1",
+                [category.id.to_string()],
+            )
+            .unwrap();
+        legacy_connection
+            .execute(
+                "UPDATE routes SET path = 'references/legacy-policy'
+                 WHERE site_id = ?1 AND document_id = ?2 AND is_canonical = 1",
+                [state.site_id.to_string(), post.id.to_string()],
+            )
+            .unwrap();
+        legacy_connection
+            .execute_batch(
+                "CREATE TRIGGER categories_slug_immutable
+                 BEFORE UPDATE OF slug ON categories
+                 WHEN NEW.slug != OLD.slug
+                 BEGIN
+                   SELECT RAISE(ABORT, 'category slugs are immutable');
+                 END;",
+            )
+            .unwrap();
+
+        let collision = ensure_references_namespace(&state.repository, state.site_id, true)
+            .unwrap_err()
+            .to_string();
+        assert!(collision.contains("persisted category 'references'"));
+        assert!(ensure_references_namespace(&state.repository, state.site_id, false).is_ok());
+        assert!(
+            ensure_article_category_namespace(&state.repository, state.site_id, "references")
+                .is_err()
+        );
+        let create_error = state
+            .repository
+            .create_category(
+                control.owner_user_id,
+                state.site_id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "references".into(),
+                    title: "Still reserved".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(create_error.contains("reserved by the application"));
+
+        state.references = None;
+        let router = app(state);
+        let landing = router
+            .clone()
+            .oneshot(
+                Request::get("/references")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(landing.status(), StatusCode::OK);
+        assert!(text(landing).await.contains("Legacy references archive"));
+
+        let detail = router
+            .clone()
+            .oneshot(
+                Request::get("/references/legacy-policy")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.status(), StatusCode::OK);
+        assert!(text(detail).await.contains("Preserved reference note"));
+
+        let category_api = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/primary/categories/references")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_api.status(), StatusCode::OK);
+        assert_eq!(json(category_api).await["category"]["slug"], "references");
+
+        let posts_api = router
+            .oneshot(
+                Request::get("/api/v1/primary/categories/references/posts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(posts_api.status(), StatusCode::OK);
+        assert_eq!(json(posts_api).await["items"][0]["slug"], "legacy-policy");
+    }
+
+    #[test]
+    fn enabled_references_allow_a_canonical_uncategorized_post_and_reject_a_legacy_root_alias() {
+        let canonical_state = access_key_state(
+            "references-root-route-test-administrator-access-key-with-enough-entropy",
+        );
+        publish_primary_document(&canonical_state, "references", "Existing policy post");
+
+        assert!(
+            !canonical_state
+                .repository
+                .published_noncanonical_route_exists(canonical_state.site_id, "references")
+                .unwrap()
+        );
+        assert!(
+            ensure_references_namespace(
+                &canonical_state.repository,
+                canonical_state.site_id,
+                true,
+            )
+            .is_ok()
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("legacy-alias.db");
+        let legacy_state = file_backed_access_key_state(&database);
+        let control = legacy_state.repository.get_admin_control_plane().unwrap();
+        let created_at = chrono::DateTime::parse_from_rfc3339("2020-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        legacy_state
+            .repository
+            .import_offline_batch(
+                control.owner_user_id,
+                legacy_state.site_id,
+                osb_storage_sqlite::OfflineImportBatch {
+                    source: "legacy-static-site".into(),
+                    owner_display_name: "me".into(),
+                    categories: vec![osb_storage_sqlite::OfflineImportCategory {
+                        slug: "ontology".into(),
+                        title: "Ontology".into(),
+                        description: None,
+                    }],
+                    posts: vec![osb_storage_sqlite::OfflineImportPost {
+                        source_id: "ontology:policy".into(),
+                        title: "Legacy policy".into(),
+                        slug: "policy".into(),
+                        source_markdown: "# Legacy policy".into(),
+                        created_at,
+                        author_id: "me".into(),
+                        author_display_name: "me".into(),
+                        primary_category: "ontology".into(),
+                        human_reviewed: true,
+                        aliases: vec![osb_storage_sqlite::OfflineImportAlias {
+                            path: "legacy-policy".into(),
+                            created_at,
+                        }],
+                    }],
+                },
+                false,
+            )
+            .unwrap();
+        let legacy_connection = rusqlite::Connection::open(&database).unwrap();
+        legacy_connection
+            .execute(
+                "UPDATE routes SET path = 'references'
+                 WHERE site_id = ?1 AND path = 'legacy-policy' AND is_canonical = 0",
+                [legacy_state.site_id.to_string()],
+            )
+            .unwrap();
+
+        assert!(
+            legacy_state
+                .repository
+                .published_noncanonical_route_exists(legacy_state.site_id, "references")
+                .unwrap()
+        );
+        let collision =
+            ensure_references_namespace(&legacy_state.repository, legacy_state.site_id, true)
+                .unwrap_err()
+                .to_string();
+        assert!(collision.contains("published legacy alias"));
+        assert!(
+            ensure_references_namespace(&legacy_state.repository, legacy_state.site_id, false)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_references_allow_references_as_the_article_base_path() {
+        let mut state = access_key_state(
+            "references-article-base-test-administrator-access-key-with-enough-entropy",
+        );
+        state.references = None;
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base/").unwrap(),
+            article_base_path: "references".into(),
+            no_index: false,
+        });
+        publish_primary_document(&state, "policy", "Preserved policy article");
+
+        let router = app(state);
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/references/policy")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            "https://blog.example/base/@test-blog/policy"
+        );
+        let canonical = router
+            .oneshot(
+                Request::get("/@test-blog/policy")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(canonical.status(), StatusCode::OK);
+        assert!(text(canonical).await.contains("Preserved policy article"));
     }
 
     #[tokio::test]
@@ -6499,6 +7325,203 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deeply_nested_legacy_alias_redirects_to_absolute_primary_category_url() {
+        let mut state =
+            access_key_state("legacy-alias-test-administrator-access-key-with-enough-entropy");
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://eff0rtchung.kr/").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let control = state.repository.get_admin_control_plane().unwrap();
+        let created_at = chrono::DateTime::parse_from_rfc3339("2020-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        state
+            .repository
+            .import_offline_batch(
+                control.owner_user_id,
+                state.site_id,
+                osb_storage_sqlite::OfflineImportBatch {
+                    source: "legacy-static-site".into(),
+                    owner_display_name: "me".into(),
+                    categories: vec![osb_storage_sqlite::OfflineImportCategory {
+                        slug: "yangja".into(),
+                        title: "Yangja".into(),
+                        description: None,
+                    }],
+                    posts: vec![osb_storage_sqlite::OfflineImportPost {
+                        source_id: "yangja:grover".into(),
+                        title: "Grover".into(),
+                        slug: "grover".into(),
+                        source_markdown: "# Grover".into(),
+                        created_at,
+                        author_id: "me".into(),
+                        author_display_name: "me".into(),
+                        primary_category: "yangja".into(),
+                        human_reviewed: true,
+                        aliases: vec![
+                            osb_storage_sqlite::OfflineImportAlias {
+                                path: "topics/algorithms/grover.html".into(),
+                                created_at,
+                            },
+                            osb_storage_sqlite::OfflineImportAlias {
+                                path: "legacy-grover".into(),
+                                created_at,
+                            },
+                        ],
+                    }],
+                },
+                false,
+            )
+            .unwrap();
+        state.legacy_alias_slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let saturated = Arc::clone(&state.legacy_alias_slots)
+            .try_acquire_owned()
+            .unwrap();
+        let router = app(state);
+
+        let canonical = router
+            .clone()
+            .oneshot(
+                Request::get("/yangja/grover")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(canonical.status(), StatusCode::OK);
+
+        let saturated_miss = router
+            .clone()
+            .oneshot(
+                Request::get("/topics/algorithms/grover.html")
+                    .header(header::ACCEPT, "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(saturated_miss.status(), StatusCode::NOT_FOUND);
+        drop(saturated);
+
+        for alias in ["/topics/algorithms/grover.html", "/legacy-grover"] {
+            for method in [Method::GET, Method::HEAD] {
+                let redirect = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(alias)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(redirect.status(), StatusCode::MOVED_PERMANENTLY, "{alias}");
+                assert_eq!(
+                    redirect.headers()[header::LOCATION],
+                    "https://eff0rtchung.kr/yangja/grover",
+                    "{alias}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_category_lookup_capacity_bounds_landing_and_post_queries() {
+        let mut state =
+            access_key_state("category-capacity-test-administrator-access-key-with-enough-entropy");
+        let control = state.repository.get_admin_control_plane().unwrap();
+        let owner = state
+            .repository
+            .get_user_by_id(control.owner_user_id)
+            .unwrap();
+        let category = state
+            .repository
+            .create_category(
+                owner.id,
+                state.site_id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "yangja".into(),
+                    title: "Yangja".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let document = state
+            .repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: state.site_id,
+                    title: "Grover".into(),
+                    slug: "grover".into(),
+                    source_markdown: "# Grover".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name),
+                    },
+                },
+                Some(category.id),
+            )
+            .unwrap();
+        state
+            .repository
+            .publish_document_in_owned_site(
+                owner.id,
+                state.site_id,
+                document.id,
+                document.current_revision_id,
+            )
+            .unwrap();
+
+        state.primary_category_slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let saturated = Arc::clone(&state.primary_category_slots)
+            .try_acquire_owned()
+            .unwrap();
+        let router = app(state);
+
+        for path in ["/yangja", "/yangja/grover"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT, "text/html")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+            assert_eq!(response.headers()[header::RETRY_AFTER], "1", "{path}");
+        }
+
+        drop(saturated);
+        for path in ["/yangja", "/yangja/grover"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT, "text/html")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+    }
+
+    #[tokio::test]
     async fn community_blog_ssr_uses_natural_category_post_links() {
         let mut state = test_state(None);
         state.seo_policy = Arc::new(SeoPolicy {
@@ -6949,7 +7972,6 @@ mod tests {
             .clone()
             .oneshot(
                 Request::get("/yangja/measurement")
-                    .header(header::ACCEPT, "text/html")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6971,6 +7993,20 @@ mod tests {
             "<link rel=\"canonical\" href=\"https://blog.example/base/yangja/measurement\">"
         ));
 
+        let natural_head = router
+            .clone()
+            .oneshot(
+                Request::head("/yangja/measurement")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(natural_head.status(), StatusCode::OK);
+        assert_eq!(natural_head.headers()[header::VARY], "Accept");
+        assert!(natural_head.headers().contains_key(header::ETAG));
+        assert!(text(natural_head).await.is_empty());
+
         let member_alias = router
             .clone()
             .oneshot(
@@ -6989,12 +8025,7 @@ mod tests {
 
         let category_landing = router
             .clone()
-            .oneshot(
-                Request::get("/yangja")
-                    .header(header::ACCEPT, "text/html")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::get("/yangja").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(category_landing.status(), StatusCode::OK);
@@ -7030,18 +8061,25 @@ mod tests {
 
         let category_head = router
             .clone()
-            .oneshot(
-                Request::head("/yangja")
-                    .header(header::ACCEPT, "text/html")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::head("/yangja").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(category_head.status(), StatusCode::OK);
         assert_eq!(category_head.headers()[header::VARY], "Accept");
         assert!(category_head.headers().contains_key(header::ETAG));
         assert!(text(category_head).await.is_empty());
+
+        let curl_category_landing = router
+            .clone()
+            .oneshot(
+                Request::get("/yangja")
+                    .header(header::ACCEPT, "*/*")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(curl_category_landing.status(), StatusCode::OK);
 
         let category_member_alias = router
             .clone()

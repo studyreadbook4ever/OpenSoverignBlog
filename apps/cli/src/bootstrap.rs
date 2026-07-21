@@ -40,6 +40,8 @@ const CONFIG_SCHEMA: &str = "open-soverign-blog/2";
 const INTENT_SCHEMA: &str = "open-soverign-blog-intent/1";
 const INSTALL_MANIFEST: &str = "osb.install.toml";
 const INSTALL_LOCK: &str = "osb.lock.json";
+const REFERENCES_FILE: &str = "references.md";
+const REFERENCES_MAX_BYTES: u64 = 1024 * 1024;
 const GITIGNORE_LIMIT: u64 = 256 * 1024;
 const GENERATED_GITIGNORE: &str = ".env\nadmin-access-key.txt\n.osb-backups/\n.osb-update/\n";
 const REQUIRED_SECRET_IGNORES: [&str; 4] = [
@@ -203,6 +205,9 @@ pub struct BootstrapArgs {
     /// Compose bundle from this source checkout. Defaults to ./compose.yaml.
     #[arg(long)]
     pub compose_file: Option<PathBuf>,
+    /// Stable Compose project name. Omit to generate an isolated osb-UUID name.
+    #[arg(long, value_name = "NAME")]
+    pub compose_project: Option<String>,
     /// Stable site UUID. Delivery restores must reuse the writable node's value.
     #[arg(long)]
     pub site_id: Option<Uuid>,
@@ -251,6 +256,9 @@ pub struct BootstrapArgs {
     /// Install this regular CSS file as the selected custom style.
     #[arg(long, value_name = "FILE", conflicts_with = "style")]
     pub css_file: Option<PathBuf>,
+    /// Install this UTF-8 Markdown file as the instance-wide references policy.
+    #[arg(long, value_name = "FILE")]
+    pub references_file: Option<PathBuf>,
     /// Canonical metadata, robots policy, and sitemap.
     #[arg(long, value_enum, default_value_t = Toggle::Enabled)]
     pub seo: Toggle,
@@ -353,6 +361,7 @@ struct IntentManifest {
     compose_project: String,
     installation_manifest: &'static str,
     installation_lock: &'static str,
+    references_source: ReferencesSourceContract,
     guarantees: Vec<&'static str>,
     features: ManifestFeatures,
     data: ManifestData,
@@ -391,11 +400,24 @@ struct ManifestOperations {
     delivery_is_read_only: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReferencesSourceContract {
+    path: String,
+    sha256: String,
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedStyle {
     installation: InstallationStyle,
     css_bytes: Option<Vec<u8>>,
     environment_value: String,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedReferences {
+    bytes: Vec<u8>,
+    contract: ReferencesSourceContract,
 }
 
 #[derive(Debug, Clone)]
@@ -759,6 +781,41 @@ fn resolve_style(args: &BootstrapArgs) -> Result<ResolvedStyle> {
     })
 }
 
+fn resolve_references_source(args: &BootstrapArgs) -> Result<ResolvedReferences> {
+    let bytes = if let Some(path) = args.references_file.as_deref() {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("failed to inspect references source {}", path.display()))?;
+        ensure!(
+            metadata.file_type().is_file(),
+            "references source must be a regular file and cannot be a symlink"
+        );
+        ensure!(
+            metadata.len() <= REFERENCES_MAX_BYTES,
+            "references source cannot exceed 1 MiB"
+        );
+        fs::read(path)
+            .with_context(|| format!("failed to read references source {}", path.display()))?
+    } else {
+        include_bytes!("../../../deploy/references.md").to_vec()
+    };
+    ensure!(
+        !bytes.is_empty() && u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= REFERENCES_MAX_BYTES,
+        "references source must contain 1 byte to 1 MiB"
+    );
+    let source = std::str::from_utf8(&bytes).context("references source must be UTF-8")?;
+    ensure!(
+        !source.trim().is_empty() && !source.contains('\0'),
+        "references source must contain non-empty UTF-8 text without NUL characters"
+    );
+    Ok(ResolvedReferences {
+        contract: ReferencesSourceContract {
+            path: REFERENCES_FILE.into(),
+            sha256: format!("sha256:{:x}", Sha256::digest(&bytes)),
+        },
+        bytes,
+    })
+}
+
 fn find_official_dlc(name: &str) -> Option<OfficialDlc> {
     let normalized = name.to_ascii_lowercase().replace('_', "-");
     OFFICIAL_DLCS.iter().copied().find(|dlc| {
@@ -927,8 +984,12 @@ fn resolve_selected_dlcs(selected: BTreeMap<String, String>) -> Result<Vec<Resol
 
 pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     let args = resolve_prompted_args(args)?;
+    if let Some(project) = args.compose_project.as_deref() {
+        validate_compose_project(project)?;
+    }
     let cache_choice = resolve_cache(&args)?;
     let style = resolve_style(&args)?;
+    let references = resolve_references_source(&args)?;
     let public_url = Url::parse(&args.public_url)
         .context("--public-url must be an absolute http:// or https:// URL")?;
     ensure!(
@@ -1066,6 +1127,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         "config.toml",
         ".env",
         "custom.css",
+        REFERENCES_FILE,
         "osb.intent.json",
         INSTALL_MANIFEST,
         INSTALL_LOCK,
@@ -1105,7 +1167,11 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
     // Deployment identity is deliberately independent from content identity.
     // Writable and delivery copies of one site may coexist on the same host.
     let deployment_id = Uuid::now_v7();
-    let compose_project = format!("osb-{}", deployment_id.simple());
+    let compose_project = args
+        .compose_project
+        .clone()
+        .unwrap_or_else(|| format!("osb-{}", deployment_id.simple()));
+    let data_volume = format!("osb-data-{}", deployment_id.simple());
     let (admin_access_key, admin_access_key_phc_b64) = if admin_auth == AdminAuthChoice::AccessKey {
         let key = random_access_key();
         let phc = hash_admin_access_key(&key)?;
@@ -1207,6 +1273,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         deployment_root: &deployment_root,
         public_url: normalized_public_url,
         compose_project: &compose_project,
+        data_volume: &data_volume,
     };
     write_new_secret(
         &args.directory.join(".env"),
@@ -1227,6 +1294,10 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             .as_deref()
             .unwrap_or(include_bytes!("../../../deploy/custom.css")),
     )?;
+    // Compose mounts a real regular file with create_host_path disabled. Keep
+    // an editable deployment-local copy so generated environments work from
+    // any current directory and never fall back to a Docker-created directory.
+    write_new(&args.directory.join(REFERENCES_FILE), &references.bytes)?;
     write_new(
         &args.directory.join(INSTALL_MANIFEST),
         installation_toml.as_bytes(),
@@ -1280,6 +1351,7 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
         compose_project: compose_project.clone(),
         installation_manifest: INSTALL_MANIFEST,
         installation_lock: INSTALL_LOCK,
+        references_source: references.contract.clone(),
         guarantees: vec![
             "Markdown remains exportable",
             "SQLite and first-party blobs remain authoritative",
@@ -1409,6 +1481,21 @@ fn validate_deployment_path(path: &Path) -> Result<()> {
     ensure!(
         !value.chars().any(char::is_control) && !value.contains('\''),
         "deployment directory path cannot contain control characters or apostrophes"
+    );
+    Ok(())
+}
+
+fn validate_compose_project(value: &str) -> Result<()> {
+    ensure!(
+        (1..=63).contains(&value.len())
+            && value
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            && value.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            }),
+        "--compose-project must contain 1-63 lowercase ASCII letters, digits, hyphens, or underscores and start with a letter or digit"
     );
     Ok(())
 }
@@ -1704,6 +1791,11 @@ connect_timeout_ms = 2000
 custom_css = {custom_css}
 custom_css_file = "/config/custom.css"
 
+[references]
+enabled = true
+label = "레퍼런스"
+markdown_file = "/config/references.md"
+
 [discovery]
 agent_txt = {agent_discovery}
 
@@ -1781,6 +1873,7 @@ struct EnvironmentRender<'a> {
     deployment_root: &'a Path,
     public_url: &'a str,
     compose_project: &'a str,
+    data_volume: &'a str,
 }
 
 fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> String {
@@ -1825,14 +1918,16 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         CacheChoice::RedisManaged => "sentinel",
     };
     format!(
-        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME=osb-data-{}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
+        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_HANDOFF_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_REFERENCES_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
         environment.compose_project,
-        environment
-            .compose_project
-            .strip_prefix("osb-")
-            .unwrap_or(environment.compose_project),
+        environment.data_volume,
         environment.deployment_root.join("config.toml").display(),
+        environment
+            .deployment_root
+            .join("osb.intent.json")
+            .display(),
         environment.deployment_root.join("custom.css").display(),
+        environment.deployment_root.join(REFERENCES_FILE).display(),
         environment.deployment_root.join(INSTALL_MANIFEST).display(),
         environment.deployment_root.join(INSTALL_LOCK).display(),
         environment.lock_digest,
@@ -2469,6 +2564,7 @@ struct DoctorConfig {
     deployment: DoctorDeployment,
     redis: DoctorRedis,
     appearance: DoctorAppearance,
+    references: DoctorReferences,
     discovery: DoctorDiscovery,
     operations: DoctorOperations,
     features: DoctorFeatures,
@@ -2484,11 +2580,22 @@ struct DoctorSemantic {
     intent: String,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(default)]
 struct DoctorServer {
     public_url: String,
+    article_base_path: String,
     site_id: String,
+}
+
+impl Default for DoctorServer {
+    fn default() -> Self {
+        Self {
+            public_url: String::new(),
+            article_base_path: "blog".into(),
+            site_id: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -2570,6 +2677,22 @@ struct DoctorAppearance {
     custom_css_file: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct DoctorReferences {
+    enabled: bool,
+    markdown_file: String,
+}
+
+impl Default for DoctorReferences {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            markdown_file: String::new(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DoctorDiscovery {
@@ -2649,6 +2772,7 @@ pub fn doctor(args: DoctorArgs) -> Result<()> {
     let mut checks = Vec::new();
     check_semantics(&parsed, &mut checks);
     check_paths(&args.config, &parsed, &mut checks);
+    check_references_contract(&args.config, &parsed, &mut checks);
     check_installation_contract(&args, &parsed, &mut checks);
     if !parsed.redis.enabled {
         checks.push(DoctorCheck {
@@ -2720,6 +2844,9 @@ fn apply_environment_overrides_with(
     }
     if let Some(item) = value("OSB_PUBLIC_URL") {
         config.server.public_url = item;
+    }
+    if let Some(item) = value("OSB_ARTICLE_BASE_PATH") {
+        config.server.article_base_path = item;
     }
     if let Some(item) = value("OSB_SITE_ID") {
         config.server.site_id = item;
@@ -2852,6 +2979,12 @@ fn apply_environment_overrides_with(
     if let Some(item) = value("OSB_CUSTOM_CSS_FILE") {
         config.appearance.custom_css_file = item;
     }
+    if let Some(item) = value("OSB_REFERENCES_ENABLED") {
+        config.references.enabled = doctor_bool("OSB_REFERENCES_ENABLED", &item)?;
+    }
+    if let Some(item) = value("OSB_REFERENCES_MARKDOWN_FILE") {
+        config.references.markdown_file = item;
+    }
     if let Some(item) = value("OSB_AGENT_DISCOVERY") {
         config.discovery.agent_txt = doctor_bool("OSB_AGENT_DISCOVERY", &item)?;
     }
@@ -2917,6 +3050,36 @@ fn bounded_external_text_is_valid(value: &str, maximum: usize) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+fn doctor_article_base_path_collision(value: &str, references_enabled: bool) -> Option<&str> {
+    let first_segment = value
+        .trim_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    const RESERVED: [&str; 18] = [
+        ".well-known",
+        "agent.txt",
+        "agents.txt",
+        "api",
+        "assets",
+        "custom.css",
+        "docs",
+        "login",
+        "llms.txt",
+        "media",
+        "onboarding",
+        "openapi",
+        "providers",
+        "robots.txt",
+        "schemas",
+        "sitemap.xml",
+        "studio",
+        "vendor",
+    ];
+    (RESERVED.contains(&first_segment) || (references_enabled && first_segment == "references"))
+        .then_some(first_segment)
+}
+
 fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
     let schema_ok = config.schema_version.as_deref() == Some(CONFIG_SCHEMA);
     checks.push(DoctorCheck {
@@ -2950,6 +3113,36 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
             "intent is missing or unknown".into()
         },
         remediation: (!intent_ok).then(|| "choose personal, community, or delivery".into()),
+    });
+    let article_collision = doctor_article_base_path_collision(
+        &config.server.article_base_path,
+        config.references.enabled,
+    );
+    checks.push(DoctorCheck {
+        id: "server.article_base_path",
+        status: if article_collision.is_none() {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        summary: match article_collision {
+            Some(segment) => format!(
+                "effective article base path '{}' starts with reserved route segment {segment}",
+                config.server.article_base_path
+            ),
+            None => format!(
+                "effective article base path is {}",
+                config.server.article_base_path
+            ),
+        },
+        remediation: article_collision.map(|segment| {
+            if segment == "references" {
+                "choose another article base, or disable references before using the references segment"
+                    .into()
+            } else {
+                format!("choose an article base whose first segment is not '{segment}'")
+            }
+        }),
     });
     let delivery_consistent =
         (config.semantic.intent == "delivery") == config.deployment.delivery_only;
@@ -3657,6 +3850,151 @@ fn check_paths(config_path: &Path, config: &DoctorConfig, checks: &mut Vec<Docto
     });
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferencesHandoff {
+    schema_version: String,
+    references_source: ReferencesSourceContract,
+}
+
+fn check_references_contract(
+    config_path: &Path,
+    config: &DoctorConfig,
+    checks: &mut Vec<DoctorCheck>,
+) {
+    if !config.references.enabled {
+        checks.push(DoctorCheck {
+            id: "references.source_contract",
+            status: CheckStatus::Pass,
+            summary: "global references are deliberately disabled".into(),
+            remediation: None,
+        });
+        return;
+    }
+    let root = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let handoff_path = root.join("osb.intent.json");
+    match fs::symlink_metadata(&handoff_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            checks.push(DoctorCheck {
+                id: "references.source_contract",
+                status: CheckStatus::Warn,
+                summary: "no sibling osb.intent.json; the runtime references source has no pinned path/SHA-256 contract".into(),
+                remediation: Some(
+                    "bootstrap the deployment to create a references source handoff before relying on doctor for source-integrity verification, or back up the direct config and references source together as deployment controls"
+                        .into(),
+                ),
+            });
+            return;
+        }
+        Err(error) => {
+            checks.push(DoctorCheck {
+                id: "references.source_contract",
+                status: CheckStatus::Fail,
+                summary: format!(
+                    "failed to inspect deployment handoff {}: {error}",
+                    handoff_path.display()
+                ),
+                remediation: Some(
+                    "restore references.md and its matching osb.intent.json from the deployment control backup, or bootstrap again with --references-file"
+                        .into(),
+                ),
+            });
+            return;
+        }
+        Ok(_) => {}
+    }
+    match verify_references_source_contract(config_path, config) {
+        Ok(summary) => checks.push(DoctorCheck {
+            id: "references.source_contract",
+            status: CheckStatus::Pass,
+            summary,
+            remediation: None,
+        }),
+        Err(error) => checks.push(DoctorCheck {
+            id: "references.source_contract",
+            status: CheckStatus::Fail,
+            summary: error.to_string(),
+            remediation: Some(
+                "restore references.md and its matching osb.intent.json from the deployment control backup, or bootstrap again with --references-file"
+                    .into(),
+            ),
+        }),
+    }
+}
+
+fn verify_references_source_contract(config_path: &Path, config: &DoctorConfig) -> Result<String> {
+    let root = config_path.parent().unwrap_or_else(|| Path::new("."));
+    let handoff_path = root.join("osb.intent.json");
+    ensure_regular_contract_file(&handoff_path, "deployment handoff")?;
+    let handoff_metadata = fs::metadata(&handoff_path)?;
+    ensure!(
+        handoff_metadata.len() <= 256 * 1024,
+        "deployment handoff exceeds 256 KiB"
+    );
+    let handoff: ReferencesHandoff = serde_json::from_slice(&fs::read(&handoff_path)?)
+        .context("osb.intent.json does not contain a valid references source contract")?;
+    ensure!(
+        handoff.schema_version == INTENT_SCHEMA,
+        "osb.intent.json schema is not supported by this CLI"
+    );
+    let contract_path = Path::new(&handoff.references_source.path);
+    ensure!(
+        !contract_path.as_os_str().is_empty()
+            && !contract_path.is_absolute()
+            && contract_path
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "references source contract path must be a safe relative path"
+    );
+    let expected = handoff
+        .references_source
+        .sha256
+        .strip_prefix("sha256:")
+        .context("references source contract digest must use sha256:<hex>")?;
+    ensure!(
+        expected.len() == 64
+            && expected
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "references source contract digest must contain 64 lowercase hexadecimal characters"
+    );
+    ensure!(
+        !config.references.markdown_file.is_empty(),
+        "enabled references must configure markdown_file for a durable editable source"
+    );
+    let contracted_file = root.join(contract_path);
+    let configured_file = deployment_path(root, &config.references.markdown_file);
+    ensure_regular_contract_file(&contracted_file, "contracted references source")?;
+    ensure_regular_contract_file(&configured_file, "configured references source")?;
+    ensure!(
+        contracted_file.canonicalize()? == configured_file.canonicalize()?,
+        "configured references source path differs from osb.intent.json"
+    );
+    let metadata = fs::metadata(&contracted_file)?;
+    ensure!(
+        metadata.len() <= REFERENCES_MAX_BYTES,
+        "contracted references source exceeds 1 MiB"
+    );
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    fs::File::open(&contracted_file)?
+        .take(REFERENCES_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= REFERENCES_MAX_BYTES,
+        "contracted references source exceeds 1 MiB"
+    );
+    let actual = format!("{:x}", Sha256::digest(&bytes));
+    ensure!(
+        actual == expected,
+        "references source digest differs from osb.intent.json"
+    );
+    Ok(format!(
+        "{} · sha256:{}",
+        configured_file.display(),
+        &actual[..12]
+    ))
+}
+
 fn deployment_path(root: &Path, configured: &str) -> PathBuf {
     let path = Path::new(configured);
     if path.is_absolute() {
@@ -3795,6 +4133,7 @@ mod tests {
             compose_file: Some(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../compose.yaml"),
             ),
+            compose_project: None,
             site_id: None,
             content_release: None,
             intent: Intent::Personal,
@@ -3811,6 +4150,7 @@ mod tests {
             custom_css: Some(Toggle::Enabled),
             style: None,
             css_file: None,
+            references_file: None,
             seo: Toggle::Enabled,
             agent_discovery: Toggle::Enabled,
             redis_topology: Some(RedisTopologyChoice::Managed),
@@ -3832,12 +4172,25 @@ mod tests {
         assert!(config.contains("[admin]\nauth = \"access_key\""));
         assert!(config.contains("required = true"));
         assert!(config.contains("managed_backups = true"));
+        assert!(config.contains("markdown_file = \"/config/references.md\""));
         assert!(!config.to_ascii_lowercase().contains("password"));
         let environment = fs::read_to_string(root.path().join(".env")).unwrap();
         assert!(environment.contains(&format!(
             "OSB_CONFIG_SOURCE='{}'",
             root.path().join("config.toml").display()
         )));
+        assert!(environment.contains(&format!(
+            "OSB_HANDOFF_SOURCE='{}'",
+            root.path().join("osb.intent.json").display()
+        )));
+        assert!(environment.contains(&format!(
+            "OSB_REFERENCES_SOURCE='{}'",
+            root.path().join("references.md").display()
+        )));
+        assert_eq!(
+            fs::read(root.path().join("references.md")).unwrap(),
+            include_bytes!("../../../deploy/references.md")
+        );
         assert!(environment.contains(&format!(
             "OSB_BACKUP_VOLUME='{}'",
             root.path().join(".osb-backups").display()
@@ -3892,6 +4245,14 @@ mod tests {
                 .unwrap();
         assert_eq!(manifest["intent"], "personal");
         assert_eq!(manifest["data"]["redisRequired"], true);
+        assert_eq!(manifest["referencesSource"]["path"], REFERENCES_FILE);
+        assert_eq!(
+            manifest["referencesSource"]["sha256"],
+            format!(
+                "sha256:{:x}",
+                Sha256::digest(include_bytes!("../../../deploy/references.md"))
+            )
+        );
         assert!(
             manifest["nextCommands"][0]
                 .as_str()
@@ -3919,6 +4280,85 @@ mod tests {
             "OSB_DATA_VOLUME=osb-data-{}",
             lock.installation_id.replace('-', "")
         )));
+    }
+
+    #[test]
+    fn references_source_contract_detects_changed_and_missing_policy_files() {
+        let root = tempdir().unwrap();
+        let source = root.path().join("operator-references.md");
+        fs::write(&source, "## 출처\n\n운영자 정책\n").unwrap();
+        let deployment = root.path().join("deployment");
+        let mut args = personal(deployment.clone());
+        args.references_file = Some(source);
+        bootstrap(args).unwrap();
+
+        let config: DoctorConfig =
+            toml::from_str(&fs::read_to_string(deployment.join("config.toml")).unwrap()).unwrap();
+        let config_path = deployment.join("config.toml");
+        assert!(verify_references_source_contract(&config_path, &config).is_ok());
+
+        fs::write(deployment.join(REFERENCES_FILE), "## changed\n").unwrap();
+        let changed = verify_references_source_contract(&config_path, &config).unwrap_err();
+        assert!(changed.to_string().contains("digest differs"));
+
+        fs::remove_file(deployment.join(REFERENCES_FILE)).unwrap();
+        let missing = verify_references_source_contract(&config_path, &config).unwrap_err();
+        assert!(missing.to_string().contains("missing or unreadable"));
+    }
+
+    #[test]
+    fn references_source_contract_warns_without_a_handoff_for_direct_runtime_config() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join("config.toml");
+        let direct_file = root.path().join("references.md");
+        fs::write(&direct_file, "## Direct file\n").unwrap();
+        let configurations = [
+            "[references]\nenabled = true\n".to_owned(),
+            "[references]\nenabled = true\nmarkdown = \"Inline policy\"\n".to_owned(),
+            format!(
+                "[references]\nenabled = true\nmarkdown_file = {:?}\n",
+                direct_file.display().to_string()
+            ),
+        ];
+
+        for source in configurations {
+            let config: DoctorConfig = toml::from_str(&source).unwrap();
+            let mut checks = Vec::new();
+            check_references_contract(&config_path, &config, &mut checks);
+            assert_eq!(checks.len(), 1);
+            assert_eq!(checks[0].status, CheckStatus::Warn);
+            assert!(checks[0].summary.contains("no sibling osb.intent.json"));
+            assert!(
+                checks[0]
+                    .remediation
+                    .as_deref()
+                    .is_some_and(|value| value.contains("deployment controls"))
+            );
+        }
+    }
+
+    #[test]
+    fn references_source_contract_fails_when_an_existing_handoff_lacks_the_contract() {
+        let root = tempdir().unwrap();
+        let config_path = root.path().join("config.toml");
+        fs::write(
+            root.path().join("osb.intent.json"),
+            format!(r#"{{"schemaVersion":"{INTENT_SCHEMA}"}}"#),
+        )
+        .unwrap();
+        let config: DoctorConfig =
+            toml::from_str("[references]\nenabled = true\nmarkdown = \"Inline policy\"\n").unwrap();
+
+        let mut checks = Vec::new();
+        check_references_contract(&config_path, &config, &mut checks);
+
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, CheckStatus::Fail);
+        assert!(
+            checks[0]
+                .summary
+                .contains("valid references source contract")
+        );
     }
 
     #[test]
@@ -3962,6 +4402,41 @@ mod tests {
         assert_eq!(lock.selection.style.kind, InstallationStyleKind::Builtin);
         assert_eq!(lock.selection.style.id.as_deref(), Some("forest"));
         assert!(lock.dlcs.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_uses_one_explicit_compose_project_in_every_handoff() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.compose_project = Some("eff0rtchung".into());
+        bootstrap(args).unwrap();
+
+        let environment = fs::read_to_string(root.path().join(".env")).unwrap();
+        assert!(environment.starts_with("COMPOSE_PROJECT_NAME=eff0rtchung\n"));
+        let handoff: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.path().join("osb.intent.json")).unwrap())
+                .unwrap();
+        assert_eq!(handoff["composeProject"], "eff0rtchung");
+        let deployment_id = Uuid::parse_str(handoff["deploymentId"].as_str().unwrap()).unwrap();
+        let expected_volume = format!("osb-data-{}", deployment_id.simple());
+        assert!(environment.contains(&format!("OSB_DATA_VOLUME={expected_volume}\n")));
+        assert_ne!(expected_volume, "osb-data-eff0rtchung");
+        for command in handoff["nextCommands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|command| command.starts_with("docker compose"))
+        {
+            assert!(command.contains(" -p eff0rtchung "), "{command}");
+        }
+
+        let invalid_root = tempdir().unwrap();
+        let mut invalid = personal(invalid_root.path().to_owned());
+        invalid.compose_project = Some("Invalid Project".into());
+        let error = bootstrap(invalid).unwrap_err();
+        assert!(error.to_string().contains("--compose-project"));
+        assert!(!invalid_root.path().join("config.toml").exists());
     }
 
     #[test]
@@ -4581,6 +5056,7 @@ mod tests {
         .unwrap();
         let overrides = std::collections::BTreeMap::from([
             ("OSB_PUBLIC_URL", "http://127.0.0.1:18787/base"),
+            ("OSB_ARTICLE_BASE_PATH", "writing/articles"),
             ("OSB_DATABASE", "/tmp/osb/blog.sqlite3"),
             ("OSB_BLOB_DIRECTORY", "/tmp/osb/blobs"),
             ("OSB_REDIS_TOPOLOGY", "standalone"),
@@ -4605,6 +5081,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.server.public_url, "http://127.0.0.1:18787/base");
+        assert_eq!(config.server.article_base_path, "writing/articles");
         assert_eq!(config.storage.database, "/tmp/osb/blog.sqlite3");
         assert_eq!(config.storage.blob_directory, "/tmp/osb/blobs");
         assert_eq!(config.redis.topology, "standalone");
@@ -4637,6 +5114,66 @@ mod tests {
                 .status,
             CheckStatus::Pass
         );
+    }
+
+    #[test]
+    fn doctor_rejects_the_runtime_effective_article_base_route_collisions() {
+        fn article_check(config: &DoctorConfig) -> CheckStatus {
+            let mut checks = Vec::new();
+            check_semantics(config, &mut checks);
+            checks
+                .iter()
+                .find(|check| check.id == "server.article_base_path")
+                .expect("article-base check must exist")
+                .status
+        }
+
+        let source = r#"
+            schema_version = "open-soverign-blog/2"
+            [semantic]
+            intent = "personal"
+            [server]
+            public_url = "https://blog.example"
+            article_base_path = "blog"
+            [references]
+            enabled = true
+            [deployment]
+            delivery_only = false
+        "#;
+        let mut enabled: DoctorConfig = toml::from_str(source).unwrap();
+        apply_environment_overrides_with(&mut enabled, |name| {
+            (name == "OSB_ARTICLE_BASE_PATH").then(|| "references/archive".into())
+        })
+        .unwrap();
+        assert_eq!(enabled.server.article_base_path, "references/archive");
+        assert_eq!(article_check(&enabled), CheckStatus::Fail);
+
+        let mut disabled: DoctorConfig = toml::from_str(source).unwrap();
+        let disabled_overrides = std::collections::BTreeMap::from([
+            ("OSB_ARTICLE_BASE_PATH", "references/archive"),
+            ("OSB_REFERENCES_ENABLED", "false"),
+        ]);
+        apply_environment_overrides_with(&mut disabled, |name| {
+            disabled_overrides.get(name).map(|value| (*value).into())
+        })
+        .unwrap();
+        assert!(!disabled.references.enabled);
+        assert_eq!(article_check(&disabled), CheckStatus::Pass);
+
+        let mut reserved: DoctorConfig = toml::from_str(source).unwrap();
+        apply_environment_overrides_with(&mut reserved, |name| {
+            (name == "OSB_ARTICLE_BASE_PATH").then(|| "api/articles".into())
+        })
+        .unwrap();
+        assert_eq!(article_check(&reserved), CheckStatus::Fail);
+
+        let mut empty_is_ignored: DoctorConfig = toml::from_str(source).unwrap();
+        apply_environment_overrides_with(&mut empty_is_ignored, |name| {
+            (name == "OSB_ARTICLE_BASE_PATH").then(String::new)
+        })
+        .unwrap();
+        assert_eq!(empty_is_ignored.server.article_base_path, "blog");
+        assert_eq!(article_check(&empty_is_ignored), CheckStatus::Pass);
     }
 
     #[test]

@@ -212,7 +212,8 @@ img { display: block; max-width: 100%; }
 .blog-page .post-card-meta { color: color-mix(in srgb, var(--theme-fg) 62%, transparent); }
 .list-arrow { font-size: 1.3rem; }
 
-.article-page {
+.article-page,
+.references-page {
   --article-font: Georgia, "Times New Roman", serif;
   --article-bg: #fffaf0;
   --article-surface: #fffdf8;
@@ -229,6 +230,7 @@ img { display: block; max-width: 100%; }
   border-radius: 1rem;
   box-shadow: var(--shadow);
 }
+.references-page .article-content { max-width: 780px; }
 .article-page[data-theme="ink"] {
   --article-font: Arial, Helvetica, sans-serif;
   --article-bg: #fff;

@@ -394,6 +394,21 @@ export interface Capabilities {
   studioAccess?: StudioAccess;
   /** Operational administrator authentication methods advertised by a v2 server. */
   auth?: AdminAuthCapabilities;
+  /** Optional instance-wide attribution, licensing, privacy, and policy page. */
+  references?: ReferencesDescriptor;
+}
+
+export interface ReferencesDescriptor {
+  href: "/references";
+  label: string;
+}
+
+export interface ReferencesPage {
+  label: string;
+  sourceMarkdown: string;
+  artifactHtml: string;
+  sourceHash: string;
+  rendererVersion: string;
 }
 
 export type StudioAccess = "disabled" | "admin_only" | "members";
@@ -718,6 +733,10 @@ export class OpenSoverignBlogClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return this.#request("/api/v1/capabilities", withSignal(signal));
+  }
+
+  async references(signal?: AbortSignal): Promise<ReferencesPage> {
+    return this.#request("/api/v1/references", withSignal(signal));
   }
 
   async codeRunnerProfiles(signal?: AbortSignal): Promise<RunnerProfile[]> {

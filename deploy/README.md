@@ -56,11 +56,17 @@ Bootstrap refuses to overwrite deployment controls and creates:
 - `osb.lock.json`, the exact engine and official-DLC versions, compatibility
   tuple, manifest hashes, lifecycle history, and canonical digest;
 - `.env`, mode-0600 runtime settings, lock binding, and secrets;
-- `custom.css` and the secret-free stable-topology `osb.intent.json`
-  operator/AI handoff;
+- `custom.css`, editable `references.md`, and the secret-free stable-topology
+  `osb.intent.json` operator/AI handoff. The handoff pins the references source
+  path and SHA-256 without embedding its content;
 - `admin-access-key.txt` only when access-key administration is selected;
 - a fresh `.gitignore` covering `.env`, `admin-access-key.txt`, local backups,
   and `.osb-update/`.
+
+The handoff is optional only for a direct, non-bootstrap runtime configuration;
+doctor then warns that a built-in, inline, or file-backed references source is
+not digest-pinned. Once a sibling `osb.intent.json` exists, doctor fails closed
+if its references contract is absent, malformed, missing, or digest-mismatched.
 
 An existing `.gitignore` is preserved only when it already contains exact
 `.env`, `admin-access-key.txt`, `.osb-backups/`, and `.osb-update/` entries (a
@@ -158,7 +164,10 @@ boundary and the restart rotates any Redis derivative generation. Use
 `local setup` for one-time metadata, `local list` for document UUIDs, and
 `local publish --document-id UUID` to revise the same document. The maintenance
 container validates the mounted semantic config and rejects delivery-only mode
-before opening SQLite.
+before opening SQLite. It also receives the server's non-empty `OSB_INTENT`,
+`OSB_DELIVERY_ONLY`, and `OSB_ARTICLE_BASE_PATH` overrides from the same
+`--env-file`; invalid or contradictory write-boundary values fail closed, and
+offline imports reserve the resulting effective article-route root.
 
 Every schema rejects `security.admin_token` and `OSB_ADMIN_TOKEN` because they
 bypass the selected administrator module. Migrate to access-key or external
@@ -222,13 +231,16 @@ the backup destination is temporarily unavailable. Alert when backup state is
 time needed for one full generation.
 
 The generation intentionally contains canonical SQLite/blob data, not the
-operator configuration. Store `config.toml`, `osb.install.toml`,
-`osb.lock.json`, selected `custom.css`, and the secret-free `osb.intent.json` in
-the host's configuration backup so a replacement node retains its public URL,
-site ID, structural choices, exact DLC lock, and feature contract. Store `.env`
-and, when used, `admin-access-key.txt` only in a secrets system; never copy
-either into a public backup catalog. Treat `.osb-update/` as secret-bearing too:
-its protected rollback controls may contain byte-for-byte snapshots of both.
+operator configuration or global policy Markdown. Store `config.toml`,
+`osb.install.toml`, `osb.lock.json`, selected `custom.css`, `references.md`, and
+the secret-free `osb.intent.json` in one host configuration backup so a
+replacement node retains its public URL, site ID, structural choices, exact DLC
+lock, feature contract, and references-source digest. Restore that matching
+control set before starting a restored generation; `osb doctor` fails when the
+references file is missing or its SHA-256 differs. Store `.env` and, when used,
+`admin-access-key.txt` only in a secrets system; never copy either into a public
+backup catalog. Treat `.osb-update/` as secret-bearing too: its protected
+rollback controls may contain byte-for-byte snapshots of both.
 
 The bundled one-shot storage initializer assigns local backup trees to
 container UID/GID `65532`, normalizing directories to `0700` and regular files

@@ -1,4 +1,4 @@
-use std::{env, fs, net::SocketAddr, path::PathBuf};
+use std::{env, fs, io::Read, net::SocketAddr, os::unix::fs::MetadataExt, path::PathBuf};
 
 use anyhow::{Context, Result};
 use base64::{
@@ -37,6 +37,7 @@ pub struct RuntimeConfig {
     pub collaboration_enabled: bool,
     pub custom_css_enabled: bool,
     pub custom_css_file: PathBuf,
+    pub references: Option<ReferencesSettings>,
     pub agent_discovery_enabled: bool,
     pub delivery_only: bool,
     pub secure_session_cookie: bool,
@@ -45,6 +46,12 @@ pub struct RuntimeConfig {
     pub redis: Option<RedisSettings>,
     pub operations: OperationsSettings,
     pub runner: Option<RunnerSettings>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferencesSettings {
+    pub label: String,
+    pub source_markdown: String,
 }
 
 #[derive(Clone)]
@@ -227,6 +234,7 @@ pub struct RunnerSettings {
 impl RuntimeConfig {
     pub fn load() -> Result<Self> {
         let (file, source) = load_file()?;
+        let references = resolve_references(file.references)?;
         let config_schema_version = file.schema_version.clone();
         let bind: SocketAddr = env_value("OSB_BIND")
             .or(file.server.bind)
@@ -242,7 +250,7 @@ impl RuntimeConfig {
         let article_base_path = env_value("OSB_ARTICLE_BASE_PATH")
             .or(file.server.article_base_path)
             .unwrap_or_else(|| "blog".into());
-        validate_article_base_path(&article_base_path)?;
+        validate_article_base_path(&article_base_path, references.is_some())?;
         let no_index = env_value("OSB_NO_INDEX")
             .map(|value| parse_bool("OSB_NO_INDEX", &value))
             .transpose()?
@@ -490,6 +498,7 @@ impl RuntimeConfig {
             collaboration_enabled,
             custom_css_enabled,
             custom_css_file,
+            references,
             agent_discovery_enabled,
             delivery_only,
             secure_session_cookie,
@@ -665,6 +674,7 @@ struct FileConfig {
     deployment: DeploymentConfig,
     redis: RedisFileConfig,
     appearance: AppearanceConfig,
+    references: ReferencesConfig,
     discovery: DiscoveryConfig,
     operations: OperationsFileConfig,
     features: Option<FeaturesConfig>,
@@ -822,7 +832,7 @@ fn validate_secret(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_article_base_path(value: &str) -> Result<()> {
+fn validate_article_base_path(value: &str, references_enabled: bool) -> Result<()> {
     let first_segment = value
         .trim_matches('/')
         .split('/')
@@ -848,7 +858,7 @@ fn validate_article_base_path(value: &str) -> Result<()> {
         "studio",
         "vendor",
     ];
-    if RESERVED.contains(&first_segment) {
+    if RESERVED.contains(&first_segment) || (references_enabled && first_segment == "references") {
         anyhow::bail!(
             "server.article_base_path/OSB_ARTICLE_BASE_PATH starts with reserved route segment {first_segment}"
         );
@@ -1040,6 +1050,117 @@ fn env_u64(name: &str) -> Result<Option<u64>> {
 struct AppearanceConfig {
     custom_css: Option<bool>,
     custom_css_file: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ReferencesConfig {
+    enabled: Option<bool>,
+    label: Option<String>,
+    markdown: Option<String>,
+    markdown_file: Option<String>,
+}
+
+fn resolve_references(file: ReferencesConfig) -> Result<Option<ReferencesSettings>> {
+    let enabled = env_bool("OSB_REFERENCES_ENABLED")?
+        .or(file.enabled)
+        .unwrap_or(true);
+    if !enabled {
+        return Ok(None);
+    }
+
+    let label = env_value("OSB_REFERENCES_LABEL")
+        .or(file.label)
+        .unwrap_or_else(|| "레퍼런스".into());
+    let label_length = label.chars().count();
+    if label.trim() != label
+        || !(1..=40).contains(&label_length)
+        || label.chars().any(char::is_control)
+    {
+        anyhow::bail!(
+            "references.label/OSB_REFERENCES_LABEL must be 1-40 trimmed non-control characters"
+        );
+    }
+
+    let environment_file = env_value("OSB_REFERENCES_MARKDOWN_FILE");
+    if environment_file.is_none() && file.markdown.is_some() && file.markdown_file.is_some() {
+        anyhow::bail!("references.markdown and references.markdown_file are mutually exclusive");
+    }
+    let source_markdown = if let Some(path) = environment_file.or(file.markdown_file) {
+        let path = PathBuf::from(path);
+        let path_metadata = fs::symlink_metadata(&path).with_context(|| {
+            format!(
+                "failed to inspect references Markdown path {}",
+                path.display()
+            )
+        })?;
+        if !path_metadata.file_type().is_file() {
+            anyhow::bail!(
+                "references Markdown path must be a non-symlink regular file: {}",
+                path.display()
+            );
+        }
+        let file = fs::File::open(&path).with_context(|| {
+            format!("failed to open references Markdown file {}", path.display())
+        })?;
+        let metadata = file.metadata().with_context(|| {
+            format!(
+                "failed to inspect references Markdown file {}",
+                path.display()
+            )
+        })?;
+        let current_path_metadata = fs::symlink_metadata(&path).with_context(|| {
+            format!(
+                "failed to re-inspect references Markdown path {}",
+                path.display()
+            )
+        })?;
+        if !metadata.is_file()
+            || !current_path_metadata.file_type().is_file()
+            || path_metadata.dev() != metadata.dev()
+            || path_metadata.ino() != metadata.ino()
+            || current_path_metadata.dev() != metadata.dev()
+            || current_path_metadata.ino() != metadata.ino()
+            || metadata.len() > 1024 * 1024
+        {
+            anyhow::bail!(
+                "references Markdown file must stay the same non-symlink regular UTF-8 file and be no larger than 1 MiB: {}",
+                path.display()
+            );
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| {
+                format!("failed to read references Markdown file {}", path.display())
+            })?;
+        if bytes.len() > 1024 * 1024 {
+            anyhow::bail!(
+                "references Markdown file must be no larger than 1 MiB: {}",
+                path.display()
+            );
+        }
+        String::from_utf8(bytes).with_context(|| {
+            format!("references Markdown file must be UTF-8: {}", path.display())
+        })?
+    } else {
+        file.markdown
+            .unwrap_or_else(|| include_str!("../../../deploy/references.md").to_owned())
+    };
+    validate_references_markdown(&source_markdown)?;
+    Ok(Some(ReferencesSettings {
+        label,
+        source_markdown,
+    }))
+}
+
+fn validate_references_markdown(source: &str) -> Result<()> {
+    if source.trim().is_empty() || source.len() > 1024 * 1024 || source.contains('\0') {
+        anyhow::bail!(
+            "references Markdown must contain 1 byte to 1 MiB of UTF-8 text without NUL characters"
+        );
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1320,6 +1441,63 @@ mod tests {
     }
 
     #[test]
+    fn references_config_accepts_unicode_labels_and_one_content_source() {
+        let config: FileConfig = toml::from_str(
+            "[references]\nenabled = true\nlabel = \"레퍼런스\"\nmarkdown = \"출처\"",
+        )
+        .unwrap();
+        let references = resolve_references(config.references).unwrap().unwrap();
+        assert_eq!(references.label, "레퍼런스");
+        assert_eq!(references.source_markdown, "출처");
+
+        let conflicting: FileConfig = toml::from_str(
+            "[references]\nmarkdown = \"inline\"\nmarkdown_file = \"references.md\"",
+        )
+        .unwrap();
+        assert!(resolve_references(conflicting.references).is_err());
+    }
+
+    #[test]
+    fn references_default_is_enabled_with_a_useful_template() {
+        let references = resolve_references(ReferencesConfig::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(references.label, "레퍼런스");
+        assert!(references.source_markdown.contains("## 출처와 인용"));
+        assert!(
+            references
+                .source_markdown
+                .contains("## 개인정보와 외부 서비스")
+        );
+    }
+
+    #[test]
+    fn references_markdown_file_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.md");
+        let link = directory.path().join("references.md");
+        fs::write(&target, "## private policy").unwrap();
+        symlink(&target, &link).unwrap();
+
+        let config = ReferencesConfig {
+            markdown_file: Some(link.display().to_string()),
+            ..ReferencesConfig::default()
+        };
+        let error = resolve_references(config).unwrap_err();
+        assert!(error.to_string().contains("non-symlink regular file"));
+    }
+
+    #[test]
+    fn references_markdown_is_bounded_and_nonempty() {
+        assert!(validate_references_markdown("policy").is_ok());
+        assert!(validate_references_markdown(" \n\t").is_err());
+        assert!(validate_references_markdown("policy\0hidden").is_err());
+        assert!(validate_references_markdown(&"x".repeat(1024 * 1024 + 1)).is_err());
+    }
+
+    #[test]
     fn bootstrap_secret_rejects_short_or_control_values() {
         assert!(validate_secret("token", "too-short").is_err());
         assert!(validate_secret("token", &"x".repeat(32)).is_ok());
@@ -1426,9 +1604,11 @@ mod tests {
 
     #[test]
     fn article_routes_cannot_overlap_reserved_server_routes() {
-        assert!(validate_article_base_path("blog").is_ok());
-        assert!(validate_article_base_path("writing/articles").is_ok());
-        assert!(validate_article_base_path("api/v1/posts").is_err());
-        assert!(validate_article_base_path("studio/posts").is_err());
+        assert!(validate_article_base_path("blog", true).is_ok());
+        assert!(validate_article_base_path("writing/articles", true).is_ok());
+        assert!(validate_article_base_path("api/v1/posts", false).is_err());
+        assert!(validate_article_base_path("studio/posts", false).is_err());
+        assert!(validate_article_base_path("references", true).is_err());
+        assert!(validate_article_base_path("references", false).is_ok());
     }
 }

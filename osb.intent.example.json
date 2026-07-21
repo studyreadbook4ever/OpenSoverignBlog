@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "open-soverign-blog-intent/1",
+  "referencesSource": {
+    "path": "references.md",
+    "sha256": "sha256:ae41e9e4543ad68dcf27e1bcb5b340f1db778d4f2d658f9c899050abba58ea0f"
+  }
+}

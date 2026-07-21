@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 mod bootstrap;
 mod local;
+mod offline_import;
 
 use bootstrap::{BootstrapArgs, DoctorArgs, InstallationArgs};
 use local::LocalArgs;
