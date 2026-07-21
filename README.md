@@ -20,6 +20,8 @@ Namuwiki source code, stylesheets, or assets.
 An interactive personal bootstrap currently selects:
 
 - anonymous public reading;
+- an instance-wide `/references` page for sources, licensing, privacy, and
+  operating policies;
 - no reader/member accounts;
 - an administrator access key exchanged for an HttpOnly browser session;
 - the built-in `paper` style;
@@ -81,10 +83,17 @@ Bootstrap never overwrites an existing operator file. It creates:
 | `.env` | Mode-0600 secrets and exact runtime projection |
 | `osb.install.toml` | Human-owned, secret-free structural intent |
 | `osb.lock.json` | Exact engine/DLC records, digests, compatibility, history |
-| `osb.intent.json` | Stable topology, paths, and human/AI operational handoff |
+| `osb.intent.json` | Stable topology plus the `references.md` path/SHA-256 handoff |
 | `custom.css` | Selected installed CSS boundary or harmless local template |
+| `references.md` | Editable whole-site sources, licensing, privacy, and policy page |
 | `admin-access-key.txt` | One-time plaintext key; access-key mode only |
 | `.gitignore` | Protects secrets, backups, and `.osb-update/` snapshots |
+
+Bootstrap pins `references.md` in `osb.intent.json`. For a direct, non-bootstrap
+configuration, the built-in, inline, or file-backed references source remains
+a valid runtime input without that handoff; `osb doctor` warns that integrity is
+unpinned. If a sibling handoff exists, a missing or changed contracted source
+is a blocking doctor failure.
 
 If `.gitignore` already exists, bootstrap requires exact `.env`,
 `admin-access-key.txt`, `.osb-backups/`, and `.osb-update/` protections before
@@ -181,7 +190,18 @@ AI/import disclosure is portable content metadata. For example, add
 The local command accepts only a regular non-symlink UTF-8 file or bounded stdin
 and publishes the exact immutable revision it just created. The maintenance
 container also mounts and validates the trusted `config.toml`; delivery-only
-configuration is rejected before the local command opens SQLite.
+configuration is rejected before the local command opens SQLite. It receives
+the same non-empty `OSB_INTENT`, `OSB_DELIVERY_ONLY`, and
+`OSB_ARTICLE_BASE_PATH` overrides as the server, so the recorded `--env-file`
+is part of both write admission and offline-import route collision checks.
+
+For a whole-site migration, `osb local import --manifest import.json` validates
+and publishes a versioned Markdown manifest in one transaction. Run
+`--dry-run` first; exact retries are no-ops, while changed content under an
+existing `sourceId` fails without partial writes. Historical route aliases,
+including deeply nested `.html` paths, permanently redirect to the absolute
+current category URL. See [offline Markdown import](docs/operations/OFFLINE_IMPORT.md)
+for the schema, mount-safe Compose invocation, and redirect boundary.
 
 ## Cache, authority, and redundancy
 
@@ -196,7 +216,10 @@ a second physical failure domain. Canonical redundancy comes from verified
 SQLite-plus-blob backup generations. Point `OSB_BACKUP_VOLUME` at an
 independently backed disk or NAS and regularly restore a generation on another
 machine. Keeping two Docker volumes on one server does not protect against host
-loss.
+loss. Generations omit deployment controls, so back up and restore
+`config.toml`, `references.md`, `osb.intent.json`, installation intent/lock, and
+selected CSS together; keep `.env` and access credentials in a separate secrets
+system.
 
 Durability profiles are semantic choices:
 
@@ -286,6 +309,7 @@ Every interactive structural choice has a non-interactive flag:
 | `--directory DIR` | Fresh deployment directory; default `.` |
 | `--non-interactive` | Never prompt; use supplied and documented defaults |
 | `--compose-file FILE` | Compose bundle to record; default checkout `compose.yaml` |
+| `--compose-project NAME` | Reuse an existing Compose project; default isolated `osb-UUID` |
 | `--site-id UUID` | Stable content identity; required when creating a delivery restore |
 | `--content-release ID` | Cache/snapshot generation; required and unique for delivery restores |
 | `--intent personal\|community\|delivery` | Deployment profile; default `personal` |
@@ -302,6 +326,7 @@ Every interactive structural choice has a non-interactive flag:
 | `--custom-css enabled\|disabled` | Owner CSS compatibility switch |
 | `--style none\|builtin:ID` | Exact absent or built-in style |
 | `--css-file FILE` | Copy and pin an exact custom stylesheet; conflicts with `--style` |
+| `--references-file FILE` | Copy and integrity-pin the global references Markdown |
 | `--seo enabled\|disabled` | SEO intent and DLC default; default enabled |
 | `--agent-discovery enabled\|disabled` | `agent.txt`, `agents.txt`, `llms.txt`; default enabled |
 | `--cache none\|redis-standalone\|redis-managed` | Cache composition; prompt default managed |

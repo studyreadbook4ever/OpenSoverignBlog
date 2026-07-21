@@ -163,6 +163,11 @@ services:
       OSB_COLLABORATION: "${OSB_COLLABORATION:-}"
       OSB_CUSTOM_CSS: "${OSB_CUSTOM_CSS:-}"
       OSB_CUSTOM_CSS_FILE: "${OSB_CUSTOM_CSS_FILE:-}"
+      OSB_REFERENCES_ENABLED: "${OSB_REFERENCES_ENABLED:-}"
+      OSB_REFERENCES_LABEL: "${OSB_REFERENCES_LABEL:-}"
+      # Compose always reads the explicitly mounted operator source. Direct
+      # binary deployments may instead use inline TOML or the built-in copy.
+      OSB_REFERENCES_MARKDOWN_FILE: "/config/references.md"
       OSB_AGENT_DISCOVERY: "${OSB_AGENT_DISCOVERY:-}"
       OSB_DELIVERY_ONLY: "${OSB_DELIVERY_ONLY:-}"
       OSB_FEATURES: "${OSB_FEATURES:-}"
@@ -207,6 +212,12 @@ services:
         bind:
           create_host_path: false
       - type: bind
+        source: ${OSB_HANDOFF_SOURCE:-./osb.intent.example.json}
+        target: /config/osb.intent.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
         source: ${OSB_INSTALL_SOURCE:-./osb.install.example.toml}
         target: /config/osb.install.toml
         read_only: true
@@ -221,6 +232,12 @@ services:
       - type: bind
         source: ${OSB_CUSTOM_CSS_SOURCE:-./deploy/custom.css}
         target: /config/custom.css
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${OSB_REFERENCES_SOURCE:-./deploy/references.md}
+        target: /config/references.md
         read_only: true
         bind:
           create_host_path: false
@@ -309,6 +326,11 @@ services:
       # A delivery intent/config fails closed even though this maintenance
       # service necessarily owns a writable data mount on writable origins.
       OSB_CONFIG: /config/config.toml
+      # Keep local write admission and import route reservations identical to
+      # the effective server configuration, including non-empty env overrides.
+      OSB_INTENT: "${OSB_INTENT:-}"
+      OSB_DELIVERY_ONLY: "${OSB_DELIVERY_ONLY:-}"
+      OSB_ARTICLE_BASE_PATH: "${OSB_ARTICLE_BASE_PATH:-}"
     volumes:
       - type: volume
         source: osb-data

@@ -71,6 +71,20 @@ connect_timeout_ms = 2000
 custom_css = true
 custom_css_file = "/config/custom.css"
 
+# One instance-wide page at /references consolidates attribution, licensing,
+# privacy, and other operating policies. Omit both content options to use the
+# built-in Korean starter document. `markdown` and `markdown_file` are mutually
+# exclusive; a configured file must be non-symlink UTF-8 and no larger than 1 MiB.
+# When enabled, startup fails rather than shadow an existing /references category
+# or published noncanonical root alias. Canonical uncategorized posts remain safe
+# under the article/community namespace. Disable this feature first to retain a
+# legacy root namespace.
+[references]
+enabled = true
+label = "레퍼런스"
+# markdown_file = "/config/references.md"
+# markdown = """Custom portable Markdown."""
+
 [discovery]
 agent_txt = true
 

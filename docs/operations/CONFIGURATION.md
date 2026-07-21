@@ -52,9 +52,21 @@ TOML/filesystem and installation contracts are reachable.
   Backup/update directories must remain ignored because they can contain
   canonical content, `.env`, and the administrator key;
 - `custom.css`: harmless first-party template; the feature flag decides whether it is served;
-- `osb.intent.json`: secret-free stable topology, paths, and next commands;
+- `references.md`: editable portable Markdown published at the stable
+  instance-wide `/references` route;
+- `osb.intent.json`: secret-free stable topology, next commands, and the
+  relative path plus SHA-256 contract for `references.md`;
 - `admin-access-key.txt`: mode-0600 plaintext credential, created only for the
   `access_key` administrator module.
+
+Bootstrap generates an isolated `osb-UUID` Compose project by default. When an
+existing parent Compose deployment owns the stack, pass a validated lowercase
+name such as `--compose-project eff0rtchung`. The same exact value is written to
+`COMPOSE_PROJECT_NAME`, `osb.intent.json`, and every generated start, restore,
+doctor, and updater-facing Compose command, preventing an accidental second
+project. This override does not choose canonical data: `OSB_DATA_VOLUME`
+remains the unique `osb-data-<deploymentId>` value, so a reused parent project
+cannot accidentally attach a new bootstrap to an older deployment's volume.
 
 The installation manifest expresses what the operator wants; the lock records
 exactly what this engine resolved. `OSB_INSTALL_LOCK_DIGEST` binds `.env` to that
@@ -105,6 +117,9 @@ start and doctor commands so the process loads the new lock. See
 | `community.collaboration` | `OSB_COLLABORATION` | Request invited co-author policy; remains off in the simple owner profile |
 | `appearance.custom_css` | `OSB_CUSTOM_CSS` | Serve the configured first-party owner stylesheet |
 | `appearance.custom_css_file` | `OSB_CUSTOM_CSS_FILE` | Local CSS file, capped at 256 KiB |
+| `references.enabled` | `OSB_REFERENCES_ENABLED` | Publish or remove the instance-wide `/references` page; enabled by default |
+| `references.label` | `OSB_REFERENCES_LABEL` | Navigation and page label, 1–40 trimmed Unicode characters; defaults to `레퍼런스` |
+| `references.markdown_file` | `OSB_REFERENCES_MARKDOWN_FILE` | Optional regular UTF-8 Markdown file, capped at 1 MiB; overrides the configured inline/default content |
 | installation style | `OSB_STYLE` | Exact `none`, `builtin:ID`, or `custom:SHA256` selection recorded in the install/lock pair |
 | `discovery.agent_txt` | `OSB_AGENT_DISCOVERY` | Publish `agents.txt`, `agent.txt`, and `llms.txt` under the configured public URL |
 | `features.*` | `OSB_FEATURES` | Enabled runtime aliases projected from the DLC lock; `none` means an empty request set |
@@ -120,6 +135,74 @@ writable node require an operational local member-auth mode. Member OAuth-only
 is rejected until a member adapter exists; `local_and_oauth` continues through
 local auth while reporting member OAuth as requested but unavailable. These are
 validated relationships, not documentation-only conventions.
+
+## Global references and policy page
+
+Every installation gets one public `/references` page by default. Its visible
+label defaults to `레퍼런스` and accepts Unicode, so an operator can choose a
+locally appropriate name without changing the stable URL. The built-in starter
+document provides sections for citations, copyright and licensing, privacy,
+external services, and contact policy. It is a publishing template, not legal
+advice.
+
+Set exactly one of `references.markdown` or `references.markdown_file` to
+replace the starter content. The file form is read once at startup and must be
+a non-symlink regular UTF-8 file no larger than 1 MiB; a missing, replaced, or
+invalid configured file fails startup instead of silently publishing stale
+policy text. The same safe portable-Markdown renderer used by posts produces
+the HTML artifact. The page
+is advertised through capabilities, public navigation, `agents.txt`,
+`llms.txt`, and the sitemap. `references.enabled=false` removes all of those
+advertisements and makes the public API return 404.
+
+While enabled, `references` is a reserved top-level route segment and cannot
+also be a category, a published noncanonical root alias, or
+`server.article_base_path`. A canonical uncategorized post whose internal
+storage route is `references` remains valid because its public URL is below the
+article/community namespace rather than `/references`. Startup inspects
+upgraded databases and fails with an explicit collision instead of shadowing
+existing aliases. Disabling the feature releases that route so an older
+`references` category—including its landing, post, and community API
+lookups—or a deployment using `server.article_base_path="references"` remains
+readable. An
+environment-provided `OSB_REFERENCES_MARKDOWN_FILE` takes precedence over the
+TOML content source; inline Markdown intentionally has no environment-variable
+form.
+
+The provided Compose file always bind-mounts `OSB_REFERENCES_SOURCE` read-only
+at `/config/references.md` with `create_host_path: false`; its source-checkout
+default is `./deploy/references.md`. It similarly mounts
+`OSB_HANDOFF_SOURCE` at `/config/osb.intent.json` so in-container doctor can
+verify that source. Bootstrap instead creates an editable
+`references.md` inside the deployment directory and records that canonical,
+apostrophe-free path in the generated `.env`, so commands are independent of
+the caller's working directory. To publish migrated policy content, copy it to
+that file or point `OSB_REFERENCES_SOURCE` at another existing regular file
+before starting Compose. `OSB_REFERENCES_SOURCE` is a host-side mount selector,
+not a server configuration variable; Compose sets the internal
+`OSB_REFERENCES_MARKDOWN_FILE=/config/references.md` boundary.
+
+Pass `--references-file /path/to/policy.md` to bootstrap to install migrated
+content and compute the matching handoff digest. `osb doctor` resolves the
+relative handoff path beside `config.toml`, rejects symlinks, and fails if the
+file is missing, replaced, larger than 1 MiB, or no longer matches its SHA-256.
+This fail-closed contract applies whenever a sibling `osb.intent.json` exists,
+including when that handoff is malformed or omits `referencesSource`. A direct
+runtime configuration may instead use the built-in document, inline Markdown,
+or a configured Markdown file without a handoff; doctor reports that unpinned
+source as `WARN`, not `FAIL`, matching the runtime's optional-handoff model.
+Doctor also applies the non-empty `OSB_ARTICLE_BASE_PATH` and
+`OSB_REFERENCES_ENABLED` overrides before checking route collisions, so it
+fails on the same effective `references` or fixed application root that server
+startup would reject.
+The Markdown body itself is never copied into `.env`, the installation lock,
+or the handoff.
+
+```dotenv
+OSB_REFERENCES_ENABLED=true
+OSB_REFERENCES_LABEL=레퍼런스
+OSB_REFERENCES_SOURCE=/srv/open-soverign-blog/references.md
+```
 
 Server startup fails when `OSB_INSTALL_LOCK_DIGEST` is empty or absent. The
 only exception is an explicitly untracked, writable pre-contract checkout with
@@ -313,6 +396,11 @@ Each generation uses SQLite's Online Backup API, copies the content-addressed
 blob tree, hashes every payload, writes `manifest.json`, fsyncs the staging
 directory, and renames it atomically. Retention removes only real directories
 whose names begin with `generation-` under the dedicated generations root.
+It deliberately does not copy deployment controls. Back up `config.toml`,
+`references.md`, `osb.intent.json`, installation intent/lock, and selected CSS
+alongside the generation, then restore that matching set before running doctor
+or starting the server. Keep `.env` and administrator credentials in a separate
+secrets backup.
 
 Compose defaults to the visible host directory `./.osb-backups`, separate from
 the live Docker data volume. For actual host-level redundancy, point the same

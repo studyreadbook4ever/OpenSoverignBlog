@@ -19,6 +19,7 @@ import type {
   PostSummary,
   PostView,
   RunnerProfile,
+  ReferencesPage as ReferencesPageView,
   ThemePresetId,
   ViewMode,
 } from "@opensoverignblog/sdk";
@@ -103,6 +104,9 @@ export function FeedPage() {
           <strong>빠른 이동</strong>
           <a href="#home-pinned">주요 글</a>
           <a href="#home-recent">최근 글</a>
+          {capabilities?.references ? (
+            <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
+          ) : null}
           <a href={publicPath("/openapi/openapi.yaml")}>OpenAPI</a>
           <a href={publicPath("/AI2AI.md")}>AI 접근 안내</a>
         </nav>
@@ -146,6 +150,45 @@ export function FeedPage() {
           <HomePostSection id="home-recent" items={home.recentItems} title="최근 변경" tone="recent" />
         ) : null}
       </div>
+    </div>
+  );
+}
+
+export function ReferencesPage({ capabilities }: { capabilities: Capabilities | undefined }) {
+  const advertisedLabel = capabilities?.references?.label ?? "레퍼런스";
+  const [page, setPage] = useState<ReferencesPageView>();
+  const [error, setError] = useState<string>();
+  usePageTitle(page?.label ?? advertisedLabel);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setPage(undefined);
+    setError(undefined);
+    void client.references(controller.signal)
+      .then(setPage)
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) setError(asMessage(reason));
+      });
+    return () => controller.abort();
+  }, []);
+
+  if (error) return <StatusMessage title={`${advertisedLabel}를 불러오지 못했습니다`} detail={error} />;
+  if (!page) return <PageLoading label={`${advertisedLabel}를 불러오는 중`} />;
+
+  return (
+    <div className="osb-site-frame references-page">
+      <article className="article-shell">
+        <header className="article-header references-header">
+          <p className="eyebrow">Global references</p>
+          <h1>{page.label}</h1>
+          <p className="article-deck">출처, 라이선스, 개인정보와 운영 정책을 한곳에서 확인합니다.</p>
+        </header>
+        <ArticleBody capabilities={capabilities} html={page.artifactHtml} />
+        <details className="artifact-proof">
+          <summary>문서 무결성 정보</summary>
+          <div><span>{page.rendererVersion}</span><code>{page.sourceHash}</code></div>
+        </details>
+      </article>
     </div>
   );
 }
