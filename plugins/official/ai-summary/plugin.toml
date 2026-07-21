@@ -1,0 +1,32 @@
+"$schema" = "../../../schemas/plugin-manifest.v1.schema.json"
+manifestVersion = 1
+id = "org.open-soverign-blog.ai-summary"
+name = "Reviewed AI article summaries"
+version = "0.1.0"
+license = "Unlicense"
+pluginApi = "1"
+coreCompatibility = ">=0.1.0, <0.2.0"
+kinds = ["ai-agent", "render-extension"]
+description = "Optional Studio-only summary generation through fixed provider adapters. Credentials are transient request data and are never persisted in drafts, content, or the OSB database."
+permissions = [
+  { capability = "content.read", scope = "drafts", reason = "Send only the explicitly selected title and Markdown to the chosen provider." },
+  { capability = "content.write", scope = "drafts", reason = "Attach a reviewed plain-text summary to an immutable revision." },
+  { capability = "ai.invoke", resources = ["article-summary"], reason = "Generate a bounded plain-text summary only after an explicit Studio action." },
+  { capability = "network.connect", resources = ["api.openai.com", "api.anthropic.com", "generativelanguage.googleapis.com"], reason = "Call only the built-in HTTPS provider endpoints with redirects disabled." },
+  { capability = "secret.use", resources = ["one-shot-provider-key"], reason = "Consume a provider key for one generation request without persisting or echoing it." },
+  { capability = "render.slot", resources = ["article.before"], reason = "Display the reviewed stored summary above the article body." }
+]
+metadata = { bundled = true, default_enabled = false }
+
+[provenance]
+origin = "original"
+
+[runtime]
+kind = "built-in"
+crate = "osb-server"
+extension = "ai_summary"
+
+[limits]
+timeoutMs = 15000
+outputKiB = 64
+concurrency = 2

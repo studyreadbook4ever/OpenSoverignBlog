@@ -8,6 +8,7 @@ import {
 import DOMPurify from "dompurify";
 import type {
   AdminAccessKeyMethod,
+  AiSummary,
   BlogPostView,
   BlogSummary,
   Capabilities,
@@ -22,7 +23,12 @@ import type {
   ViewMode,
 } from "@opensoverignblog/sdk";
 import { useSession } from "./app";
-import { articleHref, articleViewFromSearch } from "./article-location";
+import {
+  articleHref,
+  articleViewFromSearch,
+  publicCategoryPath,
+  publicFeedPostPath,
+} from "./article-location";
 import { authorshipLabel, HUMAN_AUTHORSHIP, normalizedAuthorship } from "./authorship";
 import {
   adminAuthChoices,
@@ -58,6 +64,7 @@ const LEGACY_BLOG: BlogSummary = {
   description: "Portable Markdown and immutable ideas.",
   owner: LEGACY_USER,
   theme: { presetId: "paper" },
+  isPrimary: false,
 };
 
 export function FeedPage() {
@@ -168,7 +175,7 @@ function HomePostSection({
 }
 
 function DensePostRow({ post }: { post: FeedPostSummary }) {
-  const href = `/@${encodeURIComponent(post.blog.handle)}/${encodeURIComponent(post.slug)}`;
+  const href = publicFeedPostPath(post);
   return (
     <article className="wiki-post-row">
       <div className="wiki-post-index" aria-hidden="true">{post.title.slice(0, 1)}</div>
@@ -291,7 +298,7 @@ export function BlogPage({ handle }: { handle: string }) {
                     <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
                     <AuthorshipBadge value={post.authorship} />
                   </div>
-                  <h3><AppLink href={`/@${encodeURIComponent(handle)}/${encodeURIComponent(post.slug)}`}>{post.title}</AppLink></h3>
+                  <h3><AppLink href={publicFeedPostPath(post)}>{post.title}</AppLink></h3>
                   <p>{post.excerpt}</p>
                 </div>
                 <span className="list-arrow" aria-hidden="true">↗</span>
@@ -313,11 +320,15 @@ export function ArticlePage({
   slug,
   capabilities,
   legacy = false,
+  categorySlug,
+  primary = false,
 }: {
   handle: string;
   slug: string;
   capabilities: Capabilities | undefined;
   legacy?: boolean;
+  categorySlug?: string;
+  primary?: boolean;
 }) {
   const [view, setView] = useState<ViewMode>(() => articleViewFromSearch(window.location.search));
   const [post, setPost] = useState<BlogPostView>();
@@ -340,15 +351,25 @@ export function ArticlePage({
       slug,
       view,
       legacyArticle,
+      categorySlug,
+      primary,
       controller.signal,
     )
       .then((value) => {
-        if (value.requestedSlug !== value.canonicalSlug) {
+        const canonicalCategory = value.category?.slug;
+        const canonicalPrimary = Boolean(canonicalCategory && value.blog.isPrimary);
+        if (
+          value.requestedSlug !== value.canonicalSlug
+          || categorySlug !== canonicalCategory
+          || primary !== canonicalPrimary
+        ) {
           navigate(articleHref({
             handle,
             slug: value.canonicalSlug,
             legacy: legacyArticle,
             view,
+            ...(canonicalCategory ? { categorySlug: canonicalCategory } : {}),
+            primary: canonicalPrimary,
           }), true);
           return;
         }
@@ -358,10 +379,17 @@ export function ArticlePage({
         if (!controller.signal.aborted) setError(asMessage(reason));
       });
     return () => controller.abort();
-  }, [handle, slug, view, legacyArticle]);
+  }, [handle, slug, view, legacyArticle, categorySlug, primary]);
 
   if (error) return <StatusMessage title="글을 불러오지 못했습니다" detail={error} />;
   if (!post) return <PageLoading label="글을 불러오는 중" />;
+  const storedAiSummary = post.aiSummary;
+  // Public JSON is projected through the same source-bound validation as the
+  // renderer, so an omitted value must never be reconstructed in the browser.
+  const reviewedAiSummary = storedAiSummary?.provenance.humanReviewed
+    ? storedAiSummary
+    : undefined;
+  const articleTheme = post.category?.themePreset ?? post.blog.theme.presetId;
   const selectView = (nextView: ViewMode) => {
     if (nextView === view && articleViewFromSearch(window.location.search) === nextView) return;
     navigate(articleHref({
@@ -369,18 +397,31 @@ export function ArticlePage({
       slug: post.canonicalSlug,
       legacy: legacyArticle,
       view: nextView,
+      ...(categorySlug ? { categorySlug } : {}),
+      primary: Boolean(post.category && post.blog.isPrimary),
     }));
   };
   return (
     <>
       <BlogCustomStylesheet handle={post.blog.handle} href={post.blog.theme.customCssUrl} />
       <div className="osb-site-frame">
-        <div className="article-page osb-site-theme" data-custom-css={post.blog.theme.customCssUrl ? "enabled" : "disabled"} data-site-id={post.blog.id} data-theme={post.blog.theme.presetId}>
+        <div className="article-page osb-site-theme" data-custom-css={post.blog.theme.customCssUrl ? "enabled" : "disabled"} data-site-id={post.blog.id} data-theme={articleTheme}>
           <article className="article-shell">
         <header className="article-header">
           <div className="article-kicker">
             <AppLink href={`/@${post.blog.handle}`}>@{post.blog.handle}</AppLink>
             <span aria-hidden="true">/</span>
+            {post.category ? (
+              <>
+                <AppLink href={publicCategoryPath({
+                  handle: post.blog.handle,
+                  categorySlug: post.category.slug,
+                  primary: post.blog.isPrimary,
+                })}
+                >{post.category.title}</AppLink>
+                <span aria-hidden="true">/</span>
+              </>
+            ) : null}
             <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
             <AuthorshipBadge value={post.authorship} />
           </div>
@@ -400,6 +441,13 @@ export function ArticlePage({
             <button aria-pressed={view === "markdown_source"} onClick={() => selectView("markdown_source")} type="button">.md 원문</button>
           </div>
         </header>
+        {reviewedAiSummary ? (
+          <section className="public-ai-summary" aria-label="AI 요약 정보">
+            <p className="public-ai-summary-provenance">
+              AI가 만든 요약 초안을 사람이 검토함 · {publicAiProviderLabel(reviewedAiSummary.provenance.provider)} · {reviewedAiSummary.provenance.model} · {formatDate(reviewedAiSummary.provenance.generatedAt)} 생성
+            </p>
+          </section>
+        ) : null}
         <ArticleBody capabilities={capabilities} html={post.artifact.html} />
         <details className="artifact-proof">
           <summary>문서 무결성 정보</summary>
@@ -413,6 +461,13 @@ export function ArticlePage({
   );
 }
 
+function publicAiProviderLabel(provider: AiSummary["provenance"]["provider"]): string {
+  if (provider === "openai") return "OpenAI";
+  if (provider === "anthropic") return "Anthropic";
+  if (provider === "google") return "Google Gemini";
+  return provider;
+}
+
 function BlogCustomStylesheet({ handle, href }: { handle: string; href: string | undefined }) {
   const safeHref = safeBlogStylesheetUrl(href, handle, window.location.origin, basePath);
   return safeHref ? <link data-osb-blog-custom-css href={safeHref} rel="stylesheet" /> : null;
@@ -423,11 +478,18 @@ async function loadArticle(
   slug: string,
   view: ViewMode,
   legacy: boolean,
+  categorySlug: string | undefined,
+  primary: boolean,
   signal: AbortSignal,
 ): Promise<BlogPostView> {
-  return legacy
-    ? legacyPostView(await client.getPost(slug, view, signal))
-    : client.getBlogPost(handle, slug, view, signal);
+  if (legacy) return legacyPostView(await client.getPost(slug, view, signal));
+  if (categorySlug && primary) {
+    return client.getPrimaryCategoryPost(categorySlug, slug, view, signal);
+  }
+  if (categorySlug) {
+    return client.getBlogCategoryPost(handle, categorySlug, slug, view, signal);
+  }
+  return client.getBlogPost(handle, slug, view, signal);
 }
 
 async function loadBlogPosts(handle: string, signal: AbortSignal): Promise<FeedPostSummary[]> {

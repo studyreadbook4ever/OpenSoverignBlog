@@ -30,6 +30,15 @@ const StudioEditor = lazy(async () => ({
 const StudioSettingsPage = lazy(async () => ({
   default: (await import("./studio")).StudioSettingsPage,
 }));
+const AdminTreePage = lazy(async () => ({
+  default: (await import("./admin-tree")).AdminTreePage,
+}));
+const CategoryPage = lazy(async () => ({
+  default: (await import("./categories")).CategoryPage,
+}));
+const StudioCategoriesPage = lazy(async () => ({
+  default: (await import("./categories")).StudioCategoriesPage,
+}));
 
 interface SessionContextValue {
   session: Session | undefined;
@@ -163,7 +172,7 @@ export function App() {
 }
 
 function resolvePage(pathname: string, capabilities: Capabilities | undefined): ReactNode {
-  if (pathname === "/") return <FeedPage />;
+  if (pathname === "/" || pathname === "/index.html") return <FeedPage />;
   if (pathname === "/login") return <LoginPage />;
   if (pathname === "/onboarding") return <OnboardingPage />;
   if (pathname === "/studio" || pathname === "/studio/") {
@@ -172,13 +181,31 @@ function resolvePage(pathname: string, capabilities: Capabilities | undefined): 
   if (pathname === "/studio/settings" || pathname === "/studio/settings/") {
     return <Suspense fallback={<RouteLoading label="블로그 설정을 불러오는 중" />}><StudioSettingsPage capabilities={capabilities} /></Suspense>;
   }
-  const article = pathname.match(/^\/@([^/]+)\/([^/]+)\/?$/);
-  if (article) {
+  if (pathname === "/studio/categories" || pathname === "/studio/categories/") {
+    return <StudioCategoriesRoute capabilities={capabilities} />;
+  }
+  if (pathname === "/studio/system" || pathname === "/studio/system/") {
+    return <Suspense fallback={<RouteLoading label="프로그램 트리를 불러오는 중" />}><AdminTreePage /></Suspense>;
+  }
+  if (pathname.startsWith("/studio/")) return <NotFoundPage />;
+  const memberCategoryArticle = pathname.match(/^\/@([^/]+)\/([^/]+)\/([^/]+)\/?$/);
+  if (memberCategoryArticle) {
     return (
       <ArticlePage
         capabilities={capabilities}
-        handle={decodePathSegment(article[1] ?? "")}
-        slug={decodePathSegment(article[2] ?? "")}
+        categorySlug={decodePathSegment(memberCategoryArticle[2] ?? "")}
+        handle={decodePathSegment(memberCategoryArticle[1] ?? "")}
+        slug={decodePathSegment(memberCategoryArticle[3] ?? "")}
+      />
+    );
+  }
+  const memberArticleOrCategory = pathname.match(/^\/@([^/]+)\/([^/]+)\/?$/);
+  if (memberArticleOrCategory) {
+    return (
+      <MemberCategoryOrArticlePage
+        capabilities={capabilities}
+        handle={decodePathSegment(memberArticleOrCategory[1] ?? "")}
+        segment={decodePathSegment(memberArticleOrCategory[2] ?? "")}
       />
     );
   }
@@ -195,7 +222,83 @@ function resolvePage(pathname: string, capabilities: Capabilities | undefined): 
       />
     );
   }
+  const primaryCategoryArticle = pathname.match(/^\/([^/@][^/]*)\/([^/]+)\/?$/);
+  if (primaryCategoryArticle) {
+    return (
+      <ArticlePage
+        capabilities={capabilities}
+        categorySlug={decodePathSegment(primaryCategoryArticle[1] ?? "")}
+        handle=""
+        primary
+        slug={decodePathSegment(primaryCategoryArticle[2] ?? "")}
+      />
+    );
+  }
+  const primaryCategory = pathname.match(/^\/([^/@][^/]*)\/?$/);
+  if (primaryCategory) {
+    return (
+      <Suspense fallback={<RouteLoading label="카테고리를 불러오는 중" />}>
+        <CategoryPage categorySlug={decodePathSegment(primaryCategory[1] ?? "")} handle="" primary />
+      </Suspense>
+    );
+  }
   return <NotFoundPage />;
+}
+
+function StudioCategoriesRoute({ capabilities }: { capabilities: Capabilities | undefined }) {
+  const { session } = useSession();
+  const primary = session?.state === "authenticated" && Boolean(session.blog?.isPrimary);
+  return (
+    <Suspense fallback={<RouteLoading label="카테고리를 불러오는 중" />}>
+      <StudioCategoriesPage capabilities={capabilities} primary={primary} />
+    </Suspense>
+  );
+}
+
+function MemberCategoryOrArticlePage({
+  capabilities,
+  handle,
+  segment,
+}: {
+  capabilities: Capabilities | undefined;
+  handle: string;
+  segment: string;
+}) {
+  const [resolution, setResolution] = useState<"loading" | "category" | "article" | "error">("loading");
+  const [detail, setDetail] = useState<string>();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setResolution("loading");
+    setDetail(undefined);
+    void client.getBlogCategory(handle, segment, controller.signal)
+      .then(() => {
+        if (!controller.signal.aborted) setResolution("category");
+      })
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted) return;
+        if (isNotFound(reason)) {
+          setResolution("article");
+          return;
+        }
+        setDetail(asMessage(reason));
+        setResolution("error");
+      });
+    return () => controller.abort();
+  }, [handle, segment]);
+
+  if (resolution === "loading") return <RouteLoading label="공개 주소를 확인하는 중" />;
+  if (resolution === "error") {
+    return <CapabilityError detail={detail ?? "공개 주소를 확인하지 못했습니다."} onRetry={() => window.location.reload()} />;
+  }
+  if (resolution === "category") {
+    return (
+      <Suspense fallback={<RouteLoading label="카테고리를 불러오는 중" />}>
+        <CategoryPage categorySlug={segment} handle={handle} />
+      </Suspense>
+    );
+  }
+  return <ArticlePage capabilities={capabilities} handle={handle} slug={segment} />;
 }
 
 function decodePathSegment(value: string): string {

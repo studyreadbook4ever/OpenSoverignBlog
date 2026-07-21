@@ -21,7 +21,7 @@ const INTENT_LIMIT: u64 = 256 * 1024;
 const LOCK_LIMIT: u64 = 2 * 1024 * 1024;
 const CSS_LIMIT: u64 = 256 * 1024;
 
-const BUNDLED_OFFICIAL_MANIFESTS: [(&str, &str, &str); 10] = [
+const BUNDLED_OFFICIAL_MANIFESTS: [(&str, &str, &str); 11] = [
     (
         "org.open-soverign-blog.monetization-policy",
         "plugins/official/ads/plugin.toml",
@@ -31,6 +31,11 @@ const BUNDLED_OFFICIAL_MANIFESTS: [(&str, &str, &str); 10] = [
         "org.open-soverign-blog.ai-authorship",
         "plugins/official/ai-authorship/plugin.toml",
         include_str!("../../../plugins/official/ai-authorship/plugin.toml"),
+    ),
+    (
+        "org.open-soverign-blog.ai-summary",
+        "plugins/official/ai-summary/plugin.toml",
+        include_str!("../../../plugins/official/ai-summary/plugin.toml"),
     ),
     (
         "org.open-soverign-blog.code-runner-client",

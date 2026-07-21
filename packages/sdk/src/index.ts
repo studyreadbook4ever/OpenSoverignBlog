@@ -45,6 +45,50 @@ export type PublicAuthorship =
       humanReviewed: boolean;
     };
 
+export interface AiSummaryProvenance {
+  /** Portable provider label; imported content is not limited to built-ins. */
+  provider: string;
+  model: string;
+  promptVersion: string;
+  generatedAt: string;
+  humanReviewed: boolean;
+}
+
+export type BuiltInAiSummaryProviderId = "openai" | "anthropic" | "google";
+
+/** A reviewed, plain-text summary stored with an immutable revision. */
+export interface AiSummary {
+  text: string;
+  sourceHash: string;
+  provenance: AiSummaryProvenance;
+}
+
+export interface AiSummaryProvider {
+  id: BuiltInAiSummaryProviderId;
+  label: string;
+  models: string[];
+  defaultModel: string;
+  credentialModes: Array<"one_shot">;
+}
+
+export interface AiSummaryProvidersResponse {
+  providers: AiSummaryProvider[];
+  maximumSourceBytes: number;
+  credentialsPersisted: false;
+}
+
+export interface GenerateAiSummaryInput {
+  provider: BuiltInAiSummaryProviderId;
+  model: string;
+  credentialMode: "one_shot";
+  title: string;
+  sourceMarkdown: string;
+}
+
+export interface GenerateAiSummaryResponse {
+  candidate: AiSummary;
+}
+
 export interface PublishArtifact {
   view: ViewMode;
   html: string;
@@ -59,7 +103,14 @@ export interface PublishArtifact {
 export interface PostSummary {
   id: string;
   title: string;
+  /** Leaf slug retained for backwards-compatible display and routing logic. */
   slug: string;
+  /** Published lookup path; category posts use `category/slug`. */
+  routePath: string;
+  /** Absolute, directly followable URL for the sanitized machine view. */
+  apiHref: string;
+  /** Absolute, directly followable URL for the portable Markdown source. */
+  sourceHref: string;
   updatedAt: string;
   hasIntentView: boolean;
   hasOntology: boolean;
@@ -88,7 +139,98 @@ export interface BlogSummary {
   description?: string;
   owner: UserSummary;
   theme: BlogTheme;
+  /** True only for the installation's provisioned blog with handle-free category URLs. */
+  isPrimary: boolean;
   createdAt?: string;
+}
+
+export type CategoryStatus = "active" | "archived";
+
+/** Public, site-scoped category metadata. Category slugs are immutable. */
+export interface CategorySummary {
+  id: string;
+  slug: string;
+  title: string;
+  description?: string;
+  /** Omission means that the category inherits its blog's theme. */
+  themePreset?: ThemePresetId;
+  status: CategoryStatus;
+}
+
+export interface CategoryListResponse {
+  items: CategorySummary[];
+}
+
+export interface BlogCategoryResponse {
+  category: CategorySummary;
+  blog: BlogSummary;
+  postCount: number;
+}
+
+export interface CreateCategoryInput {
+  slug: string;
+  title: string;
+  description?: string;
+  themePreset?: ThemePresetId;
+}
+
+export interface UpdateCategoryInput {
+  title: string;
+  description?: string;
+  themePreset?: ThemePresetId;
+}
+
+export const ADMIN_TREE_SCHEMA_VERSION = "open-soverign-blog-admin-tree/1" as const;
+
+export type AdminTreeNodeKind =
+  | "group"
+  | "site"
+  | "category"
+  | "document"
+  | "revision"
+  | "setting"
+  | "module"
+  | "runtime";
+
+/**
+ * The deliberately closed, metadata-only node projection returned to an
+ * instance administrator. Unknown response fields are not copied into this
+ * SDK model, which prevents an accidental server-side field addition from
+ * becoming inspectable UI data by default.
+ */
+export interface AdminTreeNodeBase {
+  id: string;
+  parentId: string;
+  label: string;
+  hasChildren: boolean;
+  entityId?: string;
+  handle?: string;
+  slug?: string;
+  state?: string;
+  revisionNumber?: number;
+  requested?: boolean;
+  operational?: boolean;
+  summary?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type AdminTreeNode = {
+  [Kind in AdminTreeNodeKind]: AdminTreeNodeBase & { kind: Kind };
+}[AdminTreeNodeKind];
+
+export interface AdminTreePage {
+  schemaVersion: typeof ADMIN_TREE_SCHEMA_VERSION;
+  generatedAt: string;
+  parentId: string;
+  items: AdminTreeNode[];
+  nextCursor?: string;
+}
+
+export interface AdminTreeQuery {
+  parent?: string;
+  cursor?: string;
+  limit?: number;
 }
 
 export type Session =
@@ -172,6 +314,7 @@ export interface FeedPostSummary {
   commentCount: number;
   hasIntentView: boolean;
   authorship: PublicAuthorship;
+  category?: CategorySummary;
   coverImageUrl?: string;
 }
 
@@ -198,6 +341,7 @@ export interface PostView {
   embeds: EmbedReference[];
   artifact: PublishArtifact;
   ontology?: OntologySidecar;
+  aiSummary?: AiSummary;
   authorship: PublicAuthorship;
 }
 
@@ -209,6 +353,7 @@ export interface BlogPostView extends PostView {
   author: UserSummary;
   blog: BlogSummary;
   tags: string[];
+  category?: CategorySummary;
   coverImageUrl?: string;
 }
 
@@ -420,6 +565,9 @@ export interface CreatePostInput {
   intent?: IntentLayer;
   ontology?: OntologySidecar;
   authorship?: PublicAuthorship;
+  aiSummary?: AiSummary;
+  /** On a revision, omission inherits the placement and null clears it. */
+  categoryId?: string | null;
 }
 
 export interface StudioPreviewResponse {
@@ -450,6 +598,7 @@ export interface RevisionSnapshot {
   intent?: IntentLayer;
   ontology?: OntologySidecar;
   authorship: PublicAuthorship;
+  aiSummary?: AiSummary;
   actor: RevisionActor;
   contentHash: string;
   createdAt: string;
@@ -463,6 +612,7 @@ export interface DocumentSnapshot {
   currentRevisionId: string;
   publishedRevisionId?: string;
   revision: RevisionSnapshot;
+  categoryId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -708,6 +858,88 @@ export class OpenSoverignBlogClient {
     );
   }
 
+  async listBlogCategories(
+    handle: string,
+    signal?: AbortSignal,
+  ): Promise<CategoryListResponse> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/categories`,
+      withSignal(signal),
+    );
+  }
+
+  async getBlogCategory(
+    handle: string,
+    categorySlug: string,
+    signal?: AbortSignal,
+  ): Promise<BlogCategoryResponse> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/categories/${encodeURIComponent(categorySlug)}`,
+      withSignal(signal),
+    );
+  }
+
+  async getBlogCategoryPosts(
+    handle: string,
+    categorySlug: string,
+    signal?: AbortSignal,
+  ): Promise<FeedResponse> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/categories/${encodeURIComponent(categorySlug)}/posts`,
+      withSignal(signal),
+    );
+  }
+
+  async getBlogCategoryPost(
+    handle: string,
+    categorySlug: string,
+    postSlug: string,
+    view: ViewMode = "intent",
+    signal?: AbortSignal,
+  ): Promise<BlogPostView> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/categories/${encodeURIComponent(categorySlug)}/posts/${encodeURIComponent(postSlug)}?view=${view}`,
+      withSignal(signal),
+    );
+  }
+
+  /** Categories owned by the configured on-premises primary site. */
+  async listPrimaryCategories(signal?: AbortSignal): Promise<CategoryListResponse> {
+    return this.#request("/api/v1/primary/categories", withSignal(signal));
+  }
+
+  async getPrimaryCategory(
+    categorySlug: string,
+    signal?: AbortSignal,
+  ): Promise<BlogCategoryResponse> {
+    return this.#request(
+      `/api/v1/primary/categories/${encodeURIComponent(categorySlug)}`,
+      withSignal(signal),
+    );
+  }
+
+  async getPrimaryCategoryPosts(
+    categorySlug: string,
+    signal?: AbortSignal,
+  ): Promise<FeedResponse> {
+    return this.#request(
+      `/api/v1/primary/categories/${encodeURIComponent(categorySlug)}/posts`,
+      withSignal(signal),
+    );
+  }
+
+  async getPrimaryCategoryPost(
+    categorySlug: string,
+    postSlug: string,
+    view: ViewMode = "intent",
+    signal?: AbortSignal,
+  ): Promise<BlogPostView> {
+    return this.#request(
+      `/api/v1/primary/categories/${encodeURIComponent(categorySlug)}/posts/${encodeURIComponent(postSlug)}?view=${view}`,
+      withSignal(signal),
+    );
+  }
+
   async getBlogPost(
     handle: string,
     slug: string,
@@ -731,6 +963,49 @@ export class OpenSoverignBlogClient {
     return this.#request(
       `/api/v1/studio/documents/${encodeURIComponent(documentId)}`,
       withSignal(signal),
+    );
+  }
+
+  async listStudioCategories(signal?: AbortSignal): Promise<CategoryListResponse> {
+    return this.#request("/api/v1/studio/categories", withSignal(signal));
+  }
+
+  async createStudioCategory(
+    input: CreateCategoryInput,
+    signal?: AbortSignal,
+  ): Promise<CategorySummary> {
+    return this.#request("/api/v1/studio/categories", {
+      method: "POST",
+      body: JSON.stringify(input),
+      ...withSignal(signal),
+    });
+  }
+
+  async updateStudioCategory(
+    categoryId: string,
+    input: UpdateCategoryInput,
+    signal?: AbortSignal,
+  ): Promise<CategorySummary> {
+    return this.#request(
+      `/api/v1/studio/categories/${encodeURIComponent(categoryId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        ...withSignal(signal),
+      },
+    );
+  }
+
+  async archiveStudioCategory(
+    categoryId: string,
+    signal?: AbortSignal,
+  ): Promise<CategorySummary> {
+    return this.#request(
+      `/api/v1/studio/categories/${encodeURIComponent(categoryId)}/archive`,
+      {
+        method: "POST",
+        ...withSignal(signal),
+      },
     );
   }
 
@@ -782,6 +1057,33 @@ export class OpenSoverignBlogClient {
     return this.#request("/api/v1/studio/preview", {
       method: "POST",
       body: JSON.stringify(input),
+      ...withSignal(signal),
+    });
+  }
+
+  async aiSummaryProviders(signal?: AbortSignal): Promise<AiSummaryProvidersResponse> {
+    return this.#request("/api/v1/studio/ai-summary/providers", withSignal(signal));
+  }
+
+  /**
+   * Generates one candidate with a one-shot provider key. The key is placed in
+   * a dedicated request header and is never part of the serializable post or
+   * draft input types.
+   */
+  async generateAiSummary(
+    input: GenerateAiSummaryInput,
+    oneShotApiKey: string,
+    signal?: AbortSignal,
+  ): Promise<GenerateAiSummaryResponse> {
+    return this.#request("/api/v1/studio/ai-summary/generate", {
+      method: "POST",
+      redirect: "error",
+      body: JSON.stringify(input),
+      headers: {
+        "X-OSB-AI-One-Shot-Key": oneShotApiKey,
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
       ...withSignal(signal),
     });
   }
@@ -868,6 +1170,25 @@ export class OpenSoverignBlogClient {
 
   async listAdminDocuments(signal?: AbortSignal): Promise<DocumentSnapshot[]> {
     return this.#request("/api/v1/admin/documents", withSignal(signal));
+  }
+
+  async adminTree(
+    query: AdminTreeQuery = {},
+    signal?: AbortSignal,
+  ): Promise<AdminTreePage> {
+    const path = adminTreePath(query);
+    const page = parseAdminTreePage(await this.#request<unknown>(path, {
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    }));
+    const requestedParent = query.parent ?? "root";
+    if (page.parentId !== requestedParent) {
+      throw new TypeError("administrator tree response parent does not match the request");
+    }
+    return page;
   }
 
   async getAdminDocument(
@@ -1000,6 +1321,151 @@ export class OpenSoverignBlogClient {
 
 function withSignal(signal: AbortSignal | undefined): Pick<RequestInit, "signal"> {
   return signal ? { signal } : {};
+}
+
+function adminTreePath(query: AdminTreeQuery): string {
+  const parameters = new URLSearchParams();
+  if (query.parent !== undefined) parameters.set("parent", query.parent);
+  if (query.cursor !== undefined) parameters.set("cursor", query.cursor);
+  if (query.limit !== undefined) {
+    if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 200) {
+      throw new TypeError("administrator tree limit must be an integer between 1 and 200");
+    }
+    parameters.set("limit", String(query.limit));
+  }
+  const search = parameters.toString();
+  return `/api/v1/admin/tree${search ? `?${search}` : ""}`;
+}
+
+function parseAdminTreePage(value: unknown): AdminTreePage {
+  const page = requireRecord(value, "administrator tree response");
+  if (page.schemaVersion !== ADMIN_TREE_SCHEMA_VERSION) {
+    throw new TypeError("administrator tree response has an unsupported schema version");
+  }
+  const generatedAt = requireString(page.generatedAt, "administrator tree generatedAt");
+  const parentId = requireString(page.parentId, "administrator tree parentId");
+  if (!Array.isArray(page.items) || page.items.length > 200) {
+    throw new TypeError("administrator tree response items are invalid");
+  }
+  const items = page.items.map(parseAdminTreeNode);
+  const nextCursor = optionalString(page, "nextCursor", "administrator tree nextCursor");
+  return {
+    schemaVersion: ADMIN_TREE_SCHEMA_VERSION,
+    generatedAt,
+    parentId,
+    items,
+    ...(nextCursor !== undefined ? { nextCursor } : {}),
+  };
+}
+
+function parseAdminTreeNode(value: unknown): AdminTreeNode {
+  const candidate = requireRecord(value, "administrator tree node");
+  const kind = requireString(candidate.kind, "administrator tree node kind");
+  if (!isAdminTreeNodeKind(kind)) {
+    throw new TypeError("administrator tree node kind is unsupported");
+  }
+  if (typeof candidate.hasChildren !== "boolean") {
+    throw new TypeError("administrator tree node hasChildren is invalid");
+  }
+  const revisionNumber = optionalNumber(
+    candidate,
+    "revisionNumber",
+    "administrator tree revisionNumber",
+  );
+  if (revisionNumber !== undefined && (!Number.isSafeInteger(revisionNumber) || revisionNumber < 0)) {
+    throw new TypeError("administrator tree revisionNumber is invalid");
+  }
+  const requested = optionalBoolean(candidate, "requested", "administrator tree requested");
+  const operational = optionalBoolean(
+    candidate,
+    "operational",
+    "administrator tree operational",
+  );
+  const node = {
+    id: requireString(candidate.id, "administrator tree node id"),
+    parentId: requireString(candidate.parentId, "administrator tree node parentId"),
+    kind,
+    label: requireString(candidate.label, "administrator tree node label"),
+    hasChildren: candidate.hasChildren,
+    ...copyOptionalString(candidate, "entityId"),
+    ...copyOptionalString(candidate, "handle"),
+    ...copyOptionalString(candidate, "slug"),
+    ...copyOptionalString(candidate, "state"),
+    ...(revisionNumber !== undefined ? { revisionNumber } : {}),
+    ...(requested !== undefined ? { requested } : {}),
+    ...(operational !== undefined ? { operational } : {}),
+    ...copyOptionalString(candidate, "summary"),
+    ...copyOptionalString(candidate, "createdAt"),
+    ...copyOptionalString(candidate, "updatedAt"),
+  };
+  return node as AdminTreeNode;
+}
+
+function isAdminTreeNodeKind(value: string): value is AdminTreeNodeKind {
+  return [
+    "group",
+    "site",
+    "category",
+    "document",
+    "revision",
+    "setting",
+    "module",
+    "runtime",
+  ].includes(value);
+}
+
+function requireRecord(value: unknown, name: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError(`${name} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireString(value: unknown, name: string): string {
+  if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  return value;
+}
+
+function optionalString(
+  value: Record<string, unknown>,
+  key: string,
+  name: string,
+): string | undefined {
+  const candidate = value[key];
+  if (candidate === undefined) return undefined;
+  return requireString(candidate, name);
+}
+
+function copyOptionalString<Key extends string>(
+  value: Record<string, unknown>,
+  key: Key,
+): { [Property in Key]?: string } {
+  const candidate = optionalString(value, key, `administrator tree ${key}`);
+  return (candidate === undefined ? {} : { [key]: candidate }) as {
+    [Property in Key]?: string;
+  };
+}
+
+function optionalNumber(
+  value: Record<string, unknown>,
+  key: string,
+  name: string,
+): number | undefined {
+  const candidate = value[key];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "number") throw new TypeError(`${name} must be a number`);
+  return candidate;
+}
+
+function optionalBoolean(
+  value: Record<string, unknown>,
+  key: string,
+  name: string,
+): boolean | undefined {
+  const candidate = value[key];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "boolean") throw new TypeError(`${name} must be a boolean`);
+  return candidate;
 }
 
 function validateAdminAuthActionHref(value: string): string {

@@ -25,7 +25,7 @@ use osb_feature_code_runner_client::{
 };
 use osb_feature_seo::SeoPolicy;
 use osb_kernel::{
-    AI2AI_SPEC_VERSION, Ai2AiEnvelope, ContentRepository, IntentLayer, NewDocument,
+    AI2AI_SPEC_VERSION, Ai2AiEnvelope, AiSummary, ContentRepository, IntentLayer, NewDocument,
     OntologySidecar, ProposedRevision, PublicAuthorship, PublicAuthorshipKind, RepositoryError,
     RevisionActor, RevisionActorKind,
 };
@@ -34,6 +34,7 @@ use osb_storage_sqlite::{
     AdminAuthMode as StoredAdminAuthMode, PrimaryOwnerBootstrap, SqliteDurabilityProfile,
     SqliteRepository, ThemeProfile,
 };
+use percent_encoding::percent_decode_str;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -50,7 +51,9 @@ use url::Url;
 use uuid::Uuid;
 
 mod admin_auth;
+mod admin_tree;
 mod admission;
+mod ai_summary;
 mod backup;
 mod cache;
 mod community;
@@ -61,6 +64,7 @@ mod social_embeds;
 mod version;
 
 use admin_auth::AdminAuthRuntime;
+use ai_summary::AiSummaryService;
 use backup::BackupService;
 use cache::SemanticCache;
 use config::{AdminAuthMode, AuthMode, DatabaseProfile, RuntimeConfig};
@@ -94,6 +98,32 @@ fn ensure_same_admin_module_rotation(
     Ok(())
 }
 
+fn ensure_article_category_namespace(
+    repository: &SqliteRepository,
+    site_id: Uuid,
+    article_base_path: &str,
+) -> Result<()> {
+    let article_root = article_base_path
+        .trim_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default();
+    match repository.get_category_by_slug(site_id, article_root) {
+        Ok(category) => anyhow::bail!(
+            "configured article base path '{}' starts with persisted category '{}' ({})",
+            article_base_path,
+            category.slug,
+            category.id
+        ),
+        // A route segment rejected by the category validator (including the
+        // default `blog` article root) cannot be created as a category, so it
+        // cannot collide with the category namespace.
+        Err(RepositoryError::NotFound | RepositoryError::Validation(_)) => Ok(()),
+        Err(error) => Err(anyhow::Error::msg(error.to_string()))
+            .context("failed to validate the article/category route namespace"),
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     repository: Arc<SqliteRepository>,
@@ -104,6 +134,7 @@ struct AppState {
     mcp_token_hash: Option<[u8; 32]>,
     admin_auth: AdminAuthRuntime,
     features: Arc<FeatureRegistry>,
+    ai_summary: Option<AiSummaryService>,
     runner: Option<Arc<RemoteRunnerClient>>,
     runner_jobs: Arc<tokio::sync::Mutex<HashMap<Uuid, QueuedRun>>>,
     assets: Arc<AssetStore>,
@@ -122,6 +153,7 @@ struct AppState {
     delivery_only: bool,
     secure_session_cookie: bool,
     member_auth_admission: community::MemberAuthAdmission,
+    ai_summary_admission: community::AiSummaryAdmission,
     password_workers: Arc<tokio::sync::Semaphore>,
     version: VersionService,
 }
@@ -371,6 +403,8 @@ async fn main() -> Result<()> {
             },
         }
     }
+    ensure_article_category_namespace(&repository, site_id, &seo_policy.article_base_path)
+        .context("article/category route namespace is invalid")?;
     if delivery_only && !config.blob_directory.join("sha256").is_dir() {
         anyhow::bail!(
             "delivery-only blob store must already contain the sha256 namespace: {}",
@@ -411,6 +445,8 @@ async fn main() -> Result<()> {
             "runtime features are sourced from the verified DLC lock"
         );
     }
+    config::validate_browser_secret_transport(&seo_policy.public_url, &requested_features)
+        .context("resolved feature transport policy is invalid")?;
     let mut features = FeatureRegistry::from_requested(&requested_features)
         .map_err(anyhow::Error::msg)
         .context("configured features are invalid")?;
@@ -487,6 +523,15 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+    let ai_summary = if features.is_active("ai_summary") {
+        Some(
+            AiSummaryService::new()
+                .map_err(anyhow::Error::msg)
+                .context("failed to initialize the optional AI summary provider client")?,
+        )
+    } else {
+        None
+    };
     let state = AppState {
         repository,
         site_id,
@@ -496,6 +541,7 @@ async fn main() -> Result<()> {
         mcp_token_hash,
         admin_auth,
         features: Arc::new(features),
+        ai_summary,
         runner,
         runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         assets,
@@ -514,6 +560,7 @@ async fn main() -> Result<()> {
         delivery_only,
         secure_session_cookie: config.secure_session_cookie,
         member_auth_admission: community::MemberAuthAdmission::new(),
+        ai_summary_admission: community::AiSummaryAdmission::new(),
         password_workers: Arc::new(tokio::sync::Semaphore::new(PASSWORD_WORKER_LIMIT)),
         version,
     };
@@ -556,13 +603,14 @@ fn app(state: AppState) -> Router {
         .seo_policy
         .article_route_pattern()
         .expect("validated SEO policy");
-    let spa_policy = Arc::clone(&state.seo_policy);
+    let spa_state = state.clone();
     let spa_fallback =
         Router::new().fallback(move |method: Method, uri: Uri, headers: HeaderMap| {
-            let policy = Arc::clone(&spa_policy);
-            async move { spa_index_fallback(policy, method, uri, headers).await }
+            let state = spa_state.clone();
+            async move { spa_index_fallback(state, method, uri, headers).await }
         });
     let mutation_routes = Router::new()
+        .route("/api/v1/admin/tree", get(admin_tree::get_admin_tree))
         .route("/api/v1/admin/documents", get(list_admin_documents))
         .route("/api/v1/admin/documents/{id}", get(get_admin_document))
         .route(
@@ -594,12 +642,21 @@ fn app(state: AppState) -> Router {
         .route("/api/v1/code-runner/profiles", get(code_runner_profiles))
         .route("/api/v1/posts", get(list_posts))
         .route("/api/v1/posts/{slug}", get(get_post))
+        .route("/api/v1/posts/{category}/{slug}", get(get_categorized_post))
         .route("/api/v1/posts/{slug}/source.md", get(get_markdown_source))
+        .route(
+            "/api/v1/posts/{category}/{slug}/source.md",
+            get(get_categorized_markdown_source),
+        )
         .route("/media/{digest}", get(get_asset))
         .merge(admin_auth::routes(state.clone()))
         .merge(community::routes(state.clone()))
         .merge(mutation_routes)
         .route("/@{handle}", get(public_community_blog))
+        .route(
+            "/@{handle}/{category}/{slug}",
+            get(public_community_category_post),
+        )
         .route("/@{handle}/{slug}", get(public_community_post))
         .route(&article_route, get(public_post))
         .route("/robots.txt", get(robots))
@@ -771,6 +828,9 @@ struct CacheSignaturePayload<'a> {
     body_base64: &'a str,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PrimaryCategoryCacheableResponse;
+
 const MAX_PUBLIC_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CACHED_ENTRY_BYTES: usize = 86 * 1024 * 1024;
 
@@ -782,13 +842,24 @@ async fn semantic_cache_middleware(
     let method = request.method().clone();
     let path = request.uri().path().to_owned();
     let mutates_public = mutation_changes_public(&method, &path);
-    let cacheable = method == Method::GET && public_cache_path(&state, &path);
+    let primary_category_path = primary_category_public_path(&state, &path);
+    let cacheable = method == Method::GET
+        && public_cache_path(&state, &path)
+        && (!primary_category_path || request_accepts_html(request.headers()));
     let Some(cache) = state.cache.clone() else {
-        return next.run(request).await;
+        let response = next.run(request).await;
+        return if primary_category_path {
+            vary_on_accept(response)
+        } else {
+            response
+        };
     };
 
     if !cacheable {
-        let response = next.run(request).await;
+        let mut response = next.run(request).await;
+        if primary_category_path {
+            response = vary_on_accept(response);
+        }
         if mutates_public && let Err(error) = cache.complete_mutation().await {
             tracing::warn!(%error, "public cache invalidation degraded; cache reads are suspended until generation repair");
         }
@@ -799,7 +870,7 @@ async fn semantic_cache_middleware(
         "{:x}",
         Sha256::digest(
             format!(
-                "open-soverign-blog-http-cache/3 {} {} {}",
+                "open-soverign-blog-http-cache/4 {} {} {}",
                 semantic_cache_variant(&state),
                 method,
                 request.uri()
@@ -825,7 +896,7 @@ async fn semantic_cache_middleware(
         .filter(|bytes| bytes.len() <= MAX_CACHED_ENTRY_BYTES)
     {
         match serde_json::from_slice::<CachedPublicResponse>(bytes) {
-            Ok(cached) if cached.schema_version == "open-soverign-blog-http-cache/3" => {
+            Ok(cached) if cached.schema_version == "open-soverign-blog-http-cache/4" => {
                 if let Some(response) = cached_response(
                     cached,
                     if_none_match.as_deref(),
@@ -850,7 +921,19 @@ async fn semantic_cache_middleware(
         cache.record_miss();
     }
 
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
+    if primary_category_path {
+        response
+            .headers_mut()
+            .insert(header::VARY, HeaderValue::from_static("Accept"));
+        if response
+            .extensions()
+            .get::<PrimaryCategoryCacheableResponse>()
+            .is_none()
+        {
+            return response;
+        }
+    }
     if response.status() != StatusCode::OK {
         return response;
     }
@@ -868,6 +951,7 @@ async fn semantic_cache_middleware(
         header::CACHE_CONTROL,
         header::ETAG,
         header::CONTENT_LANGUAGE,
+        header::VARY,
     ] {
         if let Some(value) = parts
             .headers
@@ -879,7 +963,7 @@ async fn semantic_cache_middleware(
     }
     if let Some(lookup) = lookup {
         let mut cached = CachedPublicResponse {
-            schema_version: "open-soverign-blog-http-cache/3".into(),
+            schema_version: "open-soverign-blog-http-cache/4".into(),
             headers: cached_headers,
             body_base64: BASE64_STANDARD.encode(&bytes),
             signature: String::new(),
@@ -947,6 +1031,7 @@ fn cached_response(
         header::CACHE_CONTROL,
         header::ETAG,
         header::CONTENT_LANGUAGE,
+        header::VARY,
     ] {
         if let Some(value) = cached.headers.get(name.as_str()) {
             builder = builder.header(name, HeaderValue::try_from(value).ok()?);
@@ -1020,10 +1105,13 @@ fn hmac_sha256(key: &[u8; 32], message: &[u8]) -> [u8; 32] {
 
 fn public_cache_path(state: &AppState, path: &str) -> bool {
     path.starts_with("/@")
+        || primary_category_public_path(state, path)
         || path == "/api/v1/home"
         || path == "/api/v1/feed"
         || path == "/api/v1/blogs"
         || path.starts_with("/api/v1/blogs/")
+        || path == "/api/v1/primary/categories"
+        || path.starts_with("/api/v1/primary/categories/")
         || path.starts_with("/api/v1/posts/")
         || path == "/api/v1/posts"
         || path == "/robots.txt"
@@ -1035,6 +1123,66 @@ fn public_cache_path(state: &AppState, path: &str) -> bool {
             "/{}/",
             state.seo_policy.article_base_path.trim_matches('/')
         ))
+}
+
+fn primary_category_public_path(state: &AppState, path: &str) -> bool {
+    let Some(path) = path.strip_prefix('/') else {
+        return false;
+    };
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let mut segments = path.split('/');
+    let Some(category) = segments.next() else {
+        return false;
+    };
+    let post = segments.next();
+    if segments.next().is_some()
+        || post.is_some_and(|segment| segment.is_empty() || segment.len() > 720)
+    {
+        return false;
+    }
+    const RESERVED: &[&str] = &[
+        "api",
+        "assets",
+        "blog",
+        "docs",
+        "healthz",
+        "livez",
+        "login",
+        "media",
+        "onboarding",
+        "openapi",
+        "providers",
+        "readyz",
+        "schemas",
+        "studio",
+        "vendor",
+    ];
+    !RESERVED.contains(&category)
+        && category
+            != state
+                .seo_policy
+                .article_base_path
+                .trim_matches('/')
+                .split('/')
+                .next()
+                .unwrap_or_default()
+        && (1..=40).contains(&category.len())
+        && !category.starts_with('-')
+        && !category.ends_with('-')
+        && category
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+fn request_accepts_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value
+                .split(',')
+                .any(|item| item.trim().starts_with("text/html"))
+        })
 }
 
 /// Separates cache entries produced under different operator intent. Redis is
@@ -1074,6 +1222,9 @@ fn mutation_changes_public(method: &Method, path: &str) -> bool {
         || path == "/api/v1/posts"
         || path == "/api/v1/admin/home/pins"
         || path == "/api/v1/studio/settings"
+        || path == "/api/v1/studio/categories"
+        || (path.starts_with("/api/v1/studio/categories/")
+            && (path.ends_with("/archive") || matches!(*method, Method::PUT)))
         || path.ends_with("/publish")
         || (path.starts_with("/api/v1/posts/") && path.ends_with("/comments"))
 }
@@ -1094,7 +1245,7 @@ async fn spa_home(State(state): State<AppState>, method: Method) -> Response {
 }
 
 async fn spa_index_fallback(
-    policy: Arc<SeoPolicy>,
+    state: AppState,
     method: Method,
     uri: Uri,
     headers: HeaderMap,
@@ -1126,21 +1277,176 @@ async fn spa_index_fallback(
         || path == "/studio"
         || path.starts_with("/studio/")
         || path.starts_with("/@");
-    let accepts_html = headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value
-                .split(',')
-                .any(|item| item.trim().starts_with("text/html"))
-        });
+    let accepts_html = request_accepts_html(&headers);
+    let primary_category_path = primary_category_public_path(&state, path);
     if !matches!(method, Method::GET | Method::HEAD)
         || reserved
         || (!known_client_route && !accepts_html)
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    serve_spa_index(method, &policy).await
+    if accepts_html && primary_category_path {
+        match primary_category_post_from_uri(&state, method.clone(), &uri, &headers).await {
+            Ok(Some(response)) => return mark_primary_category_cacheable(response),
+            Ok(None) => {}
+            Err(error) => return error.into_response(),
+        }
+        match primary_category_landing_from_uri(&state, method.clone(), &uri, &headers).await {
+            Ok(Some(response)) => return mark_primary_category_cacheable(response),
+            Ok(None) => {
+                return vary_on_accept(serve_spa_index(method, &state.seo_policy).await);
+            }
+            Err(error) => return error.into_response(),
+        }
+    }
+    serve_spa_index(method, &state.seo_policy).await
+}
+
+fn vary_on_accept(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::VARY, HeaderValue::from_static("Accept"));
+    response
+}
+
+fn mark_primary_category_cacheable(mut response: Response) -> Response {
+    response = vary_on_accept(response);
+    response
+        .extensions_mut()
+        .insert(PrimaryCategoryCacheableResponse);
+    response
+}
+
+async fn primary_category_landing_from_uri(
+    state: &AppState,
+    method: Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Result<Option<Response>, ApiError> {
+    let path = uri.path().trim_end_matches('/');
+    let Some(segment) = path.strip_prefix('/') else {
+        return Ok(None);
+    };
+    if segment.is_empty() || segment.contains('/') {
+        return Ok(None);
+    }
+    let requested_category = percent_decode_str(segment)
+        .decode_utf8()
+        .map(String::from)
+        .map_err(|_| ApiError::BadRequest("public path is not valid UTF-8".into()))?;
+    if requested_category.contains(['/', '\\']) || requested_category.chars().any(char::is_control)
+    {
+        return Ok(None);
+    }
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let result = repository_task(move || {
+        let site = repository.get_site_by_id(site_id)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let category = repository.get_category_by_slug(site.id, &requested_category)?;
+        let posts = repository.list_published_in_category(site.id, category.id, 500)?;
+        Ok((site, owner, category, posts))
+    })
+    .await;
+    let (site, owner, category, posts) = match result {
+        Ok(value) => value,
+        Err(ApiError::Repository(RepositoryError::NotFound)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let canonical = category_public_url(&state.seo_policy, None, &category.slug, None)?;
+    if segment != category.slug {
+        return Ok(Some(public_permanent_redirect(canonical.as_str())));
+    }
+    Ok(Some(
+        render_category_landing_document(
+            state, &site, &owner, &category, &posts, &canonical, method, headers,
+        )
+        .await?,
+    ))
+}
+
+async fn primary_category_post_from_uri(
+    state: &AppState,
+    method: Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Result<Option<Response>, ApiError> {
+    let path = uri.path().trim_end_matches('/');
+    let Some(path) = path.strip_prefix('/') else {
+        return Ok(None);
+    };
+    let raw_segments = path.split('/').collect::<Vec<_>>();
+    if raw_segments.len() != 2 || raw_segments.iter().any(|segment| segment.is_empty()) {
+        return Ok(None);
+    }
+    let segments = raw_segments
+        .into_iter()
+        .map(|segment| percent_decode_str(segment).decode_utf8().map(String::from))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ApiError::BadRequest("public path is not valid UTF-8".into()))?;
+    if segments
+        .iter()
+        .any(|segment| segment.contains(['/', '\\']) || segment.chars().any(char::is_control))
+    {
+        return Ok(None);
+    }
+    let requested_category = segments[0].clone();
+    let requested_slug = segments[1].clone();
+    let lookup_path = format!("{requested_category}/{requested_slug}");
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let result = repository_task(move || {
+        let site = repository.get_site_by_id(site_id)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let document = repository.get_published_by_slug(site_id, &lookup_path)?;
+        let category = repository
+            .get_published_category(site_id, document.id)?
+            .ok_or(RepositoryError::NotFound)?;
+        Ok((site, owner, document, category))
+    })
+    .await;
+    let (site, owner, document, category) = match result {
+        Ok(value) => value,
+        Err(ApiError::Repository(RepositoryError::NotFound)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let view = view_from_uri(uri)?;
+    let canonical = category_public_url(
+        &state.seo_policy,
+        None,
+        &category.slug,
+        Some(&document.revision.slug),
+    )?;
+    if requested_category != category.slug || requested_slug != document.revision.slug {
+        return Ok(Some(public_permanent_redirect(
+            public_projection_url(canonical, view).as_str(),
+        )));
+    }
+    Ok(Some(
+        render_community_post_document(
+            state,
+            &site,
+            &owner,
+            &document,
+            Some(&category),
+            &canonical,
+            view,
+            method,
+            headers,
+        )
+        .await?,
+    ))
+}
+
+fn view_from_uri(uri: &Uri) -> Result<ViewMode, ApiError> {
+    let view = url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
+        .find_map(|(key, value)| (key == "view").then_some(value.into_owned()));
+    match view.as_deref() {
+        None | Some("intent") => Ok(ViewMode::Intent),
+        Some("markdown") => Ok(ViewMode::Markdown),
+        Some("markdown_source" | "source") => Ok(ViewMode::MarkdownSource),
+        Some(_) => Err(ApiError::BadRequest("unknown view".into())),
+    }
 }
 
 async fn serve_spa_index(method: Method, policy: &SeoPolicy) -> Response {
@@ -1627,21 +1933,70 @@ fn map_runner_error(error: RunnerError) -> ApiError {
 async fn list_posts(State(state): State<AppState>) -> Result<Json<Vec<PostSummary>>, ApiError> {
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
-    let documents = repository_task(move || repository.list_published(site_id, 100)).await?;
-    Ok(Json(
-        documents
+    let documents = repository_task(move || {
+        repository
+            .list_published(site_id, 100)?
             .into_iter()
-            .map(|document| PostSummary {
+            .map(|document| {
+                let category = repository.get_published_category(site_id, document.id)?;
+                let route_path = category
+                    .map(|category| format!("{}/{}", category.slug, document.revision.slug))
+                    .unwrap_or_else(|| document.revision.slug.clone());
+                Ok((document, route_path))
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()
+    })
+    .await?;
+    let posts = documents
+        .into_iter()
+        .map(|(document, route_path)| {
+            Ok(PostSummary {
                 id: document.id,
                 title: document.revision.title,
                 slug: document.revision.slug,
+                api_href: machine_post_href(&state.seo_policy, &route_path, false)?,
+                source_href: machine_post_href(&state.seo_policy, &route_path, true)?,
+                route_path,
                 updated_at: document.updated_at.to_rfc3339(),
                 has_intent_view: document.revision.intent.is_some(),
                 has_ontology: document.revision.ontology.is_some(),
                 authorship: document.revision.authorship,
             })
-            .collect(),
-    ))
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    Ok(Json(posts))
+}
+
+fn machine_post_href(
+    policy: &SeoPolicy,
+    route_path: &str,
+    markdown_source: bool,
+) -> Result<String, ApiError> {
+    policy
+        .validate()
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let route_segments = route_path.split('/').collect::<Vec<_>>();
+    if !(1..=2).contains(&route_segments.len())
+        || route_segments.iter().any(|segment| {
+            segment.is_empty() || segment.contains('\\') || segment.chars().any(char::is_control)
+        })
+    {
+        return Err(ApiError::Internal(
+            "persisted post route contains an unsafe path".into(),
+        ));
+    }
+    let mut url = policy.public_url.clone();
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|_| ApiError::Internal("public URL cannot own path segments".into()))?;
+    segments.pop_if_empty();
+    segments.extend(["api", "v1", "posts"]);
+    segments.extend(route_segments);
+    if markdown_source {
+        segments.push("source.md");
+    }
+    drop(segments);
+    Ok(url.to_string())
 }
 
 async fn list_admin_documents(
@@ -1694,25 +2049,44 @@ async fn get_post(
     Query(query): Query<ViewQuery>,
 ) -> Result<Json<PostView>, ApiError> {
     let view = query.view.unwrap_or(ViewMode::Intent);
+    get_post_by_route(&state, slug, view).await
+}
+
+async fn get_categorized_post(
+    State(state): State<AppState>,
+    Path((category, slug)): Path<(String, String)>,
+    Query(query): Query<ViewQuery>,
+) -> Result<Json<PostView>, ApiError> {
+    let view = query.view.unwrap_or(ViewMode::Intent);
+    get_post_by_route(&state, format!("{category}/{slug}"), view).await
+}
+
+async fn get_post_by_route(
+    state: &AppState,
+    route_path: String,
+    view: ViewMode,
+) -> Result<Json<PostView>, ApiError> {
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
-    let lookup_slug = slug.clone();
+    let lookup_slug = route_path.clone();
     let (document, artifact) = repository_task(move || {
         let document = repository.get_published_by_slug(site_id, &lookup_slug)?;
         let artifact = render_revision(&document.revision, view);
         Ok((document, artifact))
     })
     .await?;
+    let ai_summary = document.revision.publishable_ai_summary().cloned();
     Ok(Json(PostView {
         id: document.id,
         title: document.revision.title,
         canonical_slug: document.revision.slug,
-        requested_slug: slug,
+        requested_slug: route_path,
         revision_id: document.revision.id,
         markdown: document.revision.source_markdown,
         embeds: document.revision.embeds,
         artifact,
         ontology: document.revision.ontology,
+        ai_summary,
         authorship: document.revision.authorship,
     }))
 }
@@ -1721,10 +2095,24 @@ async fn get_markdown_source(
     State(state): State<AppState>,
     Path(slug): Path<String>,
 ) -> Result<Response, ApiError> {
+    get_markdown_source_by_route(&state, slug).await
+}
+
+async fn get_categorized_markdown_source(
+    State(state): State<AppState>,
+    Path((category, slug)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    get_markdown_source_by_route(&state, format!("{category}/{slug}")).await
+}
+
+async fn get_markdown_source_by_route(
+    state: &AppState,
+    route_path: String,
+) -> Result<Response, ApiError> {
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
     let document =
-        repository_task(move || repository.get_published_by_slug(site_id, &slug)).await?;
+        repository_task(move || repository.get_published_by_slug(site_id, &route_path)).await?;
     let mut response = document.revision.source_markdown.into_response();
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -1807,6 +2195,7 @@ async fn create_post(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        ai_summary: input.ai_summary,
         authorship,
         actor: principal.revision_actor(),
     };
@@ -1838,6 +2227,7 @@ async fn propose_revision(
         embeds: input.embeds,
         intent: input.intent,
         ontology: input.ontology,
+        ai_summary: input.ai_summary,
         authorship,
         actor: principal.revision_actor(),
         idempotency_key: input.idempotency_key,
@@ -1911,7 +2301,14 @@ async fn public_community_blog(
     let result = repository_task(move || {
         let site = repository.get_site_by_handle(&lookup_handle)?;
         let owner = repository.get_user_by_id(site.owner_user_id)?;
-        let posts = repository.list_published(site.id, 500)?;
+        let posts = repository
+            .list_published(site.id, 500)?
+            .into_iter()
+            .map(|post| {
+                let category = repository.get_published_category(site.id, post.id)?;
+                Ok((post, category))
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
         Ok((site, owner, posts))
     })
     .await;
@@ -1948,9 +2345,17 @@ async fn public_community_blog(
     };
     head.push_str(&community_custom_css_head(&state, &site)?);
     let mut archive = String::new();
-    for (index, post) in posts.iter().enumerate() {
-        let post_url =
-            community_public_url(&state.seo_policy, &site.handle, Some(&post.revision.slug))?;
+    for (index, (post, category)) in posts.iter().enumerate() {
+        let post_url = if let Some(category) = category {
+            category_public_url(
+                &state.seo_policy,
+                (site.id != state.site_id).then_some(site.handle.as_str()),
+                &category.slug,
+                Some(&post.revision.slug),
+            )?
+        } else {
+            community_public_url(&state.seo_policy, &site.handle, Some(&post.revision.slug))?
+        };
         let excerpt = summarize_markdown(&post.revision.source_markdown, 220);
         archive.push_str(&format!(
             "<article class=\"blog-list-item\"><span class=\"post-order\" aria-hidden=\"true\">{:02}</span>\
@@ -1992,6 +2397,165 @@ async fn public_community_blog(
     render_spa_document(method, &headers, &state.seo_policy, &head, &root).await
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn render_category_landing_document(
+    state: &AppState,
+    site: &osb_storage_sqlite::SiteRecord,
+    owner: &osb_storage_sqlite::UserRecord,
+    category: &osb_storage_sqlite::CategoryRecord,
+    posts: &[osb_kernel::DocumentSnapshot],
+    canonical: &Url,
+    method: Method,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
+    let primary = site.id == state.site_id;
+    let description = category
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}의 글을 한곳에 모았습니다.", category.title));
+    let page_title = format!("{} · {}", category.title, site.title);
+    let mut head = if state.features.is_active("seo") {
+        community_meta_head(
+            &page_title,
+            &description,
+            canonical,
+            "website",
+            state.seo_policy.no_index,
+            None,
+        )
+    } else {
+        basic_page_head(&page_title)
+    };
+    head.push_str(&community_custom_css_head(state, site)?);
+
+    let blog_url = if primary {
+        state.seo_policy.public_url.clone()
+    } else {
+        community_public_url(&state.seo_policy, &site.handle, None)?
+    };
+    let mut archive = String::new();
+    for (index, post) in posts.iter().enumerate() {
+        let post_url = category_public_url(
+            &state.seo_policy,
+            (!primary).then_some(site.handle.as_str()),
+            &category.slug,
+            Some(&post.revision.slug),
+        )?;
+        let excerpt = summarize_markdown(&post.revision.source_markdown, 220);
+        archive.push_str(&format!(
+            "<article class=\"blog-list-item\"><span class=\"post-order\" aria-hidden=\"true\">{:02}</span>\
+             <div><div class=\"post-card-meta\"><time datetime=\"{}\">{}</time>{}</div>\
+             <h3><a href=\"{}\">{}</a></h3><p>{}</p></div>\
+             <span class=\"list-arrow\" aria-hidden=\"true\">↗</span></article>",
+            index + 1,
+            escape_attribute(&post.revision.created_at.to_rfc3339()),
+            escape_xml(&post.revision.created_at.format("%Y. %m. %d.").to_string()),
+            authorship_badge(&post.revision.authorship),
+            escape_attribute(post_url.as_str()),
+            escape_xml(&post.revision.title),
+            escape_xml(&excerpt),
+        ));
+    }
+    if archive.is_empty() {
+        archive.push_str(
+            "<section class=\"empty-state\"><h2>아직 발행된 글이 없습니다.</h2></section>",
+        );
+    }
+    let root = format!(
+        "<main class=\"route-main\" id=\"main-content\"><div class=\"osb-site-frame\"><div class=\"blog-page osb-site-theme\" data-custom-css=\"{}\" data-site-id=\"{}\" data-theme=\"{}\">\
+         <header class=\"blog-profile\"><span class=\"blog-monogram\" aria-hidden=\"true\">{}</span><div>\
+         <p class=\"blog-handle\"><a href=\"{}\">@{}</a><span aria-hidden=\"true\"> / </span>{}</p>\
+         <h1>{}</h1><p>{}</p><div class=\"blog-owner\"><span class=\"avatar\" aria-hidden=\"true\">{}</span>\
+         <span><strong>{}</strong><small>{}의 카테고리</small></span></div></div></header>\
+         <section class=\"blog-posts\" aria-labelledby=\"category-posts-title\"><div class=\"section-heading\">\
+         <div><p class=\"eyebrow\">Category archive</p><h2 id=\"category-posts-title\">{}의 글</h2></div>\
+         <span class=\"result-count\">{}개</span></div><div class=\"blog-list\">{archive}</div>\
+         </section></div></div></main>",
+        if state.custom_css_enabled && site.custom_css.is_some() {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        site.id,
+        category
+            .theme_profile
+            .unwrap_or(site.theme_profile)
+            .as_str(),
+        escape_xml(&display_initials(&category.title)),
+        escape_attribute(blog_url.as_str()),
+        escape_xml(&site.handle),
+        escape_xml(&category.slug),
+        escape_xml(&category.title),
+        escape_xml(&description),
+        escape_xml(&display_initials(&owner.display_name)),
+        escape_xml(&owner.display_name),
+        escape_xml(&site.title),
+        escape_xml(&category.title),
+        posts.len(),
+    );
+    render_spa_document(method, headers, &state.seo_policy, &head, &root).await
+}
+
+async fn public_community_category_post(
+    State(state): State<AppState>,
+    Path((handle, category_slug, slug)): Path<(String, String, String)>,
+    Query(query): Query<ViewQuery>,
+    method: Method,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let repository = Arc::clone(&state.repository);
+    let lookup_handle = handle.clone();
+    let lookup_path = format!("{category_slug}/{slug}");
+    let result = repository_task(move || {
+        let site = repository.get_site_by_handle(&lookup_handle)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let document = repository.get_published_by_slug(site.id, &lookup_path)?;
+        let category = repository
+            .get_published_category(site.id, document.id)?
+            .ok_or(RepositoryError::NotFound)?;
+        Ok((site, owner, document, category))
+    })
+    .await;
+    let (site, owner, document, category) = match result {
+        Ok(value) => value,
+        Err(ApiError::Repository(RepositoryError::NotFound)) => {
+            return Ok(serve_spa_not_found(method, &state.seo_policy).await);
+        }
+        Err(error) => return Err(error),
+    };
+    let view = query.view.unwrap_or(ViewMode::Intent);
+    let canonical = category_public_url(
+        &state.seo_policy,
+        (site.id != state.site_id).then_some(site.handle.as_str()),
+        &category.slug,
+        Some(&document.revision.slug),
+    )?;
+    if site.id == state.site_id
+        || handle != site.handle
+        || category_slug != category.slug
+        || slug != document.revision.slug
+    {
+        return Ok(public_permanent_redirect(
+            public_projection_url(canonical, view).as_str(),
+        ));
+    }
+    render_community_post_document(
+        &state,
+        &site,
+        &owner,
+        &document,
+        Some(&category),
+        &canonical,
+        view,
+        method,
+        &headers,
+    )
+    .await
+}
+
 async fn public_community_post(
     State(state): State<AppState>,
     Path((handle, slug)): Path<(String, String)>,
@@ -2003,23 +2567,103 @@ async fn public_community_post(
     let primary_site_id = state.site_id;
     let lookup_handle = handle.clone();
     let lookup_slug = slug.clone();
+    let view = query.view.unwrap_or(ViewMode::Intent);
     let result = repository_task(move || {
         let site = repository.get_site_by_handle(&lookup_handle)?;
         let owner = repository.get_user_by_id(site.owner_user_id)?;
         let document = repository.get_published_by_slug(site.id, &lookup_slug)?;
+        let category = repository.get_published_category(site.id, document.id)?;
         let primary_uses_community_route =
             site.id == primary_site_id && has_provisioned_primary(&repository, primary_site_id)?;
-        Ok((site, owner, document, primary_uses_community_route))
+        Ok((
+            site,
+            owner,
+            document,
+            category,
+            primary_uses_community_route,
+        ))
     })
     .await;
-    let (site, owner, document, primary_uses_community_route) = match result {
+    let (site, owner, document, category, primary_uses_community_route) = match result {
         Ok(value) => value,
         Err(ApiError::Repository(RepositoryError::NotFound)) => {
+            let repository = Arc::clone(&state.repository);
+            let category_handle = handle.clone();
+            let category_slug = slug.clone();
+            let category_landing = repository_task(move || {
+                let site = repository.get_site_by_handle(&category_handle)?;
+                let owner = repository.get_user_by_id(site.owner_user_id)?;
+                let category = repository.get_category_by_slug(site.id, &category_slug)?;
+                let posts = repository.list_published_in_category(site.id, category.id, 500)?;
+                Ok((site, owner, category, posts))
+            })
+            .await;
+            match category_landing {
+                Ok((site, owner, category, posts)) => {
+                    // `/@handle/:segment` is intentionally shared by uncategorized
+                    // posts and category landing pages. A category wins only after
+                    // the published root-post lookup above fails.
+                    let canonical = category_public_url(
+                        &state.seo_policy,
+                        (site.id != state.site_id).then_some(site.handle.as_str()),
+                        &category.slug,
+                        None,
+                    )?;
+                    if site.id == state.site_id || handle != site.handle || slug != category.slug {
+                        return Ok(public_permanent_redirect(canonical.as_str()));
+                    }
+                    return render_category_landing_document(
+                        &state, &site, &owner, &category, &posts, &canonical, method, &headers,
+                    )
+                    .await;
+                }
+                Err(ApiError::Repository(RepositoryError::NotFound)) => {}
+                Err(error) => return Err(error),
+            }
+            let repository = Arc::clone(&state.repository);
+            let leaf_handle = handle.clone();
+            let leaf_slug = slug.clone();
+            let leaf = repository_task(move || {
+                let site = repository.get_site_by_handle(&leaf_handle)?;
+                let document = repository
+                    .get_unique_published_by_leaf_slug(site.id, &leaf_slug)?
+                    .ok_or(RepositoryError::NotFound)?;
+                let category = repository
+                    .get_published_category(site.id, document.id)?
+                    .ok_or(RepositoryError::NotFound)?;
+                Ok((site, document, category))
+            })
+            .await;
+            match leaf {
+                Ok((site, document, category)) => {
+                    let canonical = category_public_url(
+                        &state.seo_policy,
+                        (site.id != state.site_id).then_some(site.handle.as_str()),
+                        &category.slug,
+                        Some(&document.revision.slug),
+                    )?;
+                    return Ok(public_permanent_redirect(
+                        public_projection_url(canonical, view).as_str(),
+                    ));
+                }
+                Err(ApiError::Repository(RepositoryError::NotFound)) => {}
+                Err(error) => return Err(error),
+            }
             return Ok(serve_spa_not_found(method, &state.seo_policy).await);
         }
         Err(error) => return Err(error),
     };
-    let view = query.view.unwrap_or(ViewMode::Intent);
+    if let Some(category) = category {
+        let canonical = category_public_url(
+            &state.seo_policy,
+            (site.id != state.site_id).then_some(site.handle.as_str()),
+            &category.slug,
+            Some(&document.revision.slug),
+        )?;
+        return Ok(public_permanent_redirect(
+            public_projection_url(canonical, view).as_str(),
+        ));
+    }
     // Databases that predate the explicit installation control plane retain the
     // configured legacy article route. A provisioned primary site has a real,
     // owner-selected handle, so its community URL is the canonical identity.
@@ -2041,6 +2685,24 @@ async fn public_community_post(
         return Ok(public_permanent_redirect(location.as_str()));
     }
 
+    render_community_post_document(
+        &state, &site, &owner, &document, None, &canonical, view, method, &headers,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_community_post_document(
+    state: &AppState,
+    site: &osb_storage_sqlite::SiteRecord,
+    owner: &osb_storage_sqlite::UserRecord,
+    document: &osb_kernel::DocumentSnapshot,
+    category: Option<&osb_storage_sqlite::CategoryRecord>,
+    canonical: &Url,
+    view: ViewMode,
+    method: Method,
+    headers: &HeaderMap,
+) -> Result<Response, ApiError> {
     let artifact = render_revision(&document.revision, view);
     let description = summarize_markdown(&document.revision.source_markdown, 180);
     let page_title = format!("{} · {}", document.revision.title, site.title);
@@ -2048,7 +2710,7 @@ async fn public_community_post(
         community_meta_head(
             &page_title,
             &description,
-            &canonical,
+            canonical,
             "article",
             state.seo_policy.no_index,
             Some(document.revision.created_at.to_rfc3339().as_str()),
@@ -2056,7 +2718,7 @@ async fn public_community_post(
     } else {
         basic_page_head(&page_title)
     };
-    head.push_str(&community_custom_css_head(&state, &site)?);
+    head.push_str(&community_custom_css_head(state, site)?);
     let intent_current = if view == ViewMode::Intent {
         " aria-current=\"page\""
     } else {
@@ -2078,7 +2740,10 @@ async fn public_community_post(
          <a href=\"{}?view=markdown_source\"{source_current}>.md 원문</a></nav></header>\
          <div class=\"article-content\" data-revision=\"{}\">{}</div></article></div></div></main>",
         site.id,
-        site.theme_profile.as_str(),
+        category
+            .and_then(|category| category.theme_profile)
+            .unwrap_or(site.theme_profile)
+            .as_str(),
         escape_attribute(community_public_url(&state.seo_policy, &site.handle, None)?.as_str()),
         escape_xml(&site.handle),
         escape_attribute(&document.revision.created_at.to_rfc3339()),
@@ -2098,7 +2763,7 @@ async fn public_community_post(
         document.revision.id,
         artifact.html,
     );
-    render_spa_document(method, &headers, &state.seo_policy, &head, &root).await
+    render_spa_document(method, headers, &state.seo_policy, &head, &root).await
 }
 
 fn basic_page_head(title: &str) -> String {
@@ -2231,6 +2896,42 @@ fn community_public_url(
         .map_err(|_| ApiError::Internal("public URL cannot own path segments".into()))?;
     segments.pop_if_empty();
     segments.push(&format!("@{handle}"));
+    if let Some(slug) = slug {
+        segments.push(slug);
+    }
+    drop(segments);
+    Ok(url)
+}
+
+fn category_public_url(
+    policy: &SeoPolicy,
+    handle: Option<&str>,
+    category: &str,
+    slug: Option<&str>,
+) -> Result<Url, ApiError> {
+    policy
+        .validate()
+        .map_err(|error| ApiError::Internal(error.to_string()))?;
+    let safe_segment = |value: &str| {
+        !value.is_empty() && !value.contains(['/', '\\']) && !value.chars().any(char::is_control)
+    };
+    if !safe_segment(category)
+        || handle.is_some_and(|value| !safe_segment(value))
+        || slug.is_some_and(|value| !safe_segment(value))
+    {
+        return Err(ApiError::Internal(
+            "persisted category route contains an unsafe segment".into(),
+        ));
+    }
+    let mut url = policy.public_url.clone();
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|_| ApiError::Internal("public URL cannot own path segments".into()))?;
+    segments.pop_if_empty();
+    if let Some(handle) = handle {
+        segments.push(&format!("@{handle}"));
+    }
+    segments.push(category);
     if let Some(slug) = slug {
         segments.push(slug);
     }
@@ -2384,12 +3085,43 @@ async fn public_post(
     let site_id = state.site_id;
     let lookup_slug = slug.clone();
     let view = query.view.unwrap_or(ViewMode::Intent);
-    let (document, primary_handle) = repository_task(move || {
+    let result = repository_task(move || {
         let document = repository.get_published_by_slug(site_id, &lookup_slug)?;
+        let category = repository.get_published_category(site_id, document.id)?;
         let primary_handle = provisioned_primary_handle(&repository, site_id)?;
-        Ok((document, primary_handle))
+        Ok((document, category, primary_handle))
     })
-    .await?;
+    .await;
+    let (document, category, primary_handle) = match result {
+        Ok(value) => value,
+        Err(ApiError::Repository(RepositoryError::NotFound)) => {
+            let repository = Arc::clone(&state.repository);
+            let leaf_slug = slug.clone();
+            repository_task(move || {
+                let document = repository
+                    .get_unique_published_by_leaf_slug(site_id, &leaf_slug)?
+                    .ok_or(RepositoryError::NotFound)?;
+                let category = repository
+                    .get_published_category(site_id, document.id)?
+                    .ok_or(RepositoryError::NotFound)?;
+                let primary_handle = provisioned_primary_handle(&repository, site_id)?;
+                Ok((document, Some(category), primary_handle))
+            })
+            .await?
+        }
+        Err(error) => return Err(error),
+    };
+    if let Some(category) = category {
+        let canonical = category_public_url(
+            &state.seo_policy,
+            None,
+            &category.slug,
+            Some(&document.revision.slug),
+        )?;
+        return Ok(public_permanent_redirect(
+            public_projection_url(canonical, view).as_str(),
+        ));
+    }
     if let Some(handle) = primary_handle {
         let canonical =
             community_public_url(&state.seo_policy, &handle, Some(&document.revision.slug))?;
@@ -2502,7 +3234,14 @@ async fn sitemap(
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
     let (primary_posts, primary_handle, community_posts) = repository_task(move || {
-        let primary_posts = repository.list_published(site_id, SITEMAP_URL_LIMIT.min(500))?;
+        let primary_posts = repository
+            .list_published(site_id, SITEMAP_URL_LIMIT.min(500))?
+            .into_iter()
+            .map(|post| {
+                let category = repository.get_published_category(site_id, post.id)?;
+                Ok((post, category))
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
         let primary_handle = provisioned_primary_handle(&repository, site_id)?;
         let mut remaining = SITEMAP_URL_LIMIT.saturating_sub(primary_posts.len());
         let mut community_posts = Vec::new();
@@ -2518,15 +3257,23 @@ async fn sitemap(
             let posts = repository.list_published(site.id, remaining.min(500))?;
             remaining = remaining.saturating_sub(posts.len());
             for post in posts {
-                community_posts.push((site.handle.clone(), post));
+                let category = repository.get_published_category(site.id, post.id)?;
+                community_posts.push((site.handle.clone(), post, category));
             }
         }
         Ok((primary_posts, primary_handle, community_posts))
     })
     .await?;
     let mut urls = BTreeMap::new();
-    for post in primary_posts {
-        let url = if let Some(handle) = primary_handle.as_deref() {
+    for (post, category) in primary_posts {
+        let url = if let Some(category) = category {
+            category_public_url(
+                &state.seo_policy,
+                None,
+                &category.slug,
+                Some(&post.revision.slug),
+            )?
+        } else if let Some(handle) = primary_handle.as_deref() {
             community_public_url(&state.seo_policy, handle, Some(&post.revision.slug))?
         } else {
             state
@@ -2536,8 +3283,17 @@ async fn sitemap(
         };
         urls.insert(url.to_string(), post.updated_at);
     }
-    for (handle, post) in community_posts {
-        let url = community_public_url(&state.seo_policy, &handle, Some(&post.revision.slug))?;
+    for (handle, post, category) in community_posts {
+        let url = if let Some(category) = category {
+            category_public_url(
+                &state.seo_policy,
+                Some(&handle),
+                &category.slug,
+                Some(&post.revision.slug),
+            )?
+        } else {
+            community_public_url(&state.seo_policy, &handle, Some(&post.revision.slug))?
+        };
         urls.insert(url.to_string(), post.updated_at);
     }
     let mut xml = String::from(
@@ -2745,7 +3501,12 @@ struct AuthMethodDescriptor {
 struct PostSummary {
     id: Uuid,
     title: String,
+    /// The leaf slug remains stable for clients that render their own routes.
     slug: String,
+    /// The stored public lookup path, including an immutable category prefix.
+    route_path: String,
+    api_href: String,
+    source_href: String,
     updated_at: String,
     has_intent_view: bool,
     has_ontology: bool,
@@ -2765,6 +3526,8 @@ struct PostView {
     artifact: PublishArtifact,
     #[serde(skip_serializing_if = "Option::is_none")]
     ontology: Option<OntologySidecar>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ai_summary: Option<AiSummary>,
     authorship: PublicAuthorship,
 }
 
@@ -2802,6 +3565,8 @@ struct CreatePostRequest {
     #[serde(default)]
     ontology: Option<OntologySidecar>,
     #[serde(default)]
+    ai_summary: Option<AiSummary>,
+    #[serde(default)]
     authorship: Option<PublicAuthorship>,
 }
 
@@ -2818,6 +3583,8 @@ struct ProposeRevisionRequest {
     intent: Option<IntentLayer>,
     #[serde(default)]
     ontology: Option<OntologySidecar>,
+    #[serde(default)]
+    ai_summary: Option<AiSummary>,
     #[serde(default)]
     authorship: Option<PublicAuthorship>,
     #[serde(default)]
@@ -3041,6 +3808,7 @@ mod tests {
             mcp_token_hash: None,
             admin_auth: AdminAuthRuntime::Disabled,
             features: Arc::new(features),
+            ai_summary: None,
             runner: None,
             runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             assets: Arc::new(
@@ -3064,6 +3832,7 @@ mod tests {
             delivery_only: false,
             secure_session_cookie: true,
             member_auth_admission: community::MemberAuthAdmission::new(),
+            ai_summary_admission: community::AiSummaryAdmission::new(),
             password_workers: Arc::new(tokio::sync::Semaphore::new(PASSWORD_WORKER_LIMIT)),
             version: VersionService::bundled_for_tests(),
         }
@@ -3101,6 +3870,130 @@ mod tests {
             )
             .unwrap();
         state
+    }
+
+    fn ai_summary_state() -> (AppState, String) {
+        let mut state = test_state(None);
+        let mut features = FeatureRegistry::from_requested("seo,ai_summary").unwrap();
+        features
+            .activate_composed("rbac", "test owner memberships")
+            .unwrap();
+        features
+            .activate_composed("comments", "test comment routes")
+            .unwrap();
+        state.features = Arc::new(features);
+        state.ai_summary = Some(AiSummaryService::new().unwrap());
+
+        let owner = state
+            .repository
+            .create_user(
+                "ai-summary-owner@example.test",
+                "ai-summary-owner",
+                "AI summary owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        state
+            .repository
+            .create_site(
+                owner.id,
+                "ai-summary-blog",
+                "AI summary blog",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        let token = [0xa7_u8; 32];
+        let token_hash: [u8; 32] = Sha256::digest(token).into();
+        state
+            .repository
+            .create_session(
+                owner.id,
+                &token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .unwrap();
+        (
+            state,
+            format!("osb_session={}", URL_SAFE_NO_PAD.encode(token)),
+        )
+    }
+
+    #[tokio::test]
+    async fn ai_summary_routes_fail_closed_before_provider_credentials_are_used() {
+        let disabled = app(test_state(None));
+        let feature_off = disabled
+            .oneshot(
+                Request::get("/api/v1/studio/ai-summary/providers")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(feature_off.status(), StatusCode::NOT_FOUND);
+
+        let (state, cookie) = ai_summary_state();
+        let router = app(state);
+        let oversized = "x".repeat(ai_summary::MAXIMUM_REQUEST_BYTES + 1);
+
+        let anonymous = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/studio/ai-summary/generate")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(oversized.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong_origin = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/studio/ai-summary/generate")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://attacker.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(oversized.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_origin.status(), StatusCode::UNAUTHORIZED);
+
+        let bounded = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/studio/ai-summary/generate")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(oversized))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bounded.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let missing_key = router
+            .oneshot(
+                Request::post("/api/v1/studio/ai-summary/generate")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::from(
+                        r#"{"provider":"openai","model":"gpt-5.4-mini","credentialMode":"one_shot","title":"Title","sourceMarkdown":"Body"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_key.status(), StatusCode::BAD_REQUEST);
+        let body = json(missing_key).await;
+        assert_eq!(body["error"], "bad_request");
+        assert_eq!(body["message"], "a one-shot provider key is required");
     }
 
     fn unavailable_external_state() -> AppState {
@@ -3210,6 +4103,7 @@ mod tests {
                     intent: None,
                     ontology: None,
                     authorship: Default::default(),
+                    ai_summary: None,
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: user.id.to_string(),
@@ -3582,6 +4476,234 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(legacy_admin_route.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn program_tree_is_instance_admin_only_lazy_and_metadata_only() {
+        let state = access_key_state("correct-administrator-access-key-with-enough-entropy");
+        let repository = Arc::clone(&state.repository);
+        let document = repository
+            .create_document(NewDocument {
+                site_id: state.site_id,
+                title: "Tree-visible title".into(),
+                slug: "tree-visible-slug".into(),
+                source_markdown: "PRIVATE MARKDOWN MUST NOT LEAK".into(),
+                embeds: vec![],
+                intent: None,
+                ontology: None,
+                ai_summary: None,
+                authorship: Default::default(),
+                actor: RevisionActor {
+                    kind: RevisionActorKind::Human,
+                    id: "private-owner-identity".into(),
+                    display_name: Some("Private owner name".into()),
+                },
+            })
+            .unwrap();
+        let raw_token = [0x45_u8; 32];
+        let token_hash: [u8; 32] = Sha256::digest(raw_token).into();
+        repository
+            .create_primary_owner_session(
+                &token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+                SessionAuthMethod::AccessKey,
+                &state.admin_auth.binding_fingerprint(),
+            )
+            .unwrap();
+        let cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_token));
+        let router = app(state);
+
+        let root = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/tree?limit=2")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::OK);
+        assert_eq!(root.headers()[header::CACHE_CONTROL], "private, no-store");
+        let root = json(root).await;
+        assert_eq!(root["schemaVersion"], "open-soverign-blog-admin-tree/1");
+        assert_eq!(root["parentId"], "root");
+        assert_eq!(root["items"].as_array().unwrap().len(), 2);
+        assert!(root["nextCursor"].is_string());
+        let root_cursor = root["nextCursor"].as_str().unwrap();
+
+        let root_second_page = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/admin/tree?limit=2&cursor={root_cursor}"))
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(root_second_page.status(), StatusCode::OK);
+        let root_second_page = json(root_second_page).await;
+        assert_eq!(root_second_page["items"][0]["id"], "group:configuration");
+        assert_eq!(root_second_page["items"][1]["id"], "group:modules");
+        assert!(root_second_page["nextCursor"].is_string());
+
+        let forged_cursor = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/tree?cursor=not-a-valid-cursor")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(forged_cursor.status(), StatusCode::BAD_REQUEST);
+
+        let content = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/tree?parent=group%3Acontent")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(content.status(), StatusCode::OK);
+        let content = json(content).await;
+        let site_node_id = content["items"][0]["id"].as_str().unwrap();
+        assert!(site_node_id.starts_with("site:"));
+
+        let categories = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/api/v1/admin/tree?parent={}",
+                    site_node_id.replace(':', "%3A")
+                ))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(categories.status(), StatusCode::OK);
+        let categories = json(categories).await;
+        assert_eq!(categories["items"][0]["kind"], "category");
+        assert_eq!(categories["items"][0]["label"], "Uncategorized");
+        let uncategorized_node_id = categories["items"][0]["id"].as_str().unwrap();
+
+        let documents = router
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/api/v1/admin/tree?parent={}",
+                    uncategorized_node_id.replace(':', "%3A")
+                ))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(documents.status(), StatusCode::OK);
+        let documents = json(documents).await;
+        assert_eq!(documents["items"][0]["label"], "Tree-visible title");
+        assert_eq!(documents["items"][0]["slug"], "tree-visible-slug");
+        let document_node_id = documents["items"][0]["id"].as_str().unwrap();
+        assert_eq!(document_node_id, format!("document:{}", document.id));
+
+        let revisions = router
+            .oneshot(
+                Request::get(format!(
+                    "/api/v1/admin/tree?parent={}",
+                    document_node_id.replace(':', "%3A")
+                ))
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revisions.status(), StatusCode::OK);
+        let revisions = json(revisions).await;
+        assert_eq!(revisions["items"][0]["kind"], "revision");
+        let encoded = serde_json::to_string(&revisions).unwrap();
+        for private_value in [
+            "PRIVATE MARKDOWN MUST NOT LEAK",
+            "private-owner-identity",
+            "Private owner name",
+            "sourceMarkdown",
+            "contentHash",
+            "customCss",
+        ] {
+            assert!(!encoded.contains(private_value), "leaked {private_value}");
+        }
+    }
+
+    #[tokio::test]
+    async fn program_tree_rejects_non_session_bearers_and_blog_members() {
+        let test_bearer = app(test_state(Some("test-owner-token")))
+            .oneshot(
+                Request::get("/api/v1/admin/tree")
+                    .header(header::AUTHORIZATION, "Bearer test-owner-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(test_bearer.status(), StatusCode::UNAUTHORIZED);
+
+        let mut state = access_key_state("correct-administrator-access-key-with-enough-entropy");
+        let mcp_token = URL_SAFE_NO_PAD.encode([0x65; 32]);
+        state.mcp_token_hash = Some(Sha256::digest(mcp_token.as_bytes()).into());
+        let member = state
+            .repository
+            .create_user(
+                "tree-member@example.test",
+                "tree-member",
+                "Tree member",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let raw_member_token = [0x66_u8; 32];
+        let member_token_hash: [u8; 32] = Sha256::digest(raw_member_token).into();
+        state
+            .repository
+            .create_session(
+                member.id,
+                &member_token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .unwrap();
+        let router = app(state);
+
+        let mcp = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/admin/tree")
+                    .header(header::AUTHORIZATION, format!("Bearer {mcp_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.status(), StatusCode::UNAUTHORIZED);
+
+        let member = router
+            .oneshot(
+                Request::get("/api/v1/admin/tree")
+                    .header(
+                        header::COOKIE,
+                        format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_member_token)),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(member.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -4367,6 +5489,7 @@ mod tests {
         assert_eq!(create_blog.status(), StatusCode::CREATED);
         let blog = json(create_blog).await;
         assert_eq!(blog["theme"]["presetId"], "forest");
+        assert_eq!(blog["isPrimary"], false);
 
         const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRcommunity-cover";
         let upload = router
@@ -4477,6 +5600,7 @@ mod tests {
         let feed_json = json(feed).await;
         assert_eq!(feed_json["items"][0]["title"], "Published title");
         assert_eq!(feed_json["items"][0]["blog"]["handle"], "alice-notes");
+        assert_eq!(feed_json["items"][0]["blog"]["isPrimary"], false);
 
         let archive = router
             .clone()
@@ -4666,6 +5790,7 @@ mod tests {
                     intent: None,
                     ontology: None,
                     authorship: Default::default(),
+                    ai_summary: None,
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: alice.id.to_string(),
@@ -5219,6 +6344,7 @@ mod tests {
                     intent: None,
                     ontology: None,
                     authorship: Default::default(),
+                    ai_summary: None,
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: owner.id.to_string(),
@@ -5251,6 +6377,7 @@ mod tests {
                         generator: Some("test-agent <unsafe>".into()),
                         human_reviewed: true,
                     },
+                    ai_summary: None,
                     actor: RevisionActor {
                         kind: RevisionActorKind::Human,
                         id: owner.id.to_string(),
@@ -5372,6 +6499,665 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn community_blog_ssr_uses_natural_category_post_links() {
+        let mut state = test_state(None);
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let owner = state
+            .repository
+            .create_user(
+                "category-listing@example.test",
+                "category-listing-owner",
+                "Category listing owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = state
+            .repository
+            .create_site(
+                owner.id,
+                "category-listing",
+                "Category listing",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        let category = state
+            .repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "yangja".into(),
+                    title: "Yangja".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let post = state
+            .repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "Natural route".into(),
+                    slug: "measurement".into(),
+                    source_markdown: "# Natural route".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(category.id),
+            )
+            .unwrap();
+        state
+            .repository
+            .publish_document_in_owned_site(owner.id, site.id, post.id, post.current_revision_id)
+            .unwrap();
+
+        let repository = Arc::clone(&state.repository);
+        let router = app(state);
+        let natural = router
+            .clone()
+            .oneshot(
+                Request::get("/@category-listing/yangja/measurement")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(natural.status(), StatusCode::OK);
+        let natural = text(natural).await;
+        assert!(natural.contains("<h1>Natural route</h1>"));
+        assert!(natural.contains("<link rel=\"canonical\" href=\"https://blog.example/base/@category-listing/yangja/measurement\">"));
+
+        let leaf_fallback = router
+            .clone()
+            .oneshot(
+                Request::get("/@category-listing/measurement")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(leaf_fallback.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            leaf_fallback.headers()[header::LOCATION],
+            "https://blog.example/base/@category-listing/yangja/measurement"
+        );
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/@category-listing")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = text(response).await;
+        assert!(
+            html.contains(
+                "href=\"https://blog.example/base/@category-listing/yangja/measurement\""
+            )
+        );
+        assert!(!html.contains("href=\"https://blog.example/base/@category-listing/measurement\""));
+
+        let second_category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "classical".into(),
+                    title: "Classical".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let duplicate_leaf = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "A second measurement".into(),
+                    slug: "measurement".into(),
+                    source_markdown: "# A second measurement".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(second_category.id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                duplicate_leaf.id,
+                duplicate_leaf.current_revision_id,
+            )
+            .unwrap();
+        let ambiguous_leaf = router
+            .oneshot(
+                Request::get("/@category-listing/measurement")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ambiguous_leaf.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn member_category_landing_is_a_safe_no_js_archive() {
+        let mut state = test_state(None);
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: true,
+        });
+        state.custom_css_enabled = true;
+        let owner = state
+            .repository
+            .create_user(
+                "member-category@example.test",
+                "member-category-owner",
+                "Member <Owner>",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = state
+            .repository
+            .create_site(
+                owner.id,
+                "member-notes",
+                "Member <Notes>",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        state
+            .repository
+            .change_site_appearance(
+                owner.id,
+                site.id,
+                ThemeProfile::Terminal,
+                Some(".blog-page { color: rebeccapurple; }"),
+            )
+            .unwrap();
+        let category = state
+            .repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "field-notes".into(),
+                    title: "Field <Notes>".into(),
+                    description: Some("Public & curated".into()),
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let source_markdown = format!(
+            "# Public heading\n\n{} PRIVATE_SOURCE_SENTINEL",
+            "A public excerpt sentence. ".repeat(20)
+        );
+        let post = state
+            .repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "Public <Post>".into(),
+                    slug: "first-observation".into(),
+                    source_markdown,
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(category.id),
+            )
+            .unwrap();
+        state
+            .repository
+            .publish_document_in_owned_site(owner.id, site.id, post.id, post.current_revision_id)
+            .unwrap();
+        let repository = Arc::clone(&state.repository);
+        let router = app(state);
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::get("/@member-notes/field-notes")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .extensions()
+                .get::<PrimaryCategoryCacheableResponse>()
+                .is_none()
+        );
+        let html = text(response).await;
+        assert!(html.contains("<base href=\"/base/\" />"));
+        assert!(html.contains("<h1>Field &lt;Notes&gt;</h1>"));
+        assert!(html.contains("Public &amp; curated"));
+        assert!(html.contains("data-theme=\"terminal\""));
+        assert!(html.contains(
+            "data-osb-blog-custom-css href=\"https://blog.example/base/api/v1/blogs/member-notes/custom.css\""
+        ));
+        assert!(html.contains(
+            "<link rel=\"canonical\" href=\"https://blog.example/base/@member-notes/field-notes\">"
+        ));
+        assert!(html.contains(
+            "<meta property=\"og:url\" content=\"https://blog.example/base/@member-notes/field-notes\">"
+        ));
+        assert!(html.contains("<meta property=\"og:type\" content=\"website\">"));
+        assert!(html.contains("<meta name=\"robots\" content=\"noindex,nofollow\">"));
+        assert!(html.contains(
+            "href=\"https://blog.example/base/@member-notes/field-notes/first-observation\""
+        ));
+        assert!(html.contains("Public &lt;Post&gt;"));
+        assert!(html.contains("A public excerpt sentence."));
+        assert!(!html.contains("PRIVATE_SOURCE_SENTINEL"));
+        assert!(!html.contains("<h1>Public heading</h1>"));
+
+        let head = router
+            .clone()
+            .oneshot(
+                Request::head("/@member-notes/field-notes")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(head.status(), StatusCode::OK);
+        assert!(head.headers().contains_key(header::ETAG));
+        assert!(text(head).await.is_empty());
+
+        repository
+            .archive_category(owner.id, site.id, category.id)
+            .unwrap();
+        let archived = router
+            .clone()
+            .oneshot(
+                Request::get("/@member-notes/field-notes")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(archived.status(), StatusCode::OK);
+        assert!(text(archived).await.contains("Public &lt;Post&gt;"));
+
+        let missing = router
+            .oneshot(
+                Request::get("/@member-notes/not-a-category")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn primary_category_posts_are_machine_followable_and_server_rendered() {
+        let mut state = access_key_state(
+            "machine-index-primary-category-administrator-key-with-enough-entropy",
+        );
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: true,
+        });
+        let site = state.repository.get_site_by_id(state.site_id).unwrap();
+        let owner = state.repository.get_user_by_id(site.owner_user_id).unwrap();
+        state.custom_css_enabled = true;
+        state
+            .repository
+            .change_site_appearance(
+                owner.id,
+                site.id,
+                ThemeProfile::Paper,
+                Some(".blog-page { letter-spacing: 0.01em; }"),
+            )
+            .unwrap();
+        let category = state
+            .repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "yangja".into(),
+                    title: "Yangja".into(),
+                    description: Some("Primary category archive".into()),
+                    theme_profile: Some(ThemeProfile::Forest),
+                },
+            )
+            .unwrap();
+        let post = state
+            .repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "Primary natural route".into(),
+                    slug: "measurement".into(),
+                    source_markdown: "# Primary natural route\n\nPortable body.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(category.id),
+            )
+            .unwrap();
+        state
+            .repository
+            .publish_document_in_owned_site(owner.id, site.id, post.id, post.current_revision_id)
+            .unwrap();
+        let repository = Arc::clone(&state.repository);
+        let router = app(state);
+
+        let index = router
+            .clone()
+            .oneshot(Request::get("/api/v1/posts").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(index.status(), StatusCode::OK);
+        let index = json(index).await;
+        assert_eq!(index[0]["slug"], "measurement");
+        assert_eq!(index[0]["routePath"], "yangja/measurement");
+        assert_eq!(
+            index[0]["apiHref"],
+            "https://blog.example/base/api/v1/posts/yangja/measurement"
+        );
+        assert_eq!(
+            index[0]["sourceHref"],
+            "https://blog.example/base/api/v1/posts/yangja/measurement/source.md"
+        );
+
+        let machine_view = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/posts/yangja/measurement")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(machine_view.status(), StatusCode::OK);
+        assert_eq!(json(machine_view).await["canonicalSlug"], "measurement");
+        let source = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/posts/yangja/measurement/source.md")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(source.status(), StatusCode::OK);
+        assert_eq!(
+            text(source).await,
+            "# Primary natural route\n\nPortable body."
+        );
+
+        let natural = router
+            .clone()
+            .oneshot(
+                Request::get("/yangja/measurement")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(natural.status(), StatusCode::OK);
+        assert_eq!(natural.headers()[header::VARY], "Accept");
+        assert!(
+            natural
+                .extensions()
+                .get::<PrimaryCategoryCacheableResponse>()
+                .is_some()
+        );
+        let natural = text(natural).await;
+        assert!(natural.contains("<h1>Primary natural route</h1>"));
+        assert!(natural.contains("Portable body."));
+        assert!(natural.contains("data-theme=\"forest\""));
+        assert!(natural.contains(
+            "<link rel=\"canonical\" href=\"https://blog.example/base/yangja/measurement\">"
+        ));
+
+        let member_alias = router
+            .clone()
+            .oneshot(
+                Request::get("/@test-blog/yangja/measurement")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(member_alias.status(), StatusCode::PERMANENT_REDIRECT);
+        assert_eq!(
+            member_alias.headers()[header::LOCATION],
+            "https://blog.example/base/yangja/measurement"
+        );
+
+        let category_landing = router
+            .clone()
+            .oneshot(
+                Request::get("/yangja")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_landing.status(), StatusCode::OK);
+        assert_eq!(category_landing.headers()[header::VARY], "Accept");
+        assert!(
+            category_landing
+                .extensions()
+                .get::<PrimaryCategoryCacheableResponse>()
+                .is_some()
+        );
+        let category_landing = text(category_landing).await;
+        assert!(category_landing.contains("<h1>Yangja</h1>"));
+        assert!(category_landing.contains("Primary category archive"));
+        assert!(category_landing.contains("data-theme=\"forest\""));
+        assert!(category_landing.contains(
+            "data-osb-blog-custom-css href=\"https://blog.example/base/api/v1/blogs/test-blog/custom.css\""
+        ));
+        assert!(
+            category_landing
+                .contains("<link rel=\"canonical\" href=\"https://blog.example/base/yangja\">")
+        );
+        assert!(
+            category_landing.contains(
+                "<meta property=\"og:url\" content=\"https://blog.example/base/yangja\">"
+            )
+        );
+        assert!(category_landing.contains("<meta name=\"robots\" content=\"noindex,nofollow\">"));
+        assert!(category_landing.contains("href=\"https://blog.example/base/yangja/measurement\""));
+        assert!(
+            !category_landing
+                .contains("href=\"https://blog.example/base/@test-blog/yangja/measurement\"")
+        );
+
+        let category_head = router
+            .clone()
+            .oneshot(
+                Request::head("/yangja")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_head.status(), StatusCode::OK);
+        assert_eq!(category_head.headers()[header::VARY], "Accept");
+        assert!(category_head.headers().contains_key(header::ETAG));
+        assert!(text(category_head).await.is_empty());
+
+        let category_member_alias = router
+            .clone()
+            .oneshot(
+                Request::get("/@test-blog/yangja")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            category_member_alias.status(),
+            StatusCode::PERMANENT_REDIRECT
+        );
+        assert_eq!(
+            category_member_alias.headers()[header::LOCATION],
+            "https://blog.example/base/yangja"
+        );
+
+        let primary_blog = router
+            .clone()
+            .oneshot(Request::get("/@test-blog").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(primary_blog.status(), StatusCode::OK);
+        let primary_blog = text(primary_blog).await;
+        assert!(primary_blog.contains("href=\"https://blog.example/base/yangja/measurement\""));
+        assert!(
+            !primary_blog
+                .contains("href=\"https://blog.example/base/@test-blog/yangja/measurement\"")
+        );
+
+        let non_html_natural = router
+            .clone()
+            .oneshot(
+                Request::get("/yangja/measurement")
+                    .header(header::ACCEPT, "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(non_html_natural.status(), StatusCode::NOT_FOUND);
+        assert_eq!(non_html_natural.headers()[header::VARY], "Accept");
+
+        for legacy in ["/blog/measurement", "/@test-blog/measurement"] {
+            let redirect = router
+                .clone()
+                .oneshot(Request::get(legacy).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                redirect.status(),
+                StatusCode::PERMANENT_REDIRECT,
+                "{legacy}"
+            );
+            assert_eq!(
+                redirect.headers()[header::LOCATION],
+                "https://blog.example/base/yangja/measurement",
+                "{legacy}"
+            );
+        }
+
+        let duplicate_category = repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "classical".into(),
+                    title: "Classical".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let duplicate = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "Duplicate primary leaf".into(),
+                    slug: "measurement".into(),
+                    source_markdown: "# Duplicate primary leaf".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(duplicate_category.id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                duplicate.id,
+                duplicate.current_revision_id,
+            )
+            .unwrap();
+        for ambiguous in ["/blog/measurement", "/@test-blog/measurement"] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(ambiguous).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{ambiguous}");
+        }
+    }
+
+    #[tokio::test]
     async fn disabling_seo_removes_public_metadata_from_community_and_legacy_html() {
         let mut state = test_state(None);
         state.features = Arc::new(FeatureRegistry::from_requested("").unwrap());
@@ -5388,6 +7174,7 @@ mod tests {
                 intent: None,
                 ontology: None,
                 authorship: Default::default(),
+                ai_summary: None,
                 actor: RevisionActor {
                     kind: RevisionActorKind::Human,
                     id: "legacy-owner".into(),
@@ -5457,6 +7244,7 @@ mod tests {
                 intent: None,
                 ontology: None,
                 authorship: Default::default(),
+                ai_summary: None,
                 actor: RevisionActor {
                     kind: RevisionActorKind::Human,
                     id: site.owner_user_id.to_string(),
@@ -5480,6 +7268,7 @@ mod tests {
                 intent: None,
                 ontology: None,
                 authorship: Default::default(),
+                ai_summary: None,
                 actor: RevisionActor {
                     kind: RevisionActorKind::Human,
                     id: site.owner_user_id.to_string(),
@@ -5549,6 +7338,7 @@ mod tests {
                 intent: None,
                 ontology: None,
                 authorship: Default::default(),
+                ai_summary: None,
                 actor: RevisionActor {
                     kind: RevisionActorKind::Human,
                     id: "owner".into(),
@@ -5692,6 +7482,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown_navigation.status(), StatusCode::OK);
+        assert_eq!(unknown_navigation.headers()[header::VARY], "Accept");
+        assert!(
+            unknown_navigation
+                .extensions()
+                .get::<PrimaryCategoryCacheableResponse>()
+                .is_none()
+        );
         for path in ["/api/", "/api/v2/missing", "/assets/does-not-exist.js"] {
             let response = router
                 .clone()
@@ -5872,6 +7669,525 @@ mod tests {
             semantic_cache_variant(&discovery_disabled)
         );
         assert!(!public_cache_path(&baseline, "/custom.css"));
+        assert!(public_cache_path(&baseline, "/api/v1/primary/categories"));
+        assert!(public_cache_path(
+            &baseline,
+            "/api/v1/primary/categories/yangja/posts/measurement"
+        ));
+        assert!(public_cache_path(&baseline, "/yangja"));
+        assert!(public_cache_path(&baseline, "/yangja/measurement"));
+        assert!(public_cache_path(&baseline, "/yangja/measurement/"));
+        assert!(!public_cache_path(&baseline, "/studio/system"));
+        assert!(!public_cache_path(&baseline, "/login"));
+        assert!(!public_cache_path(&baseline, "/healthz"));
+        assert!(!public_cache_path(
+            &baseline,
+            &format!("/yangja/{}", "x".repeat(721))
+        ));
+        let mut custom_article_root = baseline.clone();
+        custom_article_root.seo_policy = Arc::new(SeoPolicy {
+            public_url: baseline.seo_policy.public_url.clone(),
+            article_base_path: "writing/articles".into(),
+            no_index: false,
+        });
+        assert!(!primary_category_public_path(
+            &custom_article_root,
+            "/writing/measurement"
+        ));
+        assert!(!public_cache_path(
+            &custom_article_root,
+            "/writing/measurement"
+        ));
+        assert!(public_cache_path(
+            &custom_article_root,
+            "/writing/articles/measurement"
+        ));
+    }
+
+    #[test]
+    fn startup_rejects_an_article_root_that_collides_with_a_persisted_category() {
+        let state = test_state(None);
+        let site = state.repository.ensure_legacy_site(state.site_id).unwrap();
+        state
+            .repository
+            .create_category(
+                site.owner_user_id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "writing".into(),
+                    title: "Writing".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+
+        assert!(ensure_article_category_namespace(&state.repository, site.id, "blog").is_ok());
+        assert!(ensure_article_category_namespace(&state.repository, site.id, "notes").is_ok());
+        let error = ensure_article_category_namespace(&state.repository, site.id, "writing")
+            .unwrap_err()
+            .to_string();
+        let nested_error =
+            ensure_article_category_namespace(&state.repository, site.id, "writing/articles")
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("starts with persisted category 'writing'"));
+        assert!(nested_error.contains("starts with persisted category 'writing'"));
+    }
+
+    #[tokio::test]
+    async fn category_management_is_owner_only_while_collaborators_can_list_and_select() {
+        let mut state = test_state(None);
+        state.collaboration_enabled = true;
+        let repository = Arc::clone(&state.repository);
+        let owner = repository
+            .create_user(
+                "category-owner@example.test",
+                "category-owner",
+                "Category owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let writer = repository
+            .create_user(
+                "category-writer@example.test",
+                "category-writer",
+                "Category writer",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let editor = repository
+            .create_user(
+                "category-editor@example.test",
+                "category-editor",
+                "Category editor",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = repository
+            .create_site(
+                owner.id,
+                "category-security-blog",
+                "Category security blog",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        state.site_id = site.id;
+        repository
+            .add_site_collaborator(
+                owner.id,
+                site.id,
+                &writer.email,
+                osb_storage_sqlite::SiteMembershipRole::Writer,
+            )
+            .unwrap();
+        repository
+            .add_site_collaborator(
+                owner.id,
+                site.id,
+                &editor.email,
+                osb_storage_sqlite::SiteMembershipRole::Editor,
+            )
+            .unwrap();
+
+        let owner_token = [0xc1_u8; 32];
+        let writer_token = [0xc2_u8; 32];
+        let editor_token = [0xc3_u8; 32];
+        for (user_id, token) in [
+            (owner.id, owner_token),
+            (writer.id, writer_token),
+            (editor.id, editor_token),
+        ] {
+            let token_hash: [u8; 32] = Sha256::digest(token).into();
+            repository
+                .create_session(
+                    user_id,
+                    &token_hash,
+                    chrono::Utc::now() + chrono::Duration::hours(1),
+                )
+                .unwrap();
+        }
+        let owner_cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(owner_token));
+        let writer_cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(writer_token));
+        let editor_cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(editor_token));
+        let router = app(state);
+
+        let created = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/studio/categories")
+                    .header(header::COOKIE, &owner_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"slug":"yangja","title":"Yangja","description":"Quantum notes","themePreset":"forest"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let category = json(created).await;
+        assert_eq!(category["slug"], "yangja");
+        assert_eq!(category["status"], "active");
+        let category_id = category["id"].as_str().unwrap().to_owned();
+
+        for (role, cookie) in [("writer", &writer_cookie), ("editor", &editor_cookie)] {
+            let list = router
+                .clone()
+                .oneshot(
+                    Request::get("/api/v1/studio/categories")
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(list.status(), StatusCode::OK, "{role} can list categories");
+            let categories = json(list).await;
+            assert_eq!(categories["items"][0]["id"], category_id);
+
+            let forbidden_create = router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/studio/categories")
+                        .header(header::COOKIE, cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"slug":"{role}-managed","title":"Forbidden"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(forbidden_create.status(), StatusCode::FORBIDDEN);
+            assert_eq!(json(forbidden_create).await["error"], "forbidden");
+
+            let forbidden_update = router
+                .clone()
+                .oneshot(
+                    Request::put(format!("/api/v1/studio/categories/{category_id}"))
+                        .header(header::COOKIE, cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(r#"{"title":"Forbidden rename"}"#))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(forbidden_update.status(), StatusCode::FORBIDDEN);
+
+            let forbidden_archive = router
+                .clone()
+                .oneshot(
+                    Request::post(format!("/api/v1/studio/categories/{category_id}/archive"))
+                        .header(header::COOKIE, cookie)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(forbidden_archive.status(), StatusCode::FORBIDDEN);
+
+            let selected = router
+                .clone()
+                .oneshot(
+                    Request::post("/api/v1/studio/documents")
+                        .header(header::COOKIE, cookie)
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(format!(
+                            r#"{{"title":"{role} category draft","slug":"{role}-category-draft","sourceMarkdown":"draft","categoryId":"{category_id}"}}"#
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                selected.status(),
+                StatusCode::CREATED,
+                "{role} can select an active category"
+            );
+            assert_eq!(json(selected).await["categoryId"], category_id);
+        }
+
+        let archived = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/studio/categories/{category_id}/archive"))
+                    .header(header::COOKIE, &owner_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(archived.status(), StatusCode::OK);
+        assert_eq!(json(archived).await["status"], "archived");
+
+        let archived_assignment = router
+            .oneshot(
+                Request::post("/api/v1/studio/documents")
+                    .header(header::COOKIE, &writer_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"title":"Archived category draft","slug":"archived-category-draft","sourceMarkdown":"draft","categoryId":"{category_id}"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(archived_assignment.status(), StatusCode::BAD_REQUEST);
+        let error = json(archived_assignment).await;
+        assert_eq!(error["error"], "bad_request");
+        assert!(error["message"].as_str().unwrap().contains("archived"));
+    }
+
+    #[tokio::test]
+    async fn published_category_post_is_resolved_only_through_its_natural_category_path() {
+        let mut state = test_state(None);
+        let repository = Arc::clone(&state.repository);
+        let owner = repository
+            .create_user(
+                "category-route-owner@example.test",
+                "category-route-owner",
+                "Category route owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = repository
+            .create_site(
+                owner.id,
+                "category-route-blog",
+                "Category route blog",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        state.site_id = site.id;
+        state.custom_css_enabled = true;
+        repository
+            .change_site_appearance(
+                owner.id,
+                site.id,
+                ThemeProfile::Paper,
+                Some(".article-content { color: rebeccapurple; }"),
+            )
+            .unwrap();
+        let owner_token = [0xc4_u8; 32];
+        let owner_token_hash: [u8; 32] = Sha256::digest(owner_token).into();
+        repository
+            .create_session(
+                owner.id,
+                &owner_token_hash,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .unwrap();
+        let owner_cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(owner_token));
+        let router = app(state);
+
+        let category = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/studio/categories")
+                    .header(header::COOKIE, &owner_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"slug":"yangja","title":"Yangja","description":"Natural category route"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category.status(), StatusCode::CREATED);
+        let category_id = json(category).await["id"].as_str().unwrap().to_owned();
+
+        let created = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/studio/documents")
+                    .header(header::COOKIE, &owner_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r##"{{"title":"Quantum computing","slug":"quantum-computing","sourceMarkdown":"# Quantum computing","categoryId":"{category_id}"}}"##
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        let document = json(created).await;
+        let document_id = document["id"].as_str().unwrap();
+        let revision_id = document["currentRevisionId"].as_str().unwrap();
+
+        let published = router
+            .clone()
+            .oneshot(
+                Request::post(format!("/api/v1/studio/documents/{document_id}/publish"))
+                    .header(header::COOKIE, &owner_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"revisionId":"{revision_id}"}}"#)))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(published.status(), StatusCode::OK);
+
+        let landing = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/blogs/category-route-blog/categories/yangja")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(landing.status(), StatusCode::OK);
+        let landing = json(landing).await;
+        assert_eq!(landing["postCount"], 1);
+        assert_eq!(landing["blog"]["isPrimary"], true);
+        assert_eq!(
+            landing["blog"]["theme"]["customCssUrl"],
+            "https://blog.example/api/v1/blogs/category-route-blog/custom.css"
+        );
+
+        let category_posts = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/blogs/category-route-blog/categories/yangja/posts")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_posts.status(), StatusCode::OK);
+        let category_posts = json(category_posts).await;
+        assert_eq!(category_posts["items"][0]["slug"], "quantum-computing");
+        assert_eq!(category_posts["items"][0]["category"]["slug"], "yangja");
+        assert_eq!(category_posts["items"][0]["blog"]["isPrimary"], true);
+
+        let natural = router
+            .clone()
+            .oneshot(
+                Request::get(
+                    "/api/v1/blogs/category-route-blog/categories/yangja/posts/quantum-computing",
+                )
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(natural.status(), StatusCode::OK);
+        let natural_etag = natural.headers()[header::ETAG].clone();
+        let natural = json(natural).await;
+        assert_eq!(natural["canonicalSlug"], "quantum-computing");
+        assert_eq!(natural["requestedSlug"], "quantum-computing");
+        assert_eq!(natural["category"]["slug"], "yangja");
+        assert_eq!(natural["blog"]["isPrimary"], true);
+
+        let primary_natural = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/primary/categories/yangja/posts/quantum-computing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(primary_natural.status(), StatusCode::OK);
+        let primary_natural = json(primary_natural).await;
+        assert_eq!(primary_natural["category"]["slug"], "yangja");
+        assert_eq!(
+            primary_natural["blog"]["theme"]["customCssUrl"],
+            "https://blog.example/api/v1/blogs/category-route-blog/custom.css"
+        );
+
+        let updated_category = router
+            .clone()
+            .oneshot(
+                Request::put(format!("/api/v1/studio/categories/{category_id}"))
+                    .header(header::COOKIE, &owner_cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"title":"Renamed Yangja","themePreset":"ink"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated_category.status(), StatusCode::OK);
+
+        let conditionally_refetched = router
+            .clone()
+            .oneshot(
+                Request::get(
+                    "/api/v1/blogs/category-route-blog/categories/yangja/posts/quantum-computing",
+                )
+                .header(header::IF_NONE_MATCH, natural_etag)
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conditionally_refetched.status(), StatusCode::OK);
+        let conditionally_refetched = json(conditionally_refetched).await;
+        assert_eq!(
+            conditionally_refetched["category"]["title"],
+            "Renamed Yangja"
+        );
+        assert_eq!(conditionally_refetched["category"]["themePreset"], "ink");
+
+        let flat = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/blogs/category-route-blog/posts/quantum-computing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(flat.status(), StatusCode::NOT_FOUND);
+
+        for path in ["/yangja", "/yangja/quantum-computing"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT, "text/html")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+        }
+        for (alias, canonical) in [
+            (
+                "/@category-route-blog/yangja",
+                "https://blog.example/yangja",
+            ),
+            (
+                "/@category-route-blog/yangja/quantum-computing",
+                "https://blog.example/yangja/quantum-computing",
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(alias).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::PERMANENT_REDIRECT, "{alias}");
+            assert_eq!(response.headers()[header::LOCATION], canonical, "{alias}");
+        }
+
+        let sitemap = router
+            .oneshot(Request::get("/sitemap.xml").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(sitemap.status(), StatusCode::OK);
+        let sitemap = text(sitemap).await;
+        assert!(sitemap.contains("<loc>https://blog.example/yangja/quantum-computing</loc>"));
+        assert!(
+            !sitemap
+                .contains("<loc>https://blog.example/@category-route-blog/quantum-computing</loc>")
+        );
     }
 
     #[test]
@@ -5885,7 +8201,7 @@ mod tests {
         headers.insert(header::SET_COOKIE.as_str().into(), "stolen=true".into());
         let signing_key = [0x5a; 32];
         let mut cached = CachedPublicResponse {
-            schema_version: "open-soverign-blog-http-cache/3".into(),
+            schema_version: "open-soverign-blog-http-cache/4".into(),
             headers,
             body_base64: BASE64_STANDARD.encode("safe"),
             signature: String::new(),

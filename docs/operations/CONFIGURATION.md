@@ -152,6 +152,15 @@ When attaching beneath an existing origin, configure the host reverse proxy's
 root robots file to reference `/team/sitemap.xml` (or rely on per-page noindex)
 and coordinate its origin-wide `Allow`/`Disallow` rules with the existing site.
 
+The optional `ai_summary` Studio module accepts a provider API key in the
+`X-OSB-AI-One-Shot-Key` request header. Remote use therefore requires an HTTPS
+`server.public_url` (plain HTTP is accepted only for loopback development).
+Configure every reverse proxy, WAF, APM agent, and error reporter in front of
+OSB to redact that header and never include request headers in access/error
+logs or traces. OSB does not persist the key in drafts, content, or its
+database and clears the browser input state after the request, but transient
+copies can still exist in browser and network-stack memory while it runs.
+
 Member OAuth/OIDC is distinct from administrator authentication.
 `local_and_oauth` advertises member OAuth as requested but not operational until
 a cryptographically verifying member adapter is configured; the server never
