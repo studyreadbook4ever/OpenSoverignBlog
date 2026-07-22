@@ -12019,25 +12019,25 @@
     },
     {
       "type": "library",
-      "bom-ref": "pkg:npm/fast-uri@3.1.3",
+      "bom-ref": "pkg:npm/fast-uri@3.1.4",
       "name": "fast-uri",
-      "version": "3.1.3",
+      "version": "3.1.4",
       "licenses": [
         {
           "expression": "BSD-3-Clause"
         }
       ],
-      "purl": "pkg:npm/fast-uri@3.1.3",
+      "purl": "pkg:npm/fast-uri@3.1.4",
       "hashes": [
         {
           "alg": "SHA-512",
-          "content": "8BBD0BC0659476E5EACE270A5D6B21A28ABEB162F52B7594539ACA64D1BFD22DDAD4E4A85F71EA847E566D6C139AA59FA2BE2EAD46A418F89141C95E4594F03A"
+          "content": "F099DB910E23B83CAF62CE26805190AA0E32098B450ED52D9A9D90210AB5D5965EE42150E7072A9B5AEA0E0021FD074CC92B819CFCCC5222543591B937F02243"
         }
       ],
       "externalReferences": [
         {
           "type": "distribution",
-          "url": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.3.tgz"
+          "url": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.4.tgz"
         }
       ],
       "properties": [
