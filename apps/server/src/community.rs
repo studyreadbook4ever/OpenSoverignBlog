@@ -780,7 +780,7 @@ async fn home(
     let repository = Arc::clone(&state.repository);
     let primary_site_id = state.site_id;
     let response = repository_task(move || {
-        let home = repository.home_feed(100)?;
+        let home = repository.home_feed(primary_site_id, 100)?;
         let pinned_items = home
             .pinned
             .into_iter()
@@ -791,9 +791,25 @@ async fn home(
             .into_iter()
             .map(|document| feed_item(&repository, document, primary_site_id))
             .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let category_sections = home
+            .category_sections
+            .into_iter()
+            .map(|section| {
+                let items = section
+                    .items
+                    .into_iter()
+                    .map(|document| feed_item(&repository, document, primary_site_id))
+                    .collect::<Result<Vec<_>, RepositoryError>>()?;
+                Ok(HomeCategorySection {
+                    category: category_summary(section.category),
+                    items,
+                })
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
         Ok(HomeResponse {
             pinned_items,
             recent_items,
+            category_sections,
         })
     })
     .await?;
@@ -2431,10 +2447,17 @@ struct FeedResponse {
 }
 
 #[derive(Debug, Serialize)]
+struct HomeCategorySection {
+    category: CategorySummary,
+    items: Vec<FeedPostSummary>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HomeResponse {
     pinned_items: Vec<FeedPostSummary>,
     recent_items: Vec<FeedPostSummary>,
+    category_sections: Vec<HomeCategorySection>,
 }
 
 #[derive(Debug, Serialize)]

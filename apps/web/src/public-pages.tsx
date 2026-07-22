@@ -38,6 +38,7 @@ import {
 } from "./auth-policy";
 import { safeBlogStylesheetUrl } from "./site-stylesheet";
 import { installSocialEmbedHydration } from "./social-embeds";
+import { presentHome } from "./home-presentation";
 import {
   AppLink,
   THEME_PRESETS,
@@ -71,7 +72,11 @@ const LEGACY_BLOG: BlogSummary = {
 export function FeedPage() {
   const { session, capabilities } = useSession();
   usePageTitle("홈");
-  const [home, setHome] = useState<HomeResponse>({ pinnedItems: [], recentItems: [] });
+  const [home, setHome] = useState<HomeResponse>({
+    pinnedItems: [],
+    recentItems: [],
+    categorySections: [],
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
 
@@ -88,7 +93,8 @@ export function FeedPage() {
     return () => controller.abort();
   }, []);
 
-  const total = home.pinnedItems.length + home.recentItems.length;
+  const presentation = useMemo(() => presentHome(home), [home]);
+  const total = presentation.total;
   const writeHref = session?.state === "authenticated"
     ? (session.blog ? "/studio/write" : "/onboarding")
     : "/login";
@@ -102,8 +108,11 @@ export function FeedPage() {
         </section>
         <nav aria-label="빠른 이동">
           <strong>빠른 이동</strong>
-          <a href="#home-pinned">주요 글</a>
-          <a href="#home-recent">최근 글</a>
+          {home.pinnedItems.length ? <a href="#home-pinned">주요 글</a> : null}
+          {presentation.categorySections.map((section) => (
+            <a href={`#${section.anchorId}`} key={section.category.id}>{section.category.title}</a>
+          ))}
+          {presentation.recentItems.length ? <a href="#home-recent">최근 글</a> : null}
           {capabilities?.references ? (
             <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
           ) : null}
@@ -146,8 +155,25 @@ export function FeedPage() {
         {home.pinnedItems.length ? (
           <HomePostSection id="home-pinned" items={home.pinnedItems} title="주요 글" tone="pinned" />
         ) : null}
-        {home.recentItems.length ? (
-          <HomePostSection id="home-recent" items={home.recentItems} title="최근 변경" tone="recent" />
+        {presentation.categorySections.map((section) => (
+          <HomePostSection
+            {...(section.category.description
+              ? { description: section.category.description }
+              : {})}
+            href={publicCategoryPath({
+              categorySlug: section.category.slug,
+              handle: "",
+              primary: true,
+            })}
+            id={section.anchorId}
+            items={section.items}
+            key={section.category.id}
+            title={section.category.title}
+            tone="category"
+          />
+        ))}
+        {presentation.recentItems.length ? (
+          <HomePostSection id="home-recent" items={presentation.recentItems} title="최근 변경" tone="recent" />
         ) : null}
       </div>
     </div>
@@ -194,20 +220,29 @@ export function ReferencesPage({ capabilities }: { capabilities: Capabilities | 
 }
 
 function HomePostSection({
+  description,
+  href,
   id,
   items,
   title,
   tone,
 }: {
+  description?: string;
+  href?: string;
   id: string;
   items: FeedPostSummary[];
   title: string;
-  tone: "pinned" | "recent";
+  tone: "pinned" | "category" | "recent";
 }) {
   return (
     <section className={`wiki-panel wiki-panel-${tone}`} id={id} aria-labelledby={`${id}-title`}>
       <div className="wiki-panel-heading">
-        <h2 id={`${id}-title`}>{title}</h2>
+        <div className="wiki-panel-heading-copy">
+          <h2 id={`${id}-title`}>
+            {href ? <AppLink href={href}>{title}</AppLink> : title}
+          </h2>
+          {description ? <p className="wiki-panel-description">{description}</p> : null}
+        </div>
         <span>{items.length}개</span>
       </div>
       <div className="wiki-post-list">
@@ -221,7 +256,6 @@ function DensePostRow({ post }: { post: FeedPostSummary }) {
   const href = publicFeedPostPath(post);
   return (
     <article className="wiki-post-row">
-      <div className="wiki-post-index" aria-hidden="true">{post.title.slice(0, 1)}</div>
       <div className="wiki-post-copy">
         <h3><AppLink href={href}>{post.title}</AppLink></h3>
         <p>{post.excerpt}</p>
@@ -252,7 +286,7 @@ async function loadHome(signal?: AbortSignal): Promise<HomeResponse> {
     return await client.home(signal);
   } catch (reason) {
     if (!isNotFound(reason)) throw reason;
-    return { pinnedItems: [], recentItems: await loadFeed(signal) };
+    return { pinnedItems: [], recentItems: await loadFeed(signal), categorySections: [] };
   }
 }
 

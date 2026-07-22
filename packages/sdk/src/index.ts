@@ -322,9 +322,16 @@ export interface FeedResponse {
   items: FeedPostSummary[];
 }
 
+export interface HomeCategorySection {
+  category: CategorySummary;
+  items: FeedPostSummary[];
+}
+
 export interface HomeResponse {
   pinnedItems: FeedPostSummary[];
   recentItems: FeedPostSummary[];
+  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  categorySections?: HomeCategorySection[];
 }
 
 export interface HomePinsResponse {
