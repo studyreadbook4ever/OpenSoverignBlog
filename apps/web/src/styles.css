@@ -765,13 +765,16 @@ img { display: block; max-width: 100%; }
 .wiki-panel { margin-top: 1rem; background: #fff; border: 1px solid var(--line); border-radius: .2rem; }
 .wiki-panel-heading { display: flex; justify-content: space-between; align-items: center; min-height: 42px; padding: .55rem .8rem; color: #fff; background: #315d48; }
 .wiki-panel-recent .wiki-panel-heading { color: var(--ink); background: #eceeea; border-bottom: 1px solid var(--line); }
+.wiki-panel-heading-copy { display: grid; gap: .15rem; min-width: 0; }
 .wiki-panel-heading h2 { margin: 0; font-size: .92rem; letter-spacing: -.01em; }
-.wiki-panel-heading span { font: 700 .68rem/1 ui-monospace, monospace; opacity: .8; }
+.wiki-panel-heading h2 a { color: inherit; text-decoration: none; }
+.wiki-panel-heading h2 a:hover { text-decoration: underline; text-underline-offset: .16em; }
+.wiki-panel-description { margin: 0; font-size: .72rem; line-height: 1.35; opacity: .82; }
+.wiki-panel-heading > span { font: 700 .68rem/1 ui-monospace, monospace; opacity: .8; }
 .wiki-post-list { display: grid; }
-.wiki-post-row { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; gap: .75rem; align-items: center; min-height: 92px; padding: .75rem .85rem; border-bottom: 1px solid #e9ebe7; }
+.wiki-post-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: center; min-height: 92px; padding: .75rem .85rem; border-bottom: 1px solid #e9ebe7; }
 .wiki-post-row:last-child { border-bottom: 0; }
 .wiki-post-row:hover { background: #fafbf8; }
-.wiki-post-index { display: grid; width: 30px; height: 30px; place-items: center; color: #315d48; background: #edf3ef; border: 1px solid #cad8cf; border-radius: .2rem; font-weight: 850; }
 .wiki-post-copy { min-width: 0; }
 .wiki-post-copy h3 { margin: 0 0 .22rem; font-size: 1rem; line-height: 1.35; }
 .wiki-post-copy h3 a { text-decoration: none; }
@@ -844,8 +847,7 @@ img { display: block; max-width: 100%; }
   .wiki-sidebar nav, .wiki-sidebar dl { display: none; }
   .wiki-write { margin-top: .8rem; }
   .wiki-welcome { padding: .9rem; }
-  .wiki-post-row { grid-template-columns: 26px minmax(0, 1fr); gap: .55rem; padding: .65rem; }
-  .wiki-post-index { width: 26px; height: 26px; }
+  .wiki-post-row { grid-template-columns: minmax(0, 1fr); gap: .55rem; padding: .65rem; }
   .wiki-post-row > .list-arrow { display: none; }
   .wiki-post-copy > p { -webkit-line-clamp: 2; }
   .osb-embed-facade { grid-template-columns: auto minmax(0, 1fr); }

@@ -4143,11 +4143,11 @@
     },
     {
       "name": "fast-uri",
-      "version": "3.1.3",
+      "version": "3.1.4",
       "licenseExpression": "BSD-3-Clause",
       "selectedLicense": null,
-      "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.3.tgz",
-      "integrity": "sha512-i70LwGWUduXqzicKXWshooq+sWL1K3WUU5rKZNG/0i3a1OSoX3HqhH5WbWwTmqWfor4urUakGPiRQcleRZTwOg==",
+      "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.4.tgz",
+      "integrity": "sha512-8JnbkQ4juDyvYs4mgFGQqg4yCYtFDtUtmp2QIQq11ZZe5CFQ5wcqm1rqDgAh/QdMySuBnPzMUiJUNZG5N/AiQw==",
       "development": true,
       "optional": false,
       "lockPaths": [

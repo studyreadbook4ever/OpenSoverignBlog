@@ -422,8 +422,8 @@ paths:
     get:
       tags: [Content]
       operationId: getCuratedHome
-      summary: Read the optional pinned-first global home projection
-      description: Mounted only when the bundled home-curation DLC is active. Pinned posts never repeat in recentItems.
+      summary: Read the optional curated home projection
+      description: Mounted only when the bundled home-curation DLC is active. Pinned posts never repeat in recentItems or categorySections; category sections project active primary-site categories and their posts from oldest to newest.
       x-osb-route-source: true
       responses:
         "200":
@@ -3139,10 +3139,21 @@ components:
           type: array
           items: { $ref: "#/components/schemas/FeedPostSummary" }
 
+    HomeCategorySection:
+      type: object
+      additionalProperties: false
+      required: [category, items]
+      properties:
+        category: { $ref: "#/components/schemas/CategorySummary" }
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/FeedPostSummary" }
+
     HomeResponse:
       type: object
       additionalProperties: false
-      required: [pinnedItems, recentItems]
+      required: [pinnedItems, recentItems, categorySections]
       properties:
         pinnedItems:
           type: array
@@ -3151,6 +3162,10 @@ components:
         recentItems:
           type: array
           items: { $ref: "#/components/schemas/FeedPostSummary" }
+        categorySections:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/HomeCategorySection" }
 
     HomePins:
       type: object

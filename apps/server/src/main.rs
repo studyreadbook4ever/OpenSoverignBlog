@@ -4587,6 +4587,60 @@ mod tests {
             .activate_composed("comments", "test comment routes")
             .unwrap();
         state.features = Arc::new(features);
+        let control = state.repository.get_admin_control_plane().unwrap();
+        let owner = state
+            .repository
+            .get_user_by_id(control.owner_user_id)
+            .unwrap();
+        let category = state
+            .repository
+            .create_category(
+                control.owner_user_id,
+                state.site_id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "yangja".into(),
+                    title: "yangja".into(),
+                    description: Some("양자 컴퓨팅".into()),
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let publish_category_post = |title: &str, slug: &str| {
+            let document = state
+                .repository
+                .create_document_in_writable_site_with_category(
+                    control.owner_user_id,
+                    NewDocument {
+                        site_id: state.site_id,
+                        title: title.into(),
+                        slug: slug.into(),
+                        source_markdown: format!("# {title}"),
+                        embeds: vec![],
+                        intent: None,
+                        ontology: None,
+                        authorship: Default::default(),
+                        ai_summary: None,
+                        actor: RevisionActor {
+                            kind: RevisionActorKind::Human,
+                            id: owner.id.to_string(),
+                            display_name: Some(owner.display_name.clone()),
+                        },
+                    },
+                    Some(category.id),
+                )
+                .unwrap();
+            state
+                .repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    state.site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap()
+        };
+        let category_first = publish_category_post("Category first", "category-first");
+        let category_second = publish_category_post("Category second", "category-second");
         let first = seed_community_post(&state, "curator-a", "curator-a-blog", "Pinned", "pinned");
         let second = seed_community_post(&state, "curator-b", "curator-b-blog", "Recent", "recent");
 
@@ -4640,8 +4694,33 @@ mod tests {
         let payload = json(home).await;
         assert_eq!(payload["pinnedItems"][0]["id"], first.id.to_string());
         assert_eq!(payload["recentItems"][0]["id"], second.id.to_string());
-        assert_eq!(payload["recentItems"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["recentItems"].as_array().unwrap().len(), 3);
+        assert!(
+            payload["recentItems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| item["id"] != first.id.to_string())
+        );
         assert_eq!(payload["pinnedItems"][0]["authorship"]["kind"], "human");
+        assert_eq!(payload["categorySections"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["categorySections"][0]["category"]["slug"], "yangja");
+        assert_eq!(
+            payload["categorySections"][0]["category"]["description"],
+            "양자 컴퓨팅"
+        );
+        assert_eq!(
+            payload["categorySections"][0]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                category_first.id.to_string(),
+                category_second.id.to_string()
+            ]
+        );
     }
 
     #[tokio::test]

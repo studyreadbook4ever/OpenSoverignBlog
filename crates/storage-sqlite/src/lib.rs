@@ -217,9 +217,16 @@ pub struct HomePinRecord {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct HomeCategorySectionRecords {
+    pub category: CategoryRecord,
+    pub items: Vec<DocumentSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct HomeFeedRecords {
     pub pinned: Vec<DocumentSnapshot>,
     pub recent: Vec<DocumentSnapshot>,
+    pub category_sections: Vec<HomeCategorySectionRecords>,
 }
 
 /// Operator intent for SQLite's local WAL durability/latency trade-off.
@@ -2477,36 +2484,13 @@ impl SqliteRepository {
     ) -> Result<Vec<DocumentSnapshot>, RepositoryError> {
         let connection = self.lock()?;
         load_category_by_id(&connection, site_id, category_id)?;
-        let mut statement = connection
-            .prepare(
-                "SELECT document.id
-                 FROM documents document
-                 JOIN revision_categories placement
-                   ON placement.revision_id = document.published_revision_id
-                  AND placement.document_id = document.id
-                  AND placement.site_id = document.site_id
-                 JOIN revisions published ON published.id = document.published_revision_id
-                 WHERE document.site_id = ?1 AND placement.category_id = ?2
-                   AND document.published_revision_id IS NOT NULL
-                   AND document.status != 'archived'
-                 ORDER BY published.created_at DESC, document.id DESC LIMIT ?3",
-            )
-            .map_err(storage_error)?;
-        let ids = statement
-            .query_map(
-                params![
-                    site_id.to_string(),
-                    category_id.to_string(),
-                    limit.min(500) as i64
-                ],
-                |row| row.get::<_, String>(0),
-            )
-            .map_err(storage_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(storage_error)?;
-        ids.into_iter()
-            .map(|id| load_document(&connection, parse_uuid(&id)?, RevisionSelector::Published))
-            .collect()
+        list_published_in_category_with_connection(
+            &connection,
+            site_id,
+            category_id,
+            limit,
+            CategoryPostOrder::NewestFirst,
+        )
     }
 
     pub fn create_document_in_owned_site(
@@ -3041,9 +3025,15 @@ impl SqliteRepository {
     }
 
     /// Returns a coherent public home snapshot: curated documents in slot
-    /// order and then newest published documents with every pin removed.
-    pub fn home_feed(&self, recent_limit: usize) -> Result<HomeFeedRecords, RepositoryError> {
+    /// order, newest published documents with every pin removed, and bounded
+    /// primary-site category trees in category/document creation order.
+    pub fn home_feed(
+        &self,
+        primary_site_id: Uuid,
+        recent_limit: usize,
+    ) -> Result<HomeFeedRecords, RepositoryError> {
         let connection = self.lock()?;
+        load_site_by_id(&connection, primary_site_id, None)?;
         let pins = load_home_pins(&connection)?;
         let mut pinned = Vec::with_capacity(pins.len());
         let mut pinned_ids = std::collections::BTreeSet::new();
@@ -3067,7 +3057,53 @@ impl SqliteRepository {
         .filter(|document| !pinned_ids.contains(&document.id))
         .take(recent_limit.min(500))
         .collect();
-        Ok(HomeFeedRecords { pinned, recent })
+
+        let categories = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT id, site_id, slug, title, description, theme_profile, status,
+                            created_by_user_id, created_at, updated_at
+                     FROM categories
+                     WHERE site_id = ?1 AND status = 'active'
+                     ORDER BY created_at ASC, id ASC
+                     LIMIT 500",
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![primary_site_id.to_string()], stored_category_row)
+                .map_err(storage_error)?
+                .map(|row| row.map_err(storage_error).and_then(parse_category_row))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let mut category_sections = Vec::new();
+        let mut remaining = recent_limit.min(500);
+        for category in categories {
+            if remaining == 0 {
+                break;
+            }
+            let fetch_limit = remaining.saturating_add(pinned_ids.len()).min(500);
+            let items = list_published_in_category_with_connection(
+                &connection,
+                primary_site_id,
+                category.id,
+                fetch_limit,
+                CategoryPostOrder::OldestFirst,
+            )?
+            .into_iter()
+            .filter(|document| !pinned_ids.contains(&document.id))
+            .take(remaining)
+            .collect::<Vec<_>>();
+            if items.is_empty() {
+                continue;
+            }
+            remaining = remaining.saturating_sub(items.len());
+            category_sections.push(HomeCategorySectionRecords { category, items });
+        }
+        Ok(HomeFeedRecords {
+            pinned,
+            recent,
+            category_sections,
+        })
     }
 }
 
@@ -3872,6 +3908,12 @@ enum RevisionSelector {
     Published,
 }
 
+#[derive(Clone, Copy)]
+enum CategoryPostOrder {
+    NewestFirst,
+    OldestFirst,
+}
+
 type StoredDocumentRow = (
     String,
     String,
@@ -3969,6 +4011,48 @@ fn list_documents_with_selector(
         .map_err(storage_error)?;
     ids.into_iter()
         .map(|id| load_document(connection, parse_uuid(&id)?, selector))
+        .collect()
+}
+
+fn list_published_in_category_with_connection(
+    connection: &Connection,
+    site_id: Uuid,
+    category_id: Uuid,
+    limit: usize,
+    order: CategoryPostOrder,
+) -> Result<Vec<DocumentSnapshot>, RepositoryError> {
+    let ordering = match order {
+        CategoryPostOrder::NewestFirst => "published.created_at DESC, document.id DESC",
+        CategoryPostOrder::OldestFirst => "document.created_at ASC, document.id ASC",
+    };
+    let sql = format!(
+        "SELECT document.id
+         FROM documents document
+         JOIN revision_categories placement
+           ON placement.revision_id = document.published_revision_id
+          AND placement.document_id = document.id
+          AND placement.site_id = document.site_id
+         JOIN revisions published ON published.id = document.published_revision_id
+         WHERE document.site_id = ?1 AND placement.category_id = ?2
+           AND document.published_revision_id IS NOT NULL
+           AND document.status != 'archived'
+         ORDER BY {ordering} LIMIT ?3"
+    );
+    let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+    let ids = statement
+        .query_map(
+            params![
+                site_id.to_string(),
+                category_id.to_string(),
+                limit.min(500) as i64
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    ids.into_iter()
+        .map(|id| load_document(connection, parse_uuid(&id)?, RevisionSelector::Published))
         .collect()
 }
 
@@ -9012,13 +9096,14 @@ mod tests {
             pins.iter().map(|pin| pin.document_id).collect::<Vec<_>>(),
             ordered
         );
-        let home = repository.home_feed(100).unwrap();
+        let home = repository.home_feed(site_id, 100).unwrap();
         assert_eq!(
             home.pinned.iter().map(|item| item.id).collect::<Vec<_>>(),
             ordered
         );
         assert_eq!(home.recent.len(), 1);
         assert_eq!(home.recent[0].id, published[3]);
+        assert!(home.category_sections.is_empty());
 
         assert!(matches!(
             repository.replace_home_pins(control.owner_user_id, &[published[0], published[0]]),
@@ -9037,6 +9122,254 @@ mod tests {
             Err(RepositoryError::Validation(_))
         ));
         assert_eq!(repository.list_home_pins().unwrap(), pins);
+    }
+
+    #[test]
+    fn home_category_sections_are_primary_active_oldest_first_bounded_and_pin_free() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[9; 32],
+            )
+            .unwrap();
+        let create_category = |slug: &str, title: &str| {
+            repository
+                .create_category(
+                    control.owner_user_id,
+                    site_id,
+                    CreateCategoryInput {
+                        slug: slug.into(),
+                        title: title.into(),
+                        description: Some(format!("{title} description")),
+                        theme_profile: None,
+                    },
+                )
+                .unwrap()
+        };
+        let empty = create_category("empty", "Empty");
+        let yangja = create_category("yangja", "yangja");
+        let ontology = create_category("ontology", "ontology");
+        let archived = create_category("archived", "Archived");
+        let publish = |title: &str, slug: &str, category_id: Uuid| {
+            let document = repository
+                .create_document_in_writable_site_with_category(
+                    control.owner_user_id,
+                    new_document(site_id, title, slug),
+                    Some(category_id),
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap()
+        };
+        let tied_a = publish("Tied A", "tied-a", yangja.id);
+        let middle = publish("Middle", "middle", yangja.id);
+        let tied_b = publish("Tied B", "tied-b", yangja.id);
+        let pinned = publish("Pinned", "pinned", yangja.id);
+        let ontology_post = publish("Ontology post", "ontology-post", ontology.id);
+        publish("Archived post", "archived-post", archived.id);
+        repository
+            .archive_category(control.owner_user_id, site_id, archived.id)
+            .unwrap();
+
+        let foreign_owner = community_user(&repository, "foreign-home-owner");
+        let foreign_site = community_site(&repository, foreign_owner.id, "foreign-home-site");
+        let foreign_category = repository
+            .create_category(
+                foreign_owner.id,
+                foreign_site.id,
+                CreateCategoryInput {
+                    slug: "foreign".into(),
+                    title: "Foreign".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let foreign_document = repository
+            .create_document_in_writable_site_with_category(
+                foreign_owner.id,
+                new_document(foreign_site.id, "Foreign post", "foreign-post"),
+                Some(foreign_category.id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                foreign_owner.id,
+                foreign_site.id,
+                foreign_document.id,
+                foreign_document.current_revision_id,
+            )
+            .unwrap();
+
+        {
+            let connection = repository.lock().unwrap();
+            for (category_id, created_at) in [
+                (empty.id, "2025-12-01T00:00:00+00:00"),
+                (yangja.id, "2026-01-01T00:00:00+00:00"),
+                (ontology.id, "2026-02-01T00:00:00+00:00"),
+            ] {
+                connection
+                    .execute(
+                        "UPDATE categories SET created_at = ?1 WHERE id = ?2",
+                        params![created_at, category_id.to_string()],
+                    )
+                    .unwrap();
+            }
+            for (document_id, created_at) in [
+                (tied_a.id, "2026-03-01T00:00:00+00:00"),
+                (tied_b.id, "2026-03-01T00:00:00+00:00"),
+                (middle.id, "2026-04-01T00:00:00+00:00"),
+                (pinned.id, "2026-05-01T00:00:00+00:00"),
+            ] {
+                connection
+                    .execute(
+                        "UPDATE documents SET created_at = ?1 WHERE id = ?2",
+                        params![created_at, document_id.to_string()],
+                    )
+                    .unwrap();
+            }
+            for (revision_id, published_at) in [
+                (
+                    tied_a.published_revision_id.unwrap(),
+                    "2026-03-01T00:00:00+00:00",
+                ),
+                (
+                    tied_b.published_revision_id.unwrap(),
+                    "2026-03-01T00:00:00+00:00",
+                ),
+                (
+                    middle.published_revision_id.unwrap(),
+                    "2026-04-01T00:00:00+00:00",
+                ),
+                (
+                    pinned.published_revision_id.unwrap(),
+                    "2026-05-01T00:00:00+00:00",
+                ),
+            ] {
+                connection
+                    .execute(
+                        "UPDATE revisions SET created_at = ?1 WHERE id = ?2",
+                        params![published_at, revision_id.to_string()],
+                    )
+                    .unwrap();
+            }
+        }
+
+        let earliest_tied = if tied_a.id < tied_b.id {
+            &tied_a
+        } else {
+            &tied_b
+        };
+        let republished = repository
+            .revise_document_in_owned_site(
+                control.owner_user_id,
+                site_id,
+                ProposedRevision {
+                    document_id: earliest_tied.id,
+                    base_revision_id: earliest_tied.current_revision_id,
+                    title: format!("{} republished", earliest_tied.revision.title),
+                    slug: earliest_tied.revision.slug.clone(),
+                    source_markdown: "A later publication must not change first-written order."
+                        .into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                site_id,
+                earliest_tied.id,
+                republished.id,
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_published_in_category(site_id, yangja.id, 100)
+                .unwrap()[0]
+                .id,
+            earliest_tied.id,
+            "the category archive remains publication-newest-first"
+        );
+
+        repository
+            .replace_home_pins(control.owner_user_id, &[pinned.id])
+            .unwrap();
+        let home = repository.home_feed(site_id, 100).unwrap();
+        assert_eq!(
+            home.category_sections
+                .iter()
+                .map(|section| section.category.slug.as_str())
+                .collect::<Vec<_>>(),
+            vec!["yangja", "ontology"]
+        );
+        let mut tied_ids = vec![tied_a.id, tied_b.id];
+        tied_ids.sort();
+        tied_ids.push(middle.id);
+        assert_eq!(
+            home.category_sections[0]
+                .items
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            tied_ids
+        );
+        assert_eq!(
+            home.category_sections[1]
+                .items
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            vec![ontology_post.id]
+        );
+        assert!(home.category_sections.iter().all(|section| {
+            section
+                .items
+                .iter()
+                .all(|document| document.id != pinned.id)
+        }));
+
+        let expected_recent = repository
+            .list_published_across_sites(100)
+            .unwrap()
+            .into_iter()
+            .filter(|document| document.id != pinned.id)
+            .map(|document| document.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            home.recent
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            expected_recent
+        );
+
+        let bounded = repository.home_feed(site_id, 2).unwrap();
+        assert_eq!(
+            bounded
+                .category_sections
+                .iter()
+                .map(|section| section.items.len())
+                .sum::<usize>(),
+            2
+        );
+        assert_eq!(bounded.category_sections.len(), 1);
+        assert_eq!(bounded.category_sections[0].category.slug, "yangja");
     }
 
     #[test]
