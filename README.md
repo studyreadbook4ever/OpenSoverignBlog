@@ -45,12 +45,18 @@ requires Rust 1.88 and Node.js 22+.
 ```sh
 cargo build --release -p osb-cli
 
-./target/release/osb bootstrap \
+./scripts/osb-init.sh ko \
   --directory /srv/osb/my-blog \
   --public-url https://blog.example.com
 ```
 
-In a terminal, bootstrap asks for administrator auth, style, cache, and DLCs.
+Use `./scripts/osb-init.sh en ...` for an English installation. The wrapper also
+accepts the canonical form `--language ko|en`, honors `OSB_BIN` when packaging
+the CLI elsewhere, and otherwise uses a repository build or `cargo run`.
+
+In a terminal, bootstrap asks for language first, followed by administrator
+auth, style, cache, and DLCs. If language is omitted, pressing Enter selects
+Korean. Non-interactive bootstrap also defaults to Korean.
 It then prints one exact, project-scoped `docker compose` start command. Run
 that command; do not invent another Compose project name. The generated
 `osb.intent.json` also retains the same `composeProject` and next commands for a
@@ -62,6 +68,7 @@ For a repeatable non-interactive personal deployment without Redis:
 ./target/release/osb bootstrap \
   --directory /srv/osb/my-blog \
   --non-interactive \
+  --language en \
   --intent personal \
   --public-url https://blog.example.com \
   --admin-auth access-key \
@@ -236,19 +243,28 @@ into the deployment, bounded, SHA-256 pinned in the installation lock, and
 served only through the first-party CSS boundary. The original workstation
 path is not retained as the durable contract.
 
-The public home shows up to three administrator-selected posts first and then
-recently published changes without duplicates. Studio provides a direct
-title/Markdown writing surface, preview, explicit publication review, pinned
-home management, portable AI authorship disclosure, and typed YouTube/X embed
-insertion. YouTube uses a privacy-enhanced, click-to-load iframe; X remains a
-safe link card in this initial adapter. Arbitrary embed HTML is never accepted.
+The public home shows up to three administrator-selected posts first, ordered
+Series sections, ordinary category sections, and then recently published
+changes without duplicates. Series and category sections have independent,
+accessible collapse controls. Studio starts creation with an explicit
+Post-versus-Series choice, appends a published Series post to the reading-order
+tail, and lets the owner reorder the exact published member set. An existing
+category can be promoted idempotently without changing its URLs or published
+revision placement.
+
+Studio also provides a direct title/Markdown writing surface, preview, explicit
+publication review, pinned-home management, portable AI authorship disclosure,
+and typed YouTube/X embed insertion. YouTube uses a privacy-enhanced,
+click-to-load iframe; X remains a safe link card in this initial adapter.
+Arbitrary embed HTML is never accepted.
 The primary site's category pages use `/category` and `/category/slug`.
 Additional community blogs use `/@handle/category` and
 `/@handle/category/slug`; uncategorized posts retain `/@handle/slug`.
-Category landing pages are first-class reader pages, and Studio keeps category
-creation/appearance separate from writing. Legacy flat post paths redirect to
-the corresponding natural category path only when the site's published leaf
-slug has one unambiguous match; duplicate leaves across categories stay 404.
+Category-backed Series keep those same natural routes. Category landing pages
+are first-class reader pages, and Studio keeps category creation/appearance
+separate from writing. Legacy flat post paths redirect to the corresponding
+natural category path only when the site's published leaf slug has one
+unambiguous match; duplicate leaves across categories stay 404.
 
 ## DLC lifecycle
 
@@ -308,6 +324,7 @@ Every interactive structural choice has a non-interactive flag:
 | --- | --- |
 | `--directory DIR` | Fresh deployment directory; default `.` |
 | `--non-interactive` | Never prompt; use supplied and documented defaults |
+| `--language ko\|en` | Product and starter-content language; non-interactive default `ko` |
 | `--compose-file FILE` | Compose bundle to record; default checkout `compose.yaml` |
 | `--compose-project NAME` | Reuse an existing Compose project; default isolated `osb-UUID` |
 | `--site-id UUID` | Stable content identity; required when creating a delivery restore |
@@ -319,7 +336,7 @@ Every interactive structural choice has a non-interactive flag:
 | `--external-issuer-url URL` | Exact OIDC issuer for external admin |
 | `--external-client-id ID` | OIDC client ID |
 | `--external-owner-subject SUB` | Only stable OIDC subject allowed to administer |
-| `--external-label TEXT` | External-login button label |
+| `--external-label TEXT` | External-login button label; otherwise localized from `--language` |
 | `--registration enabled\|disabled` | Local member signup; default disabled |
 | `--comments enabled\|disabled` | Community comments; community intent defaults enabled |
 | `--collaboration enabled\|disabled` | Invited co-authors; default disabled |
@@ -327,6 +344,7 @@ Every interactive structural choice has a non-interactive flag:
 | `--style none\|builtin:ID` | Exact absent or built-in style |
 | `--css-file FILE` | Copy and pin an exact custom stylesheet; conflicts with `--style` |
 | `--references-file FILE` | Copy and integrity-pin the global references Markdown |
+| `--references-label TEXT` | References navigation label; otherwise localized from `--language` |
 | `--seo enabled\|disabled` | SEO intent and DLC default; default enabled |
 | `--agent-discovery enabled\|disabled` | `agent.txt`, `agents.txt`, `llms.txt`; default enabled |
 | `--cache none\|redis-standalone\|redis-managed` | Cache composition; prompt default managed |

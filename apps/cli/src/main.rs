@@ -47,7 +47,7 @@ struct Args {
 enum Command {
     /// Create a complete human- and AI-readable on-premise deployment intent.
     #[command(alias = "init")]
-    Bootstrap(BootstrapArgs),
+    Bootstrap(Box<BootstrapArgs>),
     /// Validate semantic configuration, storage paths, and Redis readiness.
     Doctor(DoctorArgs),
     /// Verify, adopt, or atomically update the installation manifest and lock.
@@ -83,7 +83,7 @@ enum BackupAction {
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
-        Command::Bootstrap(options) => bootstrap::bootstrap(options),
+        Command::Bootstrap(options) => bootstrap::bootstrap(*options),
         Command::Doctor(options) => bootstrap::doctor(options),
         Command::Installation(options) => bootstrap::installation(options),
         Command::Local(options) => local::run(args.database, options),

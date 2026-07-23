@@ -142,6 +142,7 @@ services:
       OSB_STYLE: "${OSB_STYLE:-}"
       OSB_CACHE: "${OSB_CACHE:-}"
       OSB_PUBLIC_URL: "${OSB_PUBLIC_URL:-}"
+      OSB_LANGUAGE: "${OSB_LANGUAGE:-}"
       OSB_ARTICLE_BASE_PATH: "${OSB_ARTICLE_BASE_PATH:-}"
       OSB_SITE_ID: "${OSB_SITE_ID:-}"
       OSB_NO_INDEX: "${OSB_NO_INDEX:-}"

@@ -11,6 +11,7 @@ Use the CLI instead of assembling environment variables by hand:
 ```sh
 osb bootstrap \
   --directory /srv/open-soverign-blog/community \
+  --language en \
   --intent community \
   --public-url https://notes.example.com \
   --comments enabled \
@@ -106,6 +107,7 @@ start and doctor commands so the process loads the new lock. See
 
 | TOML | Environment | Values and meaning |
 | --- | --- | --- |
+| `server.language` | `OSB_LANGUAGE` | Human-facing product and starter-content language: `ko` or `en`; defaults to `ko` |
 | `semantic.intent` | `OSB_INTENT` | `personal`, `community`, or `delivery` |
 | `admin.auth` | `OSB_ADMIN_AUTH` | Administrator control plane: `access_key`, `external`, or `disabled` |
 | `admin.session_days` | `OSB_ADMIN_SESSION_DAYS` | Opaque administrator session lifetime, 1–365 days |

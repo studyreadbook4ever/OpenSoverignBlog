@@ -58,6 +58,37 @@ const RECOMMENDED_PERSONAL_DLCS: [&str; 5] = [
     "release-check",
 ];
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LanguageChoice {
+    #[default]
+    Ko,
+    En,
+}
+
+impl LanguageChoice {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ko => "ko",
+            Self::En => "en",
+        }
+    }
+
+    fn external_label(self) -> &'static str {
+        match self {
+            Self::Ko => "외부 계정으로 계속하기",
+            Self::En => "Continue with external account",
+        }
+    }
+
+    fn references_label(self) -> &'static str {
+        match self {
+            Self::Ko => "레퍼런스",
+            Self::En => "References",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Intent {
@@ -202,6 +233,9 @@ pub struct BootstrapArgs {
     /// Never prompt; unspecified structural choices retain compatibility defaults.
     #[arg(long)]
     pub non_interactive: bool,
+    /// Human-facing language for prompts, bundled UI, and generated starter content.
+    #[arg(long, value_enum, value_name = "ko|en")]
+    pub language: Option<LanguageChoice>,
     /// Compose bundle from this source checkout. Defaults to ./compose.yaml.
     #[arg(long)]
     pub compose_file: Option<PathBuf>,
@@ -236,8 +270,8 @@ pub struct BootstrapArgs {
     #[arg(long)]
     pub external_owner_subject: Option<String>,
     /// Human-facing label for the external login button.
-    #[arg(long, default_value = "외부 계정으로 계속하기")]
-    pub external_label: String,
+    #[arg(long)]
+    pub external_label: Option<String>,
     /// Allow new local accounts. Closed is the safe default.
     #[arg(long, value_enum, default_value_t = Toggle::Disabled)]
     pub registration: Toggle,
@@ -259,6 +293,9 @@ pub struct BootstrapArgs {
     /// Install this UTF-8 Markdown file as the instance-wide references policy.
     #[arg(long, value_name = "FILE")]
     pub references_file: Option<PathBuf>,
+    /// Human-facing navigation label for the instance-wide references policy.
+    #[arg(long)]
+    pub references_label: Option<String>,
     /// Canonical metadata, robots policy, and sitemap.
     #[arg(long, value_enum, default_value_t = Toggle::Enabled)]
     pub seo: Toggle,
@@ -533,6 +570,29 @@ fn resolve_prompted_args_with(
     reader: &mut impl BufRead,
     writer: &mut impl Write,
 ) -> Result<()> {
+    if args.language.is_none() {
+        args.language = Some(if interactive {
+            let answer = prompt(
+                reader,
+                writer,
+                "Language / 언어 (ko=한국어, en=English)",
+                "ko",
+            )?;
+            match answer.trim().to_ascii_lowercase().as_str() {
+                "ko" => LanguageChoice::Ko,
+                "en" => LanguageChoice::En,
+                _ => bail!("language must be ko or en / 언어는 ko 또는 en이어야 합니다"),
+            }
+        } else {
+            LanguageChoice::Ko
+        });
+    }
+    let language = args.language.unwrap_or_default();
+    args.external_label
+        .get_or_insert_with(|| language.external_label().to_owned());
+    args.references_label
+        .get_or_insert_with(|| language.references_label().to_owned());
+
     if !interactive {
         return Ok(());
     }
@@ -546,7 +606,10 @@ fn resolve_prompted_args_with(
         let answer = prompt(
             reader,
             writer,
-            "Administrator auth (access-key, external, disabled)",
+            match language {
+                LanguageChoice::Ko => "관리자 인증 (access-key, external, disabled)",
+                LanguageChoice::En => "Administrator auth (access-key, external, disabled)",
+            },
             default,
         )?;
         args.admin_auth = Some(
@@ -563,7 +626,10 @@ fn resolve_prompted_args_with(
             args.external_issuer_url = Some(prompt(
                 reader,
                 writer,
-                "OIDC issuer URL",
+                match language {
+                    LanguageChoice::Ko => "OIDC 발급자 URL",
+                    LanguageChoice::En => "OIDC issuer URL",
+                },
                 "https://identity.example",
             )?);
         }
@@ -571,7 +637,10 @@ fn resolve_prompted_args_with(
             args.external_client_id = Some(prompt(
                 reader,
                 writer,
-                "OIDC client id",
+                match language {
+                    LanguageChoice::Ko => "OIDC 클라이언트 ID",
+                    LanguageChoice::En => "OIDC client id",
+                },
                 "open-soverign-blog",
             )?);
         }
@@ -579,7 +648,10 @@ fn resolve_prompted_args_with(
             args.external_owner_subject = Some(prompt(
                 reader,
                 writer,
-                "Exact administrator OIDC subject (sub)",
+                match language {
+                    LanguageChoice::Ko => "관리자 OIDC 주체(sub)의 정확한 값",
+                    LanguageChoice::En => "Exact administrator OIDC subject (sub)",
+                },
                 "owner-subject",
             )?);
         }
@@ -589,7 +661,10 @@ fn resolve_prompted_args_with(
         let answer = prompt(
             reader,
             writer,
-            "Style (none, builtin:STYLE, file:/path/to/style.css)",
+            match language {
+                LanguageChoice::Ko => "스타일 (none, builtin:STYLE, file:/path/to/style.css)",
+                LanguageChoice::En => "Style (none, builtin:STYLE, file:/path/to/style.css)",
+            },
             "builtin:paper",
         )?;
         if let Some(path) = answer.strip_prefix("file:") {
@@ -604,7 +679,10 @@ fn resolve_prompted_args_with(
         let answer = prompt(
             reader,
             writer,
-            "Cache (none, redis-standalone, redis-managed)",
+            match language {
+                LanguageChoice::Ko => "캐시 (none, redis-standalone, redis-managed)",
+                LanguageChoice::En => "Cache (none, redis-standalone, redis-managed)",
+            },
             "redis-managed",
         )?;
         args.cache = Some(
@@ -626,7 +704,14 @@ fn resolve_prompted_args_with(
         let answer = prompt(
             reader,
             writer,
-            "Optional DLC aliases, comma-separated (seo, home-curation, ai-authorship, ai-summary, social-embeds, release-check, comments, rbac, external-auth, code-runner, ads; or none)",
+            match language {
+                LanguageChoice::Ko => {
+                    "선택 DLC 별칭, 쉼표로 구분 (seo, home-curation, ai-authorship, ai-summary, social-embeds, release-check, comments, rbac, external-auth, code-runner, ads; 또는 none)"
+                }
+                LanguageChoice::En => {
+                    "Optional DLC aliases, comma-separated (seo, home-curation, ai-authorship, ai-summary, social-embeds, release-check, comments, rbac, external-auth, code-runner, ads; or none)"
+                }
+            },
             default_dlcs,
         )?;
         if answer.eq_ignore_ascii_case("none") {
@@ -796,7 +881,10 @@ fn resolve_references_source(args: &BootstrapArgs) -> Result<ResolvedReferences>
         fs::read(path)
             .with_context(|| format!("failed to read references source {}", path.display()))?
     } else {
-        include_bytes!("../../../deploy/references.md").to_vec()
+        match args.language.unwrap_or_default() {
+            LanguageChoice::Ko => include_bytes!("../../../deploy/references.md").to_vec(),
+            LanguageChoice::En => include_bytes!("../../../deploy/references.en.md").to_vec(),
+        }
     };
     ensure!(
         !bytes.is_empty() && u64::try_from(bytes.len()).unwrap_or(u64::MAX) <= REFERENCES_MAX_BYTES,
@@ -1077,7 +1165,11 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             args.external_owner_subject.as_deref().unwrap(),
             512,
         )?;
-        validate_cli_text("--external-label", &args.external_label, 80)?;
+        validate_cli_text(
+            "--external-label",
+            args.external_label.as_deref().unwrap(),
+            80,
+        )?;
     } else {
         ensure!(
             args.external_issuer_url.is_none()
@@ -1086,6 +1178,11 @@ pub fn bootstrap(args: BootstrapArgs) -> Result<()> {
             "external OIDC options require --admin-auth external"
         );
     }
+    validate_cli_character_text(
+        "--references-label",
+        args.references_label.as_deref().unwrap(),
+        40,
+    )?;
     ensure!(
         admin_auth == AdminAuthChoice::Disabled
             || public_url.scheme() == "https"
@@ -1448,6 +1545,17 @@ fn validate_cli_text(name: &str, value: &str, maximum: usize) -> Result<()> {
     Ok(())
 }
 
+fn validate_cli_character_text(name: &str, value: &str, maximum: usize) -> Result<()> {
+    ensure!(
+        value.trim() == value
+            && !value.is_empty()
+            && value.chars().count() <= maximum
+            && !value.chars().any(char::is_control),
+        "{name} must be 1-{maximum} trimmed non-control characters"
+    );
+    Ok(())
+}
+
 fn safe_public_path(path: &str) -> bool {
     let path = path.trim_matches('/');
     path.is_empty()
@@ -1750,6 +1858,7 @@ intent = "{intent}"
 bind = "0.0.0.0:8787"
 public_url = "{public_url}"
 article_base_path = "blog"
+language = "{language}"
 site_id = "{site_id}"
 no_index = {no_index}
 
@@ -1793,7 +1902,7 @@ custom_css_file = "/config/custom.css"
 
 [references]
 enabled = true
-label = "레퍼런스"
+label = {references_label}
 markdown_file = "/config/references.md"
 
 [discovery]
@@ -1816,6 +1925,7 @@ ai_summary = {ai_summary}
 "#,
         intent = args.intent.as_str(),
         public_url = config.public_url,
+        language = args.language.unwrap_or_default().as_str(),
         site_id = config.site_id,
         no_index = !feature_enabled("seo"),
         database_profile = args.database_profile.as_str(),
@@ -1825,6 +1935,11 @@ ai_summary = {ai_summary}
         registration_open = args.registration.enabled(),
         collaboration = args.collaboration.enabled(),
         custom_css = config.custom_css,
+        references_label = toml::Value::String(
+            args.references_label
+                .clone()
+                .expect("language defaults are resolved before rendering"),
+        ),
         agent_discovery = args.agent_discovery.enabled(),
         managed_backups = args.managed_backups.enabled() && !config.delivery,
         backup_interval = args.backup_interval_minutes,
@@ -1851,7 +1966,12 @@ fn render_external_admin(args: &BootstrapArgs, admin_auth: AdminAuthChoice) -> S
     let client_id = toml::Value::String(args.external_client_id.clone().unwrap()).to_string();
     let owner_subject =
         toml::Value::String(args.external_owner_subject.clone().unwrap()).to_string();
-    let label = toml::Value::String(args.external_label.clone()).to_string();
+    let label = toml::Value::String(
+        args.external_label
+            .clone()
+            .expect("language defaults are resolved before rendering"),
+    )
+    .to_string();
     format!(
         "\n[admin.external]\nadapter = \"oidc\"\nissuer_url = {issuer}\nclient_id = {client_id}\nowner_subject = {owner_subject}\nlabel = {label}\n"
     )
@@ -1918,7 +2038,7 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         CacheChoice::RedisManaged => "sentinel",
     };
     format!(
-        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_HANDOFF_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_REFERENCES_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
+        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_HANDOFF_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_REFERENCES_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_LANGUAGE={}\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
         environment.compose_project,
         environment.data_volume,
         environment.deployment_root.join("config.toml").display(),
@@ -1935,6 +2055,7 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         environment.cache.installation().as_str(),
         dlc_ids,
         environment.public_url,
+        args.language.unwrap_or_default().as_str(),
         args.intent.as_str(),
         environment.auth.as_str(),
         environment.admin_auth.as_str(),
@@ -2585,6 +2706,7 @@ struct DoctorSemantic {
 struct DoctorServer {
     public_url: String,
     article_base_path: String,
+    language: String,
     site_id: String,
 }
 
@@ -2593,6 +2715,7 @@ impl Default for DoctorServer {
         Self {
             public_url: String::new(),
             article_base_path: "blog".into(),
+            language: LanguageChoice::Ko.as_str().into(),
             site_id: String::new(),
         }
     }
@@ -2847,6 +2970,9 @@ fn apply_environment_overrides_with(
     }
     if let Some(item) = value("OSB_ARTICLE_BASE_PATH") {
         config.server.article_base_path = item;
+    }
+    if let Some(item) = value("OSB_LANGUAGE") {
+        config.server.language = item;
     }
     if let Some(item) = value("OSB_SITE_ID") {
         config.server.site_id = item;
@@ -3113,6 +3239,25 @@ fn check_semantics(config: &DoctorConfig, checks: &mut Vec<DoctorCheck>) {
             "intent is missing or unknown".into()
         },
         remediation: (!intent_ok).then(|| "choose personal, community, or delivery".into()),
+    });
+    let language_ok = matches!(config.server.language.as_str(), "ko" | "en");
+    checks.push(DoctorCheck {
+        id: "server.language",
+        status: if language_ok {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Fail
+        },
+        summary: if language_ok {
+            format!("human-facing language is {}", config.server.language)
+        } else {
+            format!(
+                "human-facing language '{}' is unsupported",
+                config.server.language
+            )
+        },
+        remediation: (!language_ok)
+            .then(|| "set server.language or OSB_LANGUAGE to exactly ko or en".into()),
     });
     let article_collision = doctor_article_base_path_collision(
         &config.server.article_base_path,
@@ -4130,6 +4275,7 @@ mod tests {
         BootstrapArgs {
             directory,
             non_interactive: true,
+            language: None,
             compose_file: Some(
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../compose.yaml"),
             ),
@@ -4143,7 +4289,7 @@ mod tests {
             external_issuer_url: None,
             external_client_id: None,
             external_owner_subject: None,
-            external_label: "외부 계정으로 계속하기".into(),
+            external_label: None,
             registration: Toggle::Disabled,
             comments: None,
             collaboration: Toggle::Disabled,
@@ -4151,6 +4297,7 @@ mod tests {
             style: None,
             css_file: None,
             references_file: None,
+            references_label: None,
             seo: Toggle::Enabled,
             agent_discovery: Toggle::Enabled,
             redis_topology: Some(RedisTopologyChoice::Managed),
@@ -4170,8 +4317,10 @@ mod tests {
         let config = fs::read_to_string(root.path().join("config.toml")).unwrap();
         assert!(config.contains("schema_version = \"open-soverign-blog/2\""));
         assert!(config.contains("[admin]\nauth = \"access_key\""));
+        assert!(config.contains("language = \"ko\""));
         assert!(config.contains("required = true"));
         assert!(config.contains("managed_backups = true"));
+        assert!(config.contains("label = \"레퍼런스\""));
         assert!(config.contains("markdown_file = \"/config/references.md\""));
         assert!(!config.to_ascii_lowercase().contains("password"));
         let environment = fs::read_to_string(root.path().join(".env")).unwrap();
@@ -4187,6 +4336,7 @@ mod tests {
             "OSB_REFERENCES_SOURCE='{}'",
             root.path().join("references.md").display()
         )));
+        assert!(environment.contains("OSB_LANGUAGE=ko\n"));
         assert_eq!(
             fs::read(root.path().join("references.md")).unwrap(),
             include_bytes!("../../../deploy/references.md")
@@ -4283,17 +4433,70 @@ mod tests {
     }
 
     #[test]
+    fn english_language_generates_english_defaults_and_starter_references() {
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.language = Some(LanguageChoice::En);
+        args.admin_auth = Some(AdminAuthChoice::External);
+        args.public_url = "https://blog.example".into();
+        args.external_issuer_url = Some("https://identity.example/realm/blog".into());
+        args.external_client_id = Some("open-soverign-blog".into());
+        args.external_owner_subject = Some("stable-owner-subject".into());
+
+        bootstrap(args).unwrap();
+
+        let config = fs::read_to_string(root.path().join("config.toml")).unwrap();
+        assert!(config.contains("language = \"en\""));
+        assert!(config.contains("label = \"Continue with external account\""));
+        assert!(config.contains("[references]\nenabled = true\nlabel = \"References\""));
+        let environment = fs::read_to_string(root.path().join(".env")).unwrap();
+        assert!(environment.contains("OSB_LANGUAGE=en\n"));
+        assert_eq!(
+            fs::read(root.path().join(REFERENCES_FILE)).unwrap(),
+            include_bytes!("../../../deploy/references.en.md")
+        );
+    }
+
+    #[test]
+    fn bootstrap_rejects_references_labels_over_the_runtime_limit() {
+        assert!(validate_cli_character_text("--references-label", &"가".repeat(40), 40).is_ok());
+        assert!(validate_cli_character_text("--references-label", &"가".repeat(41), 40).is_err());
+
+        let root = tempdir().unwrap();
+        let mut args = personal(root.path().to_owned());
+        args.references_label = Some("x".repeat(41));
+
+        let error = bootstrap(args).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("--references-label must be 1-40")
+        );
+        assert!(!root.path().join("config.toml").exists());
+        assert!(!root.path().join(".env").exists());
+    }
+
+    #[test]
     fn references_source_contract_detects_changed_and_missing_policy_files() {
         let root = tempdir().unwrap();
         let source = root.path().join("operator-references.md");
         fs::write(&source, "## 출처\n\n운영자 정책\n").unwrap();
         let deployment = root.path().join("deployment");
         let mut args = personal(deployment.clone());
+        args.language = Some(LanguageChoice::En);
         args.references_file = Some(source);
+        args.references_label = Some("Source policy".into());
         bootstrap(args).unwrap();
 
-        let config: DoctorConfig =
-            toml::from_str(&fs::read_to_string(deployment.join("config.toml")).unwrap()).unwrap();
+        let generated_config = fs::read_to_string(deployment.join("config.toml")).unwrap();
+        assert!(generated_config.contains("language = \"en\""));
+        assert!(generated_config.contains("label = \"Source policy\""));
+        assert_eq!(
+            fs::read_to_string(deployment.join(REFERENCES_FILE)).unwrap(),
+            "## 출처\n\n운영자 정책\n"
+        );
+        let config: DoctorConfig = toml::from_str(&generated_config).unwrap();
         let config_path = deployment.join("config.toml");
         assert!(verify_references_source_contract(&config_path, &config).is_ok());
 
@@ -4595,6 +4798,7 @@ mod tests {
         let root = tempdir().unwrap();
         let mut args = personal(root.path().to_owned());
         args.non_interactive = false;
+        args.language = Some(LanguageChoice::En);
         args.admin_auth = None;
         args.custom_css = None;
         args.style = None;
@@ -4615,7 +4819,56 @@ mod tests {
         assert!(prompts.contains("Style"));
         assert!(prompts.contains("Cache"));
         assert!(prompts.contains("Optional DLC"));
+        assert!(!prompts.contains("Language / 언어"));
         assert!(!prompts.to_ascii_lowercase().contains("secret"));
+    }
+
+    #[test]
+    fn interactive_language_prompt_is_first_and_localizes_following_prompts() {
+        let root = tempdir().unwrap();
+        let mut english = personal(root.path().join("english"));
+        english.non_interactive = false;
+        english.dlcs = vec!["none".into()];
+        let mut reader = io::Cursor::new(b"en\ndisabled\n");
+        let mut output = Vec::new();
+        resolve_prompted_args_with(&mut english, true, &mut reader, &mut output).unwrap();
+        let prompts = String::from_utf8(output).unwrap();
+        assert!(prompts.starts_with("Language / 언어 (ko=한국어, en=English) [ko]: "));
+        assert!(prompts.contains("Administrator auth"));
+        assert_eq!(english.language, Some(LanguageChoice::En));
+        assert_eq!(
+            english.external_label.as_deref(),
+            Some("Continue with external account")
+        );
+        assert_eq!(english.references_label.as_deref(), Some("References"));
+
+        let mut korean = personal(root.path().join("korean"));
+        korean.non_interactive = false;
+        korean.dlcs = vec!["none".into()];
+        let mut reader = io::Cursor::new(b"\ndisabled\n");
+        let mut output = Vec::new();
+        resolve_prompted_args_with(&mut korean, true, &mut reader, &mut output).unwrap();
+        let prompts = String::from_utf8(output).unwrap();
+        assert!(prompts.starts_with("Language / 언어 (ko=한국어, en=English) [ko]: "));
+        assert!(prompts.contains("관리자 인증"));
+        assert_eq!(korean.language, Some(LanguageChoice::Ko));
+        assert_eq!(
+            korean.external_label.as_deref(),
+            Some("외부 계정으로 계속하기")
+        );
+        assert_eq!(korean.references_label.as_deref(), Some("레퍼런스"));
+
+        let mut invalid = personal(root.path().join("invalid"));
+        invalid.non_interactive = false;
+        let error = resolve_prompted_args_with(
+            &mut invalid,
+            true,
+            &mut io::Cursor::new(b"fr\n"),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("must be ko or en"));
+        assert!(!invalid.directory.exists());
     }
 
     #[test]
@@ -4623,6 +4876,7 @@ mod tests {
         let root = tempdir().unwrap();
         let mut args = personal(root.path().to_owned());
         args.non_interactive = false;
+        args.language = Some(LanguageChoice::En);
         args.admin_auth = None;
         args.custom_css = None;
         args.style = None;
@@ -4642,6 +4896,7 @@ mod tests {
 
         let mut no_seo = personal(root.path().join("no-seo"));
         no_seo.non_interactive = false;
+        no_seo.language = Some(LanguageChoice::En);
         no_seo.admin_auth = None;
         no_seo.custom_css = None;
         no_seo.style = None;
@@ -4934,12 +5189,13 @@ mod tests {
         external.external_issuer_url = Some("https://identity.example/realm/blog".into());
         external.external_client_id = Some("open-soverign-blog".into());
         external.external_owner_subject = Some("stable-owner-subject".into());
-        external.external_label = "Identity login".into();
+        external.external_label = Some("Identity login".into());
         bootstrap(external).unwrap();
         let external_config = fs::read_to_string(external_root.path().join("config.toml")).unwrap();
         assert!(external_config.contains("auth = \"external\""));
         assert!(external_config.contains("[admin.external]"));
         assert!(external_config.contains("owner_subject = \"stable-owner-subject\""));
+        assert!(external_config.contains("label = \"Identity login\""));
         assert!(!external_root.path().join("admin-access-key.txt").exists());
     }
 
@@ -5057,6 +5313,7 @@ mod tests {
         let overrides = std::collections::BTreeMap::from([
             ("OSB_PUBLIC_URL", "http://127.0.0.1:18787/base"),
             ("OSB_ARTICLE_BASE_PATH", "writing/articles"),
+            ("OSB_LANGUAGE", "en"),
             ("OSB_DATABASE", "/tmp/osb/blog.sqlite3"),
             ("OSB_BLOB_DIRECTORY", "/tmp/osb/blobs"),
             ("OSB_REDIS_TOPOLOGY", "standalone"),
@@ -5082,6 +5339,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.server.public_url, "http://127.0.0.1:18787/base");
         assert_eq!(config.server.article_base_path, "writing/articles");
+        assert_eq!(config.server.language, "en");
         assert_eq!(config.storage.database, "/tmp/osb/blog.sqlite3");
         assert_eq!(config.storage.blob_directory, "/tmp/osb/blobs");
         assert_eq!(config.redis.topology, "standalone");
@@ -5114,6 +5372,48 @@ mod tests {
                 .status,
             CheckStatus::Pass
         );
+    }
+
+    #[test]
+    fn doctor_accepts_only_supported_effective_languages() {
+        fn language_check(config: &DoctorConfig) -> CheckStatus {
+            let mut checks = Vec::new();
+            check_semantics(config, &mut checks);
+            checks
+                .iter()
+                .find(|check| check.id == "server.language")
+                .expect("language check must exist")
+                .status
+        }
+
+        for language in ["ko", "en"] {
+            let config: DoctorConfig =
+                toml::from_str(&format!("[server]\nlanguage = \"{language}\"\n")).unwrap();
+            assert_eq!(language_check(&config), CheckStatus::Pass);
+        }
+
+        let missing: DoctorConfig = toml::from_str("").unwrap();
+        assert_eq!(missing.server.language, "ko");
+        assert_eq!(language_check(&missing), CheckStatus::Pass);
+
+        let invalid: DoctorConfig = toml::from_str("[server]\nlanguage = \"fr\"\n").unwrap();
+        assert_eq!(language_check(&invalid), CheckStatus::Fail);
+
+        let mut overridden: DoctorConfig = toml::from_str("[server]\nlanguage = \"ko\"\n").unwrap();
+        apply_environment_overrides_with(&mut overridden, |name| {
+            (name == "OSB_LANGUAGE").then(|| "FR".into())
+        })
+        .unwrap();
+        assert_eq!(overridden.server.language, "FR");
+        assert_eq!(language_check(&overridden), CheckStatus::Fail);
+
+        let mut uppercase: DoctorConfig = toml::from_str("[server]\nlanguage = \"ko\"\n").unwrap();
+        apply_environment_overrides_with(&mut uppercase, |name| {
+            (name == "OSB_LANGUAGE").then(|| "EN".into())
+        })
+        .unwrap();
+        assert_eq!(uppercase.server.language, "EN");
+        assert_eq!(language_check(&uppercase), CheckStatus::Fail);
     }
 
     #[test]

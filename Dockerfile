@@ -21,7 +21,7 @@ COPY crates crates
 COPY features features
 COPY plugins plugins
 COPY openapi openapi
-COPY deploy/custom.css deploy/references.md deploy/
+COPY deploy/custom.css deploy/references.md deploy/references.en.md deploy/
 COPY release.toml release-channel.json UNLICENSE ./
 RUN cargo build --locked --release -p osb-server -p osb-cli -p osb-mcp
 

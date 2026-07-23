@@ -53,12 +53,47 @@ test("an accepted AI revision immediately matches the normalized editor draft", 
   );
 });
 
-test("home curation uses de-duplicated published projections with pins first", () => {
+test("home curation includes series/category trees and every published Studio document with pins first", () => {
   const pinned = { id: "pinned", title: "발행 제목", slug: "published", blog: { handle: "owner" } };
+  const series = { id: "series", title: "시리즈 글", slug: "series-post", blog: { handle: "owner" } };
+  const category = { id: "category", title: "시리즈 글", slug: "series-post", blog: { handle: "owner" } };
   const recent = { id: "recent", title: "최근 글", slug: "recent", blog: { handle: "member" } };
+  const olderStudioDocument = {
+    id: "older-studio",
+    status: "published",
+    publishedRevisionId: "published-revision",
+    revision: { title: "오래된 발행 글", slug: "older-studio" },
+  };
+  const draft = {
+    id: "draft",
+    status: "draft",
+    revision: { title: "초안", slug: "draft" },
+  };
   assert.deepEqual(
-    homeCurationCandidates({ pinnedItems: [pinned], recentItems: [pinned, recent] }).map((post) => post.id),
-    ["pinned", "recent"],
+    homeCurationCandidates({
+      pinnedItems: [pinned],
+      seriesSections: [{ series: { id: "ordered-series" }, items: [pinned, series] }],
+      categorySections: [{ category: { id: "series" }, items: [pinned, category] }],
+      recentItems: [category, recent],
+    }, [olderStudioDocument, draft]).map((post) => post.id),
+    ["pinned", "series", "category", "recent", "older-studio"],
+  );
+  assert.deepEqual(
+    homeCurationCandidates({
+      pinnedItems: [],
+      seriesSections: [],
+      categorySections: [],
+      recentItems: [],
+    }, [{
+      ...olderStudioDocument,
+      revision: { title: "", slug: "older-studio" },
+    }], "en")[0],
+    {
+      id: "older-studio",
+      title: "Untitled post",
+      slug: "older-studio",
+      locationLabel: "My published post · /older-studio",
+    },
   );
 });
 

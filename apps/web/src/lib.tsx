@@ -6,6 +6,13 @@ import {
 } from "@opensoverignblog/sdk";
 
 export const basePath = readBasePath();
+export type UiLanguage = "ko" | "en";
+export const uiLanguage: UiLanguage = readUiLanguage();
+document.documentElement.lang = uiLanguage;
+
+export function text(ko: string, en: string): string {
+  return uiLanguage === "en" ? en : ko;
+}
 
 export const client = new OpenSoverignBlogClient({
   baseUrl: basePath === "/" ? "" : basePath,
@@ -22,26 +29,26 @@ export const THEME_PRESETS: ThemePreset[] = [
   {
     id: "paper",
     name: "Paper",
-    description: "따뜻한 종이 위에 차분한 세리프 활자를 올린 읽기 중심 테마",
-    sampleTitle: "생각을 오래 남기는 법",
+    description: text("따뜻한 종이 위에 차분한 세리프 활자를 올린 읽기 중심 테마", "A reading-first theme with calm serif type on warm paper"),
+    sampleTitle: text("생각을 오래 남기는 법", "Making ideas last"),
   },
   {
     id: "ink",
     name: "Ink",
-    description: "흑백 대비와 넉넉한 여백으로 글의 구조를 또렷하게 보여주는 테마",
-    sampleTitle: "명료한 문장을 위한 노트",
+    description: text("흑백 대비와 넉넉한 여백으로 글의 구조를 또렷하게 보여주는 테마", "Crisp black-and-white contrast and generous space reveal the structure of your writing"),
+    sampleTitle: text("명료한 문장을 위한 노트", "Notes toward clearer writing"),
   },
   {
     id: "forest",
     name: "Forest",
-    description: "깊은 초록과 부드러운 크림색이 어우러진 편안한 테마",
-    sampleTitle: "숲에서 배운 느린 리듬",
+    description: text("깊은 초록과 부드러운 크림색이 어우러진 편안한 테마", "A comfortable theme pairing deep green with soft cream"),
+    sampleTitle: text("숲에서 배운 느린 리듬", "A slower rhythm learned in the woods"),
   },
   {
     id: "terminal",
     name: "Terminal",
-    description: "모노스페이스 활자와 선명한 상태색을 사용한 개발 기록 테마",
-    sampleTitle: "build: 작은 도구의 탄생",
+    description: text("모노스페이스 활자와 선명한 상태색을 사용한 개발 기록 테마", "A developer-log theme with monospace type and vivid status colors"),
+    sampleTitle: text("build: 작은 도구의 탄생", "build: a small tool is born"),
   },
 ];
 
@@ -50,7 +57,10 @@ export function isNotFound(reason: unknown): boolean {
 }
 
 export function asMessage(value: unknown): string {
-  return value instanceof Error ? value.message : "알 수 없는 오류가 발생했습니다.";
+  return value instanceof Error ? value.message : text(
+    "알 수 없는 오류가 발생했습니다.",
+    "An unknown error occurred.",
+  );
 }
 
 export function navigate(href: string, replace = false) {
@@ -124,14 +134,19 @@ export function usePageTitle(title: string) {
 }
 
 export function formatDate(value: string | undefined): string {
-  if (!value) return "날짜 없음";
+  if (!value) return text("날짜 없음", "No date");
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
+  return new Intl.DateTimeFormat(uiLanguage === "en" ? "en-US" : "ko-KR", {
     year: "numeric",
     month: "short",
     day: "numeric",
   }).format(parsed);
+}
+
+function readUiLanguage(): UiLanguage {
+  const configured = document.querySelector<HTMLMetaElement>('meta[name="osb-language"]')?.content;
+  return configured === "en" ? "en" : "ko";
 }
 
 export function slugify(value: string): string {

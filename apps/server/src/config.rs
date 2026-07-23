@@ -20,6 +20,7 @@ pub struct RuntimeConfig {
     pub bind: SocketAddr,
     pub public_url: Url,
     pub article_base_path: String,
+    pub language: UiLanguage,
     pub no_index: bool,
     pub site_id: Uuid,
     pub database: PathBuf,
@@ -98,6 +99,23 @@ pub enum AuthMode {
     Oauth,
     LocalAndOauth,
     Disabled,
+}
+
+/// Operator-selected human-facing language for the bundled web application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiLanguage {
+    Ko,
+    En,
+}
+
+impl UiLanguage {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ko => "ko",
+            Self::En => "en",
+        }
+    }
 }
 
 /// Authentication for the instance control plane. This is deliberately
@@ -234,8 +252,15 @@ pub struct RunnerSettings {
 impl RuntimeConfig {
     pub fn load() -> Result<Self> {
         let (file, source) = load_file()?;
-        let references = resolve_references(file.references)?;
         let config_schema_version = file.schema_version.clone();
+        let language = env_value("OSB_LANGUAGE")
+            .map(|value| parse_ui_language("OSB_LANGUAGE", &value))
+            .transpose()?
+            .or(file.server.language)
+            // v2 installations created before this option shipped rendered
+            // Korean. Preserve that presentation until an operator opts in.
+            .unwrap_or(UiLanguage::Ko);
+        let references = resolve_references(file.references, language)?;
         let bind: SocketAddr = env_value("OSB_BIND")
             .or(file.server.bind)
             .unwrap_or_else(|| "127.0.0.1:8787".into())
@@ -346,7 +371,7 @@ impl RuntimeConfig {
         if !(1..=365).contains(&admin_session_days) {
             anyhow::bail!("admin.session_days must be between 1 and 365");
         }
-        let external_admin = resolve_external_admin(file.admin.external)?;
+        let external_admin = resolve_external_admin(file.admin.external, language)?;
         match admin_auth_mode {
             AdminAuthMode::AccessKey => {
                 if access_key_phc.is_none() {
@@ -482,6 +507,7 @@ impl RuntimeConfig {
             bind,
             public_url,
             article_base_path,
+            language,
             no_index,
             site_id,
             database,
@@ -558,6 +584,14 @@ fn parse_auth_mode(name: &str, value: &str) -> Result<AuthMode> {
         "local_and_oauth" | "hybrid" => Ok(AuthMode::LocalAndOauth),
         "disabled" | "off" => Ok(AuthMode::Disabled),
         _ => anyhow::bail!("{name} must be local, oauth, local_and_oauth, or disabled"),
+    }
+}
+
+fn parse_ui_language(name: &str, value: &str) -> Result<UiLanguage> {
+    match value {
+        "ko" => Ok(UiLanguage::Ko),
+        "en" => Ok(UiLanguage::En),
+        _ => anyhow::bail!("{name} must be ko or en"),
     }
 }
 
@@ -701,6 +735,7 @@ struct ExternalAdminFileConfig {
 
 fn resolve_external_admin(
     file: Option<ExternalAdminFileConfig>,
+    language: UiLanguage,
 ) -> Result<Option<ExternalAdminSettings>> {
     let requested = file.is_some()
         || [
@@ -742,7 +777,10 @@ fn resolve_external_admin(
     validate_bounded_external_text("admin.external.owner_subject", &owner_subject, 512)?;
     let label = env_value("OSB_EXTERNAL_LABEL")
         .or(file.label)
-        .unwrap_or_else(|| "외부 계정으로 계속하기".into());
+        .unwrap_or_else(|| match language {
+            UiLanguage::Ko => "외부 계정으로 계속하기".into(),
+            UiLanguage::En => "Continue with external account".into(),
+        });
     validate_bounded_external_text("admin.external.label", &label, 80)?;
     let client_secret = env_value("OSB_EXTERNAL_CLIENT_SECRET");
     if let Some(secret) = &client_secret {
@@ -798,6 +836,7 @@ struct ServerConfig {
     bind: Option<String>,
     public_url: Option<String>,
     article_base_path: Option<String>,
+    language: Option<UiLanguage>,
     no_index: Option<bool>,
     site_id: Option<String>,
 }
@@ -1061,7 +1100,10 @@ struct ReferencesConfig {
     markdown_file: Option<String>,
 }
 
-fn resolve_references(file: ReferencesConfig) -> Result<Option<ReferencesSettings>> {
+fn resolve_references(
+    file: ReferencesConfig,
+    language: UiLanguage,
+) -> Result<Option<ReferencesSettings>> {
     let enabled = env_bool("OSB_REFERENCES_ENABLED")?
         .or(file.enabled)
         .unwrap_or(true);
@@ -1071,7 +1113,10 @@ fn resolve_references(file: ReferencesConfig) -> Result<Option<ReferencesSetting
 
     let label = env_value("OSB_REFERENCES_LABEL")
         .or(file.label)
-        .unwrap_or_else(|| "레퍼런스".into());
+        .unwrap_or_else(|| match language {
+            UiLanguage::Ko => "레퍼런스".into(),
+            UiLanguage::En => "References".into(),
+        });
     let label_length = label.chars().count();
     if label.trim() != label
         || !(1..=40).contains(&label_length)
@@ -1144,8 +1189,10 @@ fn resolve_references(file: ReferencesConfig) -> Result<Option<ReferencesSetting
             format!("references Markdown file must be UTF-8: {}", path.display())
         })?
     } else {
-        file.markdown
-            .unwrap_or_else(|| include_str!("../../../deploy/references.md").to_owned())
+        file.markdown.unwrap_or_else(|| match language {
+            UiLanguage::Ko => include_str!("../../../deploy/references.md").to_owned(),
+            UiLanguage::En => include_str!("../../../deploy/references.en.md").to_owned(),
+        })
     };
     validate_references_markdown(&source_markdown)?;
     Ok(Some(ReferencesSettings {
@@ -1387,6 +1434,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn interface_language_accepts_only_the_two_declared_values() {
+        assert_eq!(parse_ui_language("language", "ko").unwrap(), UiLanguage::Ko);
+        assert_eq!(parse_ui_language("language", "en").unwrap(), UiLanguage::En);
+        assert!(parse_ui_language("language", "English").is_err());
+        assert!(parse_ui_language("language", " en").is_err());
+        assert!(parse_ui_language("language", "ja").is_err());
+    }
+
+    #[test]
     fn browser_supplied_ai_credentials_require_https_away_from_loopback() {
         assert!(
             validate_browser_secret_transport(
@@ -1446,7 +1502,9 @@ mod tests {
             "[references]\nenabled = true\nlabel = \"레퍼런스\"\nmarkdown = \"출처\"",
         )
         .unwrap();
-        let references = resolve_references(config.references).unwrap().unwrap();
+        let references = resolve_references(config.references, UiLanguage::Ko)
+            .unwrap()
+            .unwrap();
         assert_eq!(references.label, "레퍼런스");
         assert_eq!(references.source_markdown, "출처");
 
@@ -1454,12 +1512,12 @@ mod tests {
             "[references]\nmarkdown = \"inline\"\nmarkdown_file = \"references.md\"",
         )
         .unwrap();
-        assert!(resolve_references(conflicting.references).is_err());
+        assert!(resolve_references(conflicting.references, UiLanguage::Ko).is_err());
     }
 
     #[test]
     fn references_default_is_enabled_with_a_useful_template() {
-        let references = resolve_references(ReferencesConfig::default())
+        let references = resolve_references(ReferencesConfig::default(), UiLanguage::Ko)
             .unwrap()
             .unwrap();
         assert_eq!(references.label, "레퍼런스");
@@ -1469,6 +1527,12 @@ mod tests {
                 .source_markdown
                 .contains("## 개인정보와 외부 서비스")
         );
+
+        let english = resolve_references(ReferencesConfig::default(), UiLanguage::En)
+            .unwrap()
+            .unwrap();
+        assert_eq!(english.label, "References");
+        assert!(english.source_markdown.contains("## Sources and citations"));
     }
 
     #[test]
@@ -1485,7 +1549,7 @@ mod tests {
             markdown_file: Some(link.display().to_string()),
             ..ReferencesConfig::default()
         };
-        let error = resolve_references(config).unwrap_err();
+        let error = resolve_references(config, UiLanguage::Ko).unwrap_err();
         assert!(error.to_string().contains("non-symlink regular file"));
     }
 

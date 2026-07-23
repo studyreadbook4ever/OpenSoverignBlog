@@ -17,12 +17,20 @@ is not container-namespaced and cannot be made reliable from `compose.yaml`.
 Cache `none` has no Redis host prerequisite.
 
 ```sh
-cargo run -p osb-cli -- bootstrap \
+./scripts/osb-init.sh --language en \
   --directory /srv/osb/my-blog \
   --non-interactive \
   --intent personal \
   --cache redis-managed
 ```
+
+The wrapper also accepts a leading `ko` or `en` selector, for example
+`./scripts/osb-init.sh ko --directory /srv/osb/my-blog`. Interactive bootstrap
+asks for language first; non-interactive bootstrap uses Korean unless
+`--language` is supplied. The choice is written to `[server] language`,
+`OSB_LANGUAGE`, localized external/references labels, and the generated
+`references.md`. An explicit `--external-label`, `--references-label`, or
+`--references-file` remains authoritative.
 
 Run the exact project-scoped start and doctor commands printed by bootstrap and
 saved in `osb.intent.json`; they include the selected cache profile, deployment

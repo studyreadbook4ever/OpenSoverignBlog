@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { homeCategoryAnchor, presentHome } from "../src/home-presentation.ts";
+import {
+  homeCategoryAnchor,
+  homeSeriesAnchor,
+  presentHome,
+} from "../src/home-presentation.ts";
 
 const post = (id) => ({ id });
 const category = (id, slug, title, description) => ({ id, slug, title, description });
@@ -58,6 +62,32 @@ test("empty and duplicate-only category sections do not produce dead sidebar tar
   assert.equal(presentation.total, 1);
 });
 
+test("first-class series win over duplicate backing-category rows", () => {
+  const home = {
+    pinnedItems: [],
+    seriesSections: [{
+      series: {
+        id: "series-id",
+        categoryId: "category-id",
+        slug: "yangja",
+        title: "yangja",
+      },
+      items: [post("first"), post("second")],
+    }],
+    categorySections: [{
+      category: category("category-id", "yangja", "yangja"),
+      items: [post("first"), post("second")],
+    }],
+    recentItems: [post("second"), post("recent")],
+  };
+
+  const presentation = presentHome(home);
+  assert.deepEqual(presentation.seriesSections[0].items.map(({ id }) => id), ["first", "second"]);
+  assert.equal(presentation.seriesSections[0].anchorId, homeSeriesAnchor("yangja"));
+  assert.deepEqual(presentation.categorySections, []);
+  assert.deepEqual(presentation.recentItems.map(({ id }) => id), ["recent"]);
+});
+
 test("legacy home payloads still render their recent rows", () => {
   const presentation = presentHome({
     pinnedItems: [],
@@ -78,4 +108,19 @@ test("dense home rows no longer contain or reserve the one-character index", asy
   assert.doesNotMatch(styles, /wiki-post-index/);
   assert.match(styles, /\.wiki-post-row \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;/);
   assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.wiki-post-row \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
+});
+
+test("home series and category sections expose an accessible independent collapse control", async () => {
+  const [component, styles] = await Promise.all([
+    readFile(new URL("../src/public-pages.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(component, /const collapsible = tone === "series" \|\| tone === "category"/);
+  assert.match(component, /aria-controls=\{contentId\}/);
+  assert.match(component, /aria-expanded=\{expanded\}/);
+  assert.match(component, /hidden=\{collapsible && !expanded\}/);
+  assert.match(component, /window\.addEventListener\("hashchange", revealFragmentTarget\)/);
+  assert.match(styles, /\.wiki-panel-toggle \{/);
+  assert.match(styles, /\.wiki-post-list\[hidden\] \{ display: none; \}/);
 });

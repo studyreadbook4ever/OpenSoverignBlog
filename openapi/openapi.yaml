@@ -2,7 +2,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: OpenSoverignBlog HTTP API
-  version: 0.1.0
+  version: 0.1.1
   description: |
     Contract for the routes mounted by the reference Rust server. This describes
     implemented wire behavior, not every capability that a future plugin may add.
@@ -423,7 +423,7 @@ paths:
       tags: [Content]
       operationId: getCuratedHome
       summary: Read the optional curated home projection
-      description: Mounted only when the bundled home-curation DLC is active. Pinned posts never repeat in recentItems or categorySections; category sections project active primary-site categories and their posts from oldest to newest.
+      description: Mounted only when the bundled home-curation DLC is active. Pinned posts never repeat in recentItems, seriesSections, or categorySections; series sections preserve explicit order, while ordinary category sections project remaining active primary-site categories from oldest to newest.
       x-osb-route-source: true
       responses:
         "200":
@@ -662,6 +662,69 @@ paths:
         "304": { description: The supplied ETag still matches. }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /api/v1/blogs/{handle}/series:
+    get:
+      tags: [Blogs, Content]
+      operationId: listBlogSeries
+      summary: List active ordered series in one blog
+      description: Archived series and their private ordering metadata are excluded.
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+      responses:
+        "200":
+          description: Cacheable, site-scoped series metadata in home order.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesListResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/series/{series}:
+    get:
+      tags: [Blogs, Content]
+      operationId: getBlogSeries
+      summary: Read one public ordered-series landing projection
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+        - $ref: "#/components/parameters/SeriesSlug"
+      responses:
+        "200":
+          description: Cacheable series metadata, owning blog, and published post count.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogSeriesResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/blogs/{handle}/series/{series}/posts:
+    get:
+      tags: [Blogs, Content]
+      operationId: listBlogSeriesPosts
+      summary: List published revisions in explicit series order
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/Handle"
+        - $ref: "#/components/parameters/SeriesSlug"
+      responses:
+        "200":
+          description: Cacheable series archive using published placement and explicit item order.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /api/v1/primary/categories:
     get:
       tags: [Blogs, Content]
@@ -740,6 +803,65 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/BlogPostView" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/series:
+    get:
+      tags: [Blogs, Content]
+      operationId: listPrimaryBlogSeries
+      summary: List active ordered series in the provisioned primary blog
+      description: Anonymous short-route alias that does not require discovery of the primary blog handle.
+      x-osb-route-source: true
+      responses:
+        "200":
+          description: Cacheable, primary-site series metadata in home order.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesListResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/series/{series}:
+    get:
+      tags: [Blogs, Content]
+      operationId: getPrimaryBlogSeries
+      summary: Read one ordered series in the provisioned primary blog
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/SeriesSlug"
+      responses:
+        "200":
+          description: Cacheable series metadata, primary blog, and published post count.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BlogSeriesResponse" }
+        "304": { description: The supplied ETag still matches. }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /api/v1/primary/series/{series}/posts:
+    get:
+      tags: [Blogs, Content]
+      operationId: listPrimaryBlogSeriesPosts
+      summary: List published revisions in one primary-blog series
+      x-osb-route-source: true
+      parameters:
+        - $ref: "#/components/parameters/SeriesSlug"
+      responses:
+        "200":
+          description: Cacheable series archive using explicit item order.
+          headers:
+            ETag: { schema: { type: string } }
+            Cache-Control: { schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FeedResponse" }
         "304": { description: The supplied ETag still matches. }
         "404": { $ref: "#/components/responses/NotFound" }
 
@@ -984,6 +1106,177 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/series:
+    get:
+      tags: [Studio, Blogs]
+      operationId: listStudioSeries
+      summary: List active and archived series for the writable blog
+      description: Owner, editor, and writer sessions may read the private series catalog.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      responses:
+        "200":
+          description: Private series list, including archived entries.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesListResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    post:
+      tags: [Studio, Blogs]
+      operationId: createStudioSeries
+      summary: Create an ordered series and its backing category as the blog owner
+      description: The normalized slug is immutable and must not collide with application or configured article routes.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateSeriesRequest" }
+      responses:
+        "201":
+          description: Series created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/series/promote:
+    post:
+      tags: [Studio, Blogs]
+      operationId: promoteStudioCategoryToSeries
+      summary: Promote an existing category to an ordered series
+      description: Existing published category posts are backfilled into the series in original creation order.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PromoteSeriesRequest" }
+      responses:
+        "200":
+          description: Promoted series.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/series/{id}:
+    put:
+      tags: [Studio, Blogs]
+      operationId: updateStudioSeries
+      summary: Update mutable series presentation as the blog owner
+      description: The series slug, backing category, and site ownership are immutable.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/SeriesId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateSeriesRequest" }
+      responses:
+        "200":
+          description: Updated series.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/series/{id}/archive:
+    post:
+      tags: [Studio, Blogs]
+      operationId: archiveStudioSeries
+      summary: Archive a series and its backing category as the blog owner
+      description: Existing immutable revision placement and series order are retained.
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/SeriesId"
+      responses:
+        "200":
+          description: Archived series.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SeriesSummary" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /api/v1/studio/series/{id}/items:
+    get:
+      tags: [Studio, Blogs]
+      operationId: listStudioSeriesItems
+      summary: List published documents in explicit series order
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/SeriesId"
+      responses:
+        "200":
+          description: Published Studio document snapshots in series order.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 500
+                items: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    put:
+      tags: [Studio, Blogs]
+      operationId: replaceStudioSeriesOrder
+      summary: Atomically replace the exact published-document order of a series
+      x-osb-route-source: true
+      security:
+        - SessionCookie: []
+      parameters:
+        - $ref: "#/components/parameters/SeriesId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SeriesOrderRequest" }
+      responses:
+        "200":
+          description: Published Studio document snapshots in committed series order.
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 500
+                items: { $ref: "#/components/schemas/DocumentSnapshot" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/studio/preview:
@@ -1942,6 +2235,14 @@ components:
       schema:
         type: string
         format: uuid
+    SeriesId:
+      name: id
+      in: path
+      required: true
+      description: Site-scoped ordered-series identifier.
+      schema:
+        type: string
+        format: uuid
     PostId:
       name: id
       in: path
@@ -1961,6 +2262,16 @@ components:
       in: path
       required: true
       description: Immutable normalized category slug.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 40
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
+    SeriesSlug:
+      name: series
+      in: path
+      required: true
+      description: Immutable normalized series slug.
       schema:
         type: string
         minLength: 1
@@ -2273,6 +2584,7 @@ components:
       additionalProperties: false
       required:
         - version
+        - language
         - publicAccess
         - studioAccess
         - auth
@@ -2285,7 +2597,11 @@ components:
       properties:
         version:
           type: string
-          const: "2.0"
+          const: "2.1"
+        language:
+          type: string
+          enum: [ko, en]
+          description: Installation-wide language used by the bundled interface.
         publicAccess:
           type: string
           const: anonymous_read
@@ -2731,6 +3047,121 @@ components:
           enum: [paper, ink, forest, terminal, null]
           description: Null or omission selects blog-theme inheritance.
 
+    SeriesSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - categoryId
+        - slug
+        - title
+        - status
+        - homePosition
+        - createdAt
+        - updatedAt
+      properties:
+        id: { type: string, format: uuid }
+        categoryId:
+          type: string
+          format: uuid
+          description: Identifier of the category that provides compatible post placement.
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
+          description: Immutable within the series' site.
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 2000 }
+        themePreset:
+          type: string
+          enum: [paper, ink, forest, terminal]
+          description: Omission inherits the owning blog's selected theme.
+        status:
+          type: string
+          enum: [active, archived]
+        homePosition:
+          type: integer
+          minimum: 1
+          description: Stable site-scoped order used for series sections on the curated home.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    SeriesListResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/SeriesSummary" }
+
+    BlogSeriesResponse:
+      type: object
+      additionalProperties: false
+      required: [series, blog, postCount]
+      properties:
+        series: { $ref: "#/components/schemas/SeriesSummary" }
+        blog: { $ref: "#/components/schemas/BlogSummary" }
+        postCount: { type: integer, minimum: 0, maximum: 500 }
+
+    CreateSeriesRequest:
+      type: object
+      additionalProperties: false
+      required: [slug, title]
+      properties:
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
+          description: Becomes an immutable public path segment after normalization.
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+          description: Null, omission, or empty text stores no description.
+        themePreset:
+          type: [string, "null"]
+          enum: [paper, ink, forest, terminal, null]
+
+    UpdateSeriesRequest:
+      type: object
+      additionalProperties: false
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description:
+          type: [string, "null"]
+          maxLength: 2000
+          description: Null or empty text clears the stored description.
+        themePreset:
+          type: [string, "null"]
+          enum: [paper, ink, forest, terminal, null]
+          description: Null or omission selects blog-theme inheritance.
+
+    PromoteSeriesRequest:
+      type: object
+      additionalProperties: false
+      required: [categoryId]
+      properties:
+        categoryId:
+          type: string
+          format: uuid
+
+    SeriesOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [documentIds]
+      properties:
+        documentIds:
+          type: array
+          maxItems: 500
+          uniqueItems: true
+          description: Exact set of the series' currently published documents in the desired order.
+          items: { type: string, format: uuid }
+
     AnonymousSession:
       type: object
       additionalProperties: false
@@ -3150,10 +3581,22 @@ components:
           maxItems: 500
           items: { $ref: "#/components/schemas/FeedPostSummary" }
 
+    HomeSeriesSection:
+      type: object
+      additionalProperties: false
+      required: [series, items]
+      properties:
+        series: { $ref: "#/components/schemas/SeriesSummary" }
+        items:
+          type: array
+          maxItems: 500
+          description: Published posts in the series' explicit order.
+          items: { $ref: "#/components/schemas/FeedPostSummary" }
+
     HomeResponse:
       type: object
       additionalProperties: false
-      required: [pinnedItems, recentItems, categorySections]
+      required: [pinnedItems, recentItems, categorySections, seriesSections]
       properties:
         pinnedItems:
           type: array
@@ -3166,6 +3609,10 @@ components:
           type: array
           maxItems: 500
           items: { $ref: "#/components/schemas/HomeCategorySection" }
+        seriesSections:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/HomeSeriesSection" }
 
     HomePins:
       type: object

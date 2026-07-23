@@ -15,3 +15,12 @@ test("AI labels carry portable generator and review metadata", () => {
     humanReviewed: true,
   }), "AI 보조 · local/model-v1 · 사람 검토");
 });
+
+test("authorship labels follow the configured English UI language", () => {
+  assert.equal(authorshipLabel(undefined, "en"), "Human authored");
+  assert.equal(authorshipLabel({
+    kind: "ai_assisted",
+    generator: "local/model-v1",
+    humanReviewed: true,
+  }, "en"), "AI assisted · local/model-v1 · human reviewed");
+});

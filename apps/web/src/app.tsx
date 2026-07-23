@@ -10,8 +10,8 @@ import {
   type ReactNode,
 } from "react";
 import type { Capabilities, Session, VersionInfo } from "@opensoverignblog/sdk";
-import { studioAccessFor } from "./auth-policy";
-import { AppLink, asMessage, client, initials, isNotFound, navigate, publicPath, usePathname } from "./lib";
+import { adminAuthChoices, studioAccessFor } from "./auth-policy";
+import { AppLink, asMessage, client, initials, isNotFound, navigate, publicPath, text, usePathname } from "./lib";
 import {
   ArticlePage,
   BlogPage,
@@ -40,6 +40,12 @@ const CategoryPage = lazy(async () => ({
 }));
 const StudioCategoriesPage = lazy(async () => ({
   default: (await import("./categories")).StudioCategoriesPage,
+}));
+const StudioCreatePage = lazy(async () => ({
+  default: (await import("./series")).StudioCreatePage,
+}));
+const StudioSeriesPage = lazy(async () => ({
+  default: (await import("./series")).StudioSeriesPage,
 }));
 
 interface SessionContextValue {
@@ -144,11 +150,11 @@ export function App() {
   return (
     <SessionContext.Provider value={context}>
       <a className="skip-link" href="#main-content">
-        본문으로 건너뛰기
+        {text("본문으로 건너뛰기", "Skip to content")}
       </a>
       {editorMatch ? (
         <main className="editor-route" id="main-content" ref={mainRef} tabIndex={-1}>
-          <Suspense fallback={<RouteLoading label="Studio 편집기를 불러오는 중" />}>
+          <Suspense fallback={<RouteLoading label={text("Studio 편집기를 불러오는 중", "Loading Studio editor")} />}>
             {session && capabilities ? (
               <StudioEditor
                 capabilities={capabilities}
@@ -157,7 +163,7 @@ export function App() {
               />
             ) : capabilitiesError ? (
               <CapabilityError detail={capabilitiesError} onRetry={() => void refreshCapabilities()} />
-            ) : <RouteLoading label="Studio 접근 권한을 확인하는 중" />}
+            ) : <RouteLoading label={text("Studio 접근 권한을 확인하는 중", "Checking Studio access")} />}
           </Suspense>
         </main>
       ) : (
@@ -181,16 +187,22 @@ function resolvePage(pathname: string, capabilities: Capabilities | undefined): 
     return <ReferencesPage capabilities={capabilities} />;
   }
   if (pathname === "/studio" || pathname === "/studio/") {
-    return <Suspense fallback={<RouteLoading label="Studio를 불러오는 중" />}><StudioDashboard capabilities={capabilities} /></Suspense>;
+    return <Suspense fallback={<RouteLoading label={text("Studio를 불러오는 중", "Loading Studio")} />}><StudioDashboard capabilities={capabilities} /></Suspense>;
   }
   if (pathname === "/studio/settings" || pathname === "/studio/settings/") {
-    return <Suspense fallback={<RouteLoading label="블로그 설정을 불러오는 중" />}><StudioSettingsPage capabilities={capabilities} /></Suspense>;
+    return <Suspense fallback={<RouteLoading label={text("블로그 설정을 불러오는 중", "Loading blog settings")} />}><StudioSettingsPage capabilities={capabilities} /></Suspense>;
   }
   if (pathname === "/studio/categories" || pathname === "/studio/categories/") {
     return <StudioCategoriesRoute capabilities={capabilities} />;
   }
+  if (pathname === "/studio/new" || pathname === "/studio/new/") {
+    return <Suspense fallback={<RouteLoading label={text("콘텐츠 작성 화면을 불러오는 중", "Loading content creation")} />}><StudioCreatePage capabilities={capabilities} /></Suspense>;
+  }
+  if (pathname === "/studio/series" || pathname === "/studio/series/") {
+    return <Suspense fallback={<RouteLoading label={text("시리즈를 불러오는 중", "Loading series")} />}><StudioSeriesPage capabilities={capabilities} /></Suspense>;
+  }
   if (pathname === "/studio/system" || pathname === "/studio/system/") {
-    return <Suspense fallback={<RouteLoading label="프로그램 트리를 불러오는 중" />}><AdminTreePage /></Suspense>;
+    return <Suspense fallback={<RouteLoading label={text("프로그램 트리를 불러오는 중", "Loading program tree")} />}><AdminTreePage /></Suspense>;
   }
   if (pathname.startsWith("/studio/")) return <NotFoundPage />;
   const memberCategoryArticle = pathname.match(/^\/@([^/]+)\/([^/]+)\/([^/]+)\/?$/);
@@ -242,7 +254,7 @@ function resolvePage(pathname: string, capabilities: Capabilities | undefined): 
   const primaryCategory = pathname.match(/^\/([^/@][^/]*)\/?$/);
   if (primaryCategory) {
     return (
-      <Suspense fallback={<RouteLoading label="카테고리를 불러오는 중" />}>
+      <Suspense fallback={<RouteLoading label={text("카테고리를 불러오는 중", "Loading category")} />}>
         <CategoryPage categorySlug={decodePathSegment(primaryCategory[1] ?? "")} handle="" primary />
       </Suspense>
     );
@@ -254,7 +266,7 @@ function StudioCategoriesRoute({ capabilities }: { capabilities: Capabilities | 
   const { session } = useSession();
   const primary = session?.state === "authenticated" && Boolean(session.blog?.isPrimary);
   return (
-    <Suspense fallback={<RouteLoading label="카테고리를 불러오는 중" />}>
+    <Suspense fallback={<RouteLoading label={text("카테고리를 불러오는 중", "Loading categories")} />}>
       <StudioCategoriesPage capabilities={capabilities} primary={primary} />
     </Suspense>
   );
@@ -292,13 +304,13 @@ function MemberCategoryOrArticlePage({
     return () => controller.abort();
   }, [handle, segment]);
 
-  if (resolution === "loading") return <RouteLoading label="공개 주소를 확인하는 중" />;
+  if (resolution === "loading") return <RouteLoading label={text("공개 주소를 확인하는 중", "Checking public address")} />;
   if (resolution === "error") {
-    return <CapabilityError detail={detail ?? "공개 주소를 확인하지 못했습니다."} onRetry={() => window.location.reload()} />;
+    return <CapabilityError detail={detail ?? text("공개 주소를 확인하지 못했습니다.", "Could not resolve the public address.")} onRetry={() => window.location.reload()} />;
   }
   if (resolution === "category") {
     return (
-      <Suspense fallback={<RouteLoading label="카테고리를 불러오는 중" />}>
+      <Suspense fallback={<RouteLoading label={text("카테고리를 불러오는 중", "Loading category")} />}>
         <CategoryPage categorySlug={segment} handle={handle} />
       </Suspense>
     );
@@ -322,9 +334,9 @@ function CapabilityError({ detail, onRetry }: { detail: string; onRetry: () => v
   return (
     <section className="empty-state studio-access-gate" role="alert">
       <span className="empty-symbol" aria-hidden="true">!</span>
-      <h1>서버 기능을 확인하지 못했습니다</h1>
+      <h1>{text("서버 기능을 확인하지 못했습니다", "Could not check server capabilities")}</h1>
       <p>{detail}</p>
-      <button className="button button-primary" onClick={onRetry} type="button">다시 시도</button>
+      <button className="button button-primary" onClick={onRetry} type="button">{text("다시 시도", "Try again")}</button>
     </section>
   );
 }
@@ -334,6 +346,9 @@ function SiteHeader() {
   const [busy, setBusy] = useState(false);
   const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
   const deliveryOnly = studioAccess === "disabled";
+  const accessKeyLogin = Boolean(
+    capabilities && adminAuthChoices(capabilities).accessKeyMethods.length,
+  );
 
   async function logout() {
     setBusy(true);
@@ -353,43 +368,48 @@ function SiteHeader() {
   return (
     <header className="site-header">
       <div className="site-header-inner">
-        <AppLink className="brand" href="/" aria-label="OpenSoverignBlog 홈">
+        <AppLink className="brand" href="/" aria-label={text("OpenSoverignBlog 홈", "OpenSoverignBlog home")}>
           <span className="brand-mark" aria-hidden="true">
             OS
           </span>
           <span>OpenSoverignBlog</span>
         </AppLink>
-        <nav className="primary-nav" aria-label="주요 메뉴">
-          <AppLink href="/">피드</AppLink>
+        <nav className="primary-nav" aria-label={text("주요 메뉴", "Primary navigation")}>
+          <AppLink href="/">{text("피드", "Feed")}</AppLink>
           {capabilities?.references ? (
             <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
           ) : null}
           {session?.state === "authenticated" && session.blog ? (
             <AppLink href={`/@${session.blog.handle}`}>
-              {!session.membershipRole || session.membershipRole === "owner" ? "내 블로그" : "참여 블로그"}
+              {!session.membershipRole || session.membershipRole === "owner"
+                ? text("내 블로그", "My blog")
+                : text("참여 블로그", "Collaborating blog")}
             </AppLink>
           ) : null}
           {session?.state === "authenticated" && session.blog ? (
             <AppLink href="/studio">Studio</AppLink>
+          ) : null}
+          {session?.state === "authenticated" && session.blog ? (
+            <AppLink href="/studio/series">Series</AppLink>
           ) : null}
           <a href={publicPath("/AI2AI.md")}>AI2AI</a>
         </nav>
         <div className="header-actions">
           {!capabilities ? (
             <button className="button button-ghost" onClick={() => void refreshCapabilities()} title={capabilitiesError} type="button">
-              {capabilitiesError ? "기능 확인 재시도" : "서버 확인 중"}
+              {capabilitiesError ? text("기능 확인 재시도", "Retry capability check") : text("서버 확인 중", "Checking server")}
             </button>
           ) : deliveryOnly ? (
-            <span className="mode-pill">읽기 전용</span>
+            <span className="mode-pill">{text("읽기 전용", "Read only")}</span>
           ) : session?.state === "authenticated" ? (
             <>
               {session.blog && (!session.membershipRole || session.membershipRole === "owner") ? (
-                <AppLink className="button button-ghost header-settings" href="/studio/settings" aria-label="블로그 설정">
-                  <span aria-hidden="true">⚙</span><span className="header-settings-label">설정</span>
+                <AppLink className="button button-ghost header-settings" href="/studio/settings" aria-label={text("블로그 설정", "Blog settings")}>
+                  <span aria-hidden="true">⚙</span><span className="header-settings-label">{text("설정", "Settings")}</span>
                 </AppLink>
               ) : null}
-              <AppLink className="button button-primary header-write" href="/studio/write">
-                새 글 쓰기
+              <AppLink className="button button-primary header-write" href="/studio/new">
+                {text("새 콘텐츠", "New content")}
               </AppLink>
               <div className="session-chip">
                 <span className="avatar avatar-small" aria-hidden="true">
@@ -397,13 +417,17 @@ function SiteHeader() {
                 </span>
                 <span className="session-name">{session.user.displayName}</span>
                 <button disabled={busy} onClick={() => void logout()} type="button">
-                  로그아웃
+                  {text("로그아웃", "Log out")}
                 </button>
               </div>
             </>
           ) : (
             <AppLink className="button button-primary" href="/login">
-              {studioAccess === "admin_only" ? "관리자 접근" : "로그인"}
+              {accessKeyLogin
+                ? text("관리자 키 입력", "Enter administrator key")
+                : studioAccess === "admin_only"
+                  ? text("관리자 접근", "Administrator access")
+                  : text("로그인", "Log in")}
             </AppLink>
           )}
         </div>
@@ -425,11 +449,11 @@ function SiteFooter() {
     <footer className="site-footer">
       <div className="footer-project">
         <strong>OpenSoverignBlog</strong>
-        <p>당신의 Markdown, 당신의 서버, 당신의 기록.</p>
+        <p>{text("당신의 Markdown, 당신의 서버, 당신의 기록.", "Your Markdown. Your server. Your record.")}</p>
         <p className="footer-version">
-          <span>현재 버전 v{version?.currentVersion ?? "0.1.0"}</span>
-          <span>출시일 {version?.currentReleaseDate ?? "미출시"}</span>
-          {version?.latestVersion ? <span>최신 버전 v{version.latestVersion}{version.latestReleaseDate ? ` (${version.latestReleaseDate})` : ""}{version.updateAvailable ? " · 업데이트 가능" : ""}</span> : null}
+          <span>{text("현재 버전", "Current version")} v{version?.currentVersion ?? "0.1.1"}</span>
+          <span>{text("출시일", "Released")} {version?.currentReleaseDate ?? text("미출시", "unreleased")}</span>
+          {version?.latestVersion ? <span>{text("최신 버전", "Latest version")} v{version.latestVersion}{version.latestReleaseDate ? ` (${version.latestReleaseDate})` : ""}{version.updateAvailable ? text(" · 업데이트 가능", " · update available") : ""}</span> : null}
         </p>
       </div>
       <div className="footer-links">
@@ -444,7 +468,7 @@ function SiteFooter() {
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.4c.58.1.79-.25.79-.56v-2.23c-3.23.7-3.91-1.37-3.91-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.17.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.39.96.1-.75.4-1.26.74-1.55-2.58-.29-5.29-1.29-5.29-5.7 0-1.26.45-2.29 1.2-3.1-.12-.3-.52-1.48.11-3.07 0 0 .98-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.2-1.5 3.17-1.18 3.17-1.18.63 1.6.23 2.78.11 3.07.75.81 1.2 1.84 1.2 3.1 0 4.43-2.72 5.4-5.3 5.7.42.36.78 1.07.78 2.16v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z" /></svg>
           GitHub
         </a>
-        <a aria-label="개발자 홈페이지 eff0rtchung.kr" className="footer-home-link" href={version?.developerUrl ?? "https://eff0rtchung.kr"} rel="noreferrer" target="_blank">
+        <a aria-label={text("개발자 홈페이지 eff0rtchung.kr", "Developer homepage eff0rtchung.kr")} className="footer-home-link" href={version?.developerUrl ?? "https://eff0rtchung.kr"} rel="noreferrer" target="_blank">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 10.8 12 3l9 7.8v9.7a.5.5 0 0 1-.5.5H15v-6H9v6H3.5a.5.5 0 0 1-.5-.5v-9.7Z" /></svg>
           eff0rtchung.kr
         </a>

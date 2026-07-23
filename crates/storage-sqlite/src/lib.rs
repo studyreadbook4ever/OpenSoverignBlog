@@ -28,7 +28,7 @@ use url::Url;
 use uuid::Uuid;
 
 /// Latest schema version required by both mutable and delivery-only runtimes.
-pub const DATABASE_SCHEMA_VERSION: u64 = 8;
+pub const DATABASE_SCHEMA_VERSION: u64 = 9;
 
 pub struct SqliteRepository {
     connection: Mutex<Connection>,
@@ -222,11 +222,21 @@ pub struct HomeCategorySectionRecords {
     pub items: Vec<DocumentSnapshot>,
 }
 
+/// One first-class ordered series projected with its currently published
+/// members. A series extends a category so existing public routes and
+/// revision-scoped placement remain authoritative.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeSeriesSectionRecords {
+    pub series: SeriesRecord,
+    pub items: Vec<DocumentSnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HomeFeedRecords {
     pub pinned: Vec<DocumentSnapshot>,
     pub recent: Vec<DocumentSnapshot>,
     pub category_sections: Vec<HomeCategorySectionRecords>,
+    pub series_sections: Vec<HomeSeriesSectionRecords>,
 }
 
 /// Operator intent for SQLite's local WAL durability/latency trade-off.
@@ -423,6 +433,55 @@ pub struct UpdateCategoryInput {
     pub theme_profile: Option<ThemeProfile>,
 }
 
+/// Input for creating a series and its immutable-slug backing category in one
+/// transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSeriesInput {
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub theme_profile: Option<ThemeProfile>,
+}
+
+/// A first-class ordered collection backed one-to-one by a category.
+///
+/// Category metadata is joined into this closed projection instead of being
+/// duplicated in the `series` table. This preserves the existing category
+/// route, archive lifecycle, and theme behavior for promoted categories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesRecord {
+    pub id: Uuid,
+    pub site_id: Uuid,
+    pub category_id: Uuid,
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    pub theme_profile: Option<ThemeProfile>,
+    pub status: CategoryStatus,
+    pub home_position: u64,
+    pub created_by_user_id: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Stable ordering metadata for one document in one series.
+///
+/// Historical rows are retained when a later revision moves the document.
+/// Public reads always join through the exact published revision's category,
+/// so retaining them makes publishing an older revision safe without leaking
+/// draft placement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SeriesItemRecord {
+    pub series_id: Uuid,
+    pub site_id: Uuid,
+    pub document_id: Uuid,
+    pub position: u64,
+    pub added_at: DateTime<Utc>,
+}
+
 /// Category placement belongs to an immutable revision rather than a mutable
 /// document. This lets delivery keep showing the published category while a
 /// newer Studio revision is moved elsewhere.
@@ -522,6 +581,10 @@ pub struct SiteExport {
     pub site_id: Uuid,
     #[serde(default)]
     pub categories: Vec<CategoryRecord>,
+    #[serde(default)]
+    pub series: Vec<SeriesRecord>,
+    #[serde(default)]
+    pub series_items: Vec<SeriesItemRecord>,
     pub documents: Vec<ExportedDocument>,
 }
 
@@ -777,6 +840,20 @@ impl SqliteRepository {
                 .execute_batch(MIGRATION_8)
                 .map_err(storage_error)?;
         }
+        let has_migration_9 = transaction
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version = 9",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .is_some();
+        if !has_migration_9 {
+            transaction
+                .execute_batch(MIGRATION_9)
+                .map_err(storage_error)?;
+        }
         transaction.commit().map_err(storage_error)
     }
 
@@ -825,6 +902,26 @@ impl SqliteRepository {
                 .query_map(params![site_id.to_string()], stored_category_row)
                 .map_err(storage_error)?
                 .map(|row| row.map_err(storage_error).and_then(parse_category_row))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let series = list_series_with_connection(&connection, site_id, true, 500)?;
+        let series_items = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT item.series_id, item.site_id, item.document_id,
+                            item.position, item.added_at
+                     FROM series_items item
+                     JOIN series
+                       ON series.id = item.series_id AND series.site_id = item.site_id
+                     WHERE item.site_id = ?1
+                     ORDER BY series.home_position, item.series_id,
+                              item.position, item.document_id",
+                )
+                .map_err(storage_error)?;
+            statement
+                .query_map(params![site_id.to_string()], stored_series_item_row)
+                .map_err(storage_error)?
+                .map(|row| row.map_err(storage_error).and_then(parse_series_item_row))
                 .collect::<Result<Vec<_>, _>>()?
         };
         let document_ids = {
@@ -907,9 +1004,11 @@ impl SqliteRepository {
             });
         }
         Ok(SiteExport {
-            schema_version: "open-soverign-blog-export/3".into(),
+            schema_version: "open-soverign-blog-export/4".into(),
             site_id,
             categories,
+            series,
+            series_items,
             documents,
         })
     }
@@ -1924,38 +2023,14 @@ impl SqliteRepository {
         site_id: Uuid,
         input: CreateCategoryInput,
     ) -> Result<CategoryRecord, RepositoryError> {
-        let slug = normalize_new_category_slug(&input.slug)?;
-        let title = validate_required_text(&input.title, "category title", 200)?;
-        let description =
-            validate_optional_text(input.description.as_deref(), "category description", 2_000)?;
         let mut connection = self.lock()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage_error)?;
         ensure_site_owner(&transaction, owner_user_id, site_id)?;
-        ensure_category_landing_available(&transaction, site_id, &slug)?;
-        let id = Uuid::now_v7();
-        let now = Utc::now();
-        transaction
-            .execute(
-                "INSERT INTO categories (
-                    id, site_id, slug, title, description, theme_profile, status,
-                    created_by_user_id, created_at, updated_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
-                params![
-                    id.to_string(),
-                    site_id.to_string(),
-                    slug,
-                    title,
-                    description,
-                    input.theme_profile.map(ThemeProfile::as_str),
-                    owner_user_id.to_string(),
-                    now.to_rfc3339(),
-                ],
-            )
-            .map_err(map_category_constraint_error)?;
+        let category = create_category_in_transaction(&transaction, owner_user_id, site_id, input)?;
         transaction.commit().map_err(storage_error)?;
-        load_category_by_id(&connection, site_id, id)
+        Ok(category)
     }
 
     /// Imports a prevalidated set of Markdown posts without requiring a
@@ -2339,6 +2414,274 @@ impl SqliteRepository {
         }
         transaction.commit().map_err(storage_error)?;
         load_category_by_id(&connection, site_id, category_id)
+    }
+
+    /// Atomically creates a first-class series and its backing category.
+    ///
+    /// The category continues to own the immutable public slug, presentation,
+    /// archive lifecycle, and revision-scoped route placement.
+    pub fn create_series(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        input: CreateSeriesInput,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        let category = create_category_in_transaction(
+            &transaction,
+            owner_user_id,
+            site_id,
+            CreateCategoryInput {
+                slug: input.slug,
+                title: input.title,
+                description: input.description,
+                theme_profile: input.theme_profile,
+            },
+        )?;
+        let series = create_series_for_category_in_transaction(
+            &transaction,
+            owner_user_id,
+            site_id,
+            category.id,
+        )?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(series)
+    }
+
+    /// Explicitly promotes an existing category to a series without changing
+    /// its metadata, status, routes, or any revision placement.
+    ///
+    /// Exact retries are idempotent. The initial series order is the original
+    /// document creation order and contains only currently published members.
+    pub fn promote_category_to_series(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        category_id: Uuid,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        load_category_by_id(&transaction, site_id, category_id)?;
+        let series = match load_series_by_category_id(&transaction, site_id, category_id) {
+            Ok(series) => series,
+            Err(RepositoryError::NotFound) => create_series_for_category_in_transaction(
+                &transaction,
+                owner_user_id,
+                site_id,
+                category_id,
+            )?,
+            Err(error) => return Err(error),
+        };
+        transaction.commit().map_err(storage_error)?;
+        Ok(series)
+    }
+
+    pub fn list_series(
+        &self,
+        site_id: Uuid,
+        include_archived: bool,
+        limit: usize,
+    ) -> Result<Vec<SeriesRecord>, RepositoryError> {
+        let connection = self.lock()?;
+        ensure_site_exists(&connection, site_id)?;
+        list_series_with_connection(&connection, site_id, include_archived, limit)
+    }
+
+    pub fn get_series_by_id(
+        &self,
+        site_id: Uuid,
+        series_id: Uuid,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let connection = self.lock()?;
+        load_series_by_id(&connection, site_id, series_id)
+    }
+
+    pub fn get_series_by_slug(
+        &self,
+        site_id: Uuid,
+        slug: &str,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let slug = normalize_category_slug(slug)?;
+        let connection = self.lock()?;
+        load_series_by_slug(&connection, site_id, &slug)
+    }
+
+    pub fn get_series_by_category_id(
+        &self,
+        site_id: Uuid,
+        category_id: Uuid,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let connection = self.lock()?;
+        load_series_by_category_id(&connection, site_id, category_id)
+    }
+
+    /// Updates the mutable presentation owned by the backing category without
+    /// requiring a caller that only knows the series ID to cross resource
+    /// boundaries itself.
+    pub fn update_series(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        series_id: Uuid,
+        input: UpdateCategoryInput,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let title = validate_required_text(&input.title, "series title", 200)?;
+        let description =
+            validate_optional_text(input.description.as_deref(), "series description", 2_000)?;
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        let series = load_series_by_id(&transaction, site_id, series_id)?;
+        let now = Utc::now().to_rfc3339();
+        transaction
+            .execute(
+                "UPDATE categories
+                 SET title = ?1, description = ?2, theme_profile = ?3, updated_at = ?4
+                 WHERE id = ?5 AND site_id = ?6",
+                params![
+                    title,
+                    description,
+                    input.theme_profile.map(ThemeProfile::as_str),
+                    now,
+                    series.category_id.to_string(),
+                    site_id.to_string(),
+                ],
+            )
+            .map_err(map_category_constraint_error)?;
+        transaction
+            .execute(
+                "UPDATE series SET updated_at = ?1 WHERE id = ?2 AND site_id = ?3",
+                params![now, series_id.to_string(), site_id.to_string()],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        load_series_by_id(&connection, site_id, series_id)
+    }
+
+    /// Archives a series through its backing category. Existing published
+    /// routes and ordered membership stay readable, while category admission
+    /// continues to reject future assignments and publications.
+    pub fn archive_series(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        series_id: Uuid,
+    ) -> Result<SeriesRecord, RepositoryError> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        let series = load_series_by_id(&transaction, site_id, series_id)?;
+        if series.status == CategoryStatus::Active {
+            let now = Utc::now().to_rfc3339();
+            transaction
+                .execute(
+                    "UPDATE categories SET status = 'archived', updated_at = ?1
+                     WHERE id = ?2 AND site_id = ?3",
+                    params![now, series.category_id.to_string(), site_id.to_string()],
+                )
+                .map_err(storage_error)?;
+            transaction
+                .execute(
+                    "UPDATE series SET updated_at = ?1
+                     WHERE id = ?2 AND site_id = ?3",
+                    params![now, series_id.to_string(), site_id.to_string()],
+                )
+                .map_err(storage_error)?;
+        }
+        transaction.commit().map_err(storage_error)?;
+        load_series_by_id(&connection, site_id, series_id)
+    }
+
+    /// Lists the public members in explicit series order. Draft-only
+    /// documents and draft placement changes never participate.
+    pub fn list_published_in_series(
+        &self,
+        site_id: Uuid,
+        series_id: Uuid,
+        limit: usize,
+    ) -> Result<Vec<DocumentSnapshot>, RepositoryError> {
+        let connection = self.lock()?;
+        load_series_by_id(&connection, site_id, series_id)?;
+        list_published_in_series_with_connection(&connection, site_id, series_id, limit)
+    }
+
+    /// Atomically replaces the complete order of the currently published
+    /// series membership.
+    ///
+    /// The request must contain exactly the current public member set, at most
+    /// 500 unique document IDs. This prevents a stale reorder request from
+    /// silently adding, dropping, or cross-tenant moving content.
+    pub fn replace_series_order(
+        &self,
+        owner_user_id: Uuid,
+        site_id: Uuid,
+        series_id: Uuid,
+        document_ids: &[Uuid],
+    ) -> Result<Vec<SeriesItemRecord>, RepositoryError> {
+        if document_ids.len() > 500
+            || document_ids.iter().copied().collect::<BTreeSet<_>>().len() != document_ids.len()
+        {
+            return Err(RepositoryError::Validation(
+                "series order must contain at most 500 unique document ids".into(),
+            ));
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        ensure_site_owner(&transaction, owner_user_id, site_id)?;
+        load_series_by_id(&transaction, site_id, series_id)?;
+        let current =
+            list_published_series_items_with_connection(&transaction, site_id, series_id, 501)?;
+        let current_ids = current
+            .iter()
+            .map(|item| item.document_id)
+            .collect::<BTreeSet<_>>();
+        let requested_ids = document_ids.iter().copied().collect::<BTreeSet<_>>();
+        if current.len() != document_ids.len() || current_ids != requested_ids {
+            return Err(RepositoryError::RevisionConflict);
+        }
+        for (index, document_id) in document_ids.iter().enumerate() {
+            let position = series_position(index)?;
+            let changed = transaction
+                .execute(
+                    "UPDATE series_items SET position = ?1
+                     WHERE series_id = ?2 AND site_id = ?3 AND document_id = ?4",
+                    params![
+                        position,
+                        series_id.to_string(),
+                        site_id.to_string(),
+                        document_id.to_string(),
+                    ],
+                )
+                .map_err(storage_error)?;
+            if changed != 1 {
+                return Err(RepositoryError::RevisionConflict);
+            }
+        }
+        transaction
+            .execute(
+                "UPDATE series SET updated_at = ?1 WHERE id = ?2 AND site_id = ?3",
+                params![
+                    Utc::now().to_rfc3339(),
+                    series_id.to_string(),
+                    site_id.to_string()
+                ],
+            )
+            .map_err(storage_error)?;
+        transaction.commit().map_err(storage_error)?;
+        list_published_series_items_with_connection(&connection, site_id, series_id, 500)
     }
 
     /// Assigns the current, unpublished revision to a category. `None` moves
@@ -3026,7 +3369,9 @@ impl SqliteRepository {
 
     /// Returns a coherent public home snapshot: curated documents in slot
     /// order, newest published documents with every pin removed, and bounded
-    /// primary-site category trees in category/document creation order.
+    /// primary-site series/category trees in explicit series order or category
+    /// document-creation order. A series backing category is emitted only as a
+    /// series section so one collection cannot appear twice.
     pub fn home_feed(
         &self,
         primary_site_id: Uuid,
@@ -3058,6 +3403,31 @@ impl SqliteRepository {
         .take(recent_limit.min(500))
         .collect();
 
+        let series = list_series_with_connection(&connection, primary_site_id, false, 500)?;
+        let mut series_sections = Vec::new();
+        let mut remaining = recent_limit.min(500);
+        for series in series {
+            if remaining == 0 {
+                break;
+            }
+            let fetch_limit = remaining.saturating_add(pinned_ids.len()).min(500);
+            let items = list_published_in_series_with_connection(
+                &connection,
+                primary_site_id,
+                series.id,
+                fetch_limit,
+            )?
+            .into_iter()
+            .filter(|document| !pinned_ids.contains(&document.id))
+            .take(remaining)
+            .collect::<Vec<_>>();
+            if items.is_empty() {
+                continue;
+            }
+            remaining = remaining.saturating_sub(items.len());
+            series_sections.push(HomeSeriesSectionRecords { series, items });
+        }
+
         let categories = {
             let mut statement = connection
                 .prepare(
@@ -3065,6 +3435,11 @@ impl SqliteRepository {
                             created_by_user_id, created_at, updated_at
                      FROM categories
                      WHERE site_id = ?1 AND status = 'active'
+                       AND NOT EXISTS (
+                         SELECT 1 FROM series
+                         WHERE series.site_id = categories.site_id
+                           AND series.category_id = categories.id
+                       )
                      ORDER BY created_at ASC, id ASC
                      LIMIT 500",
                 )
@@ -3076,7 +3451,6 @@ impl SqliteRepository {
                 .collect::<Result<Vec<_>, _>>()?
         };
         let mut category_sections = Vec::new();
-        let mut remaining = recent_limit.min(500);
         for category in categories {
             if remaining == 0 {
                 break;
@@ -3103,6 +3477,7 @@ impl SqliteRepository {
             pinned,
             recent,
             category_sections,
+            series_sections,
         })
     }
 }
@@ -3612,6 +3987,13 @@ fn publish_in_transaction_at(
     if routed_document != document_id.to_string() {
         return Err(RepositoryError::DuplicateSlug);
     }
+    ensure_series_item_for_revision_in_transaction(
+        transaction,
+        site_uuid,
+        document_id,
+        revision_id,
+        now,
+    )?;
     transaction
         .execute(
             "UPDATE documents SET status = 'published', published_revision_id = ?1,
@@ -4054,6 +4436,180 @@ fn list_published_in_category_with_connection(
     ids.into_iter()
         .map(|id| load_document(connection, parse_uuid(&id)?, RevisionSelector::Published))
         .collect()
+}
+
+type StoredSeriesItemRow = (String, String, String, i64, String);
+
+fn stored_series_item_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSeriesItemRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+fn parse_series_item_row(raw: StoredSeriesItemRow) -> Result<SeriesItemRecord, RepositoryError> {
+    let (series_id, site_id, document_id, position, added_at) = raw;
+    Ok(SeriesItemRecord {
+        series_id: parse_uuid(&series_id)?,
+        site_id: parse_uuid(&site_id)?,
+        document_id: parse_uuid(&document_id)?,
+        position: u64::try_from(position)
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?,
+        added_at: parse_datetime(&added_at)?,
+    })
+}
+
+fn list_published_series_items_with_connection(
+    connection: &Connection,
+    site_id: Uuid,
+    series_id: Uuid,
+    limit: usize,
+) -> Result<Vec<SeriesItemRecord>, RepositoryError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT item.series_id, item.site_id, item.document_id,
+                    item.position, item.added_at
+             FROM series_items item
+             JOIN series
+               ON series.id = item.series_id AND series.site_id = item.site_id
+             JOIN documents document
+               ON document.id = item.document_id AND document.site_id = item.site_id
+             JOIN revision_categories placement
+               ON placement.revision_id = document.published_revision_id
+              AND placement.document_id = document.id
+              AND placement.site_id = document.site_id
+             WHERE item.site_id = ?1 AND item.series_id = ?2
+               AND placement.category_id = series.category_id
+               AND document.published_revision_id IS NOT NULL
+               AND document.status != 'archived'
+             ORDER BY item.position ASC, item.document_id ASC
+             LIMIT ?3",
+        )
+        .map_err(storage_error)?;
+    statement
+        .query_map(
+            params![
+                site_id.to_string(),
+                series_id.to_string(),
+                limit.min(501) as i64
+            ],
+            stored_series_item_row,
+        )
+        .map_err(storage_error)?
+        .map(|row| row.map_err(storage_error).and_then(parse_series_item_row))
+        .collect()
+}
+
+fn list_published_in_series_with_connection(
+    connection: &Connection,
+    site_id: Uuid,
+    series_id: Uuid,
+    limit: usize,
+) -> Result<Vec<DocumentSnapshot>, RepositoryError> {
+    list_published_series_items_with_connection(connection, site_id, series_id, limit)?
+        .into_iter()
+        .map(|item| load_document(connection, item.document_id, RevisionSelector::Published))
+        .collect()
+}
+
+fn ensure_series_item_for_revision_in_transaction(
+    transaction: &Transaction<'_>,
+    site_id: Uuid,
+    document_id: Uuid,
+    revision_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let series_id: Option<String> = transaction
+        .query_row(
+            "SELECT series.id
+             FROM revision_categories placement
+             JOIN series
+               ON series.category_id = placement.category_id
+              AND series.site_id = placement.site_id
+             WHERE placement.revision_id = ?1
+               AND placement.document_id = ?2
+               AND placement.site_id = ?3",
+            params![
+                revision_id.to_string(),
+                document_id.to_string(),
+                site_id.to_string()
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    let Some(series_id) = series_id else {
+        return Ok(());
+    };
+    let already_present = transaction
+        .query_row(
+            "SELECT 1 FROM series_items
+             WHERE series_id = ?1 AND site_id = ?2 AND document_id = ?3",
+            params![series_id, site_id.to_string(), document_id.to_string()],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .is_some();
+    if already_present {
+        return Ok(());
+    }
+    let published_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*)
+             FROM series_items item
+             JOIN series
+               ON series.id = item.series_id AND series.site_id = item.site_id
+             JOIN documents document
+               ON document.id = item.document_id AND document.site_id = item.site_id
+             JOIN revision_categories placement
+               ON placement.revision_id = document.published_revision_id
+              AND placement.document_id = document.id
+              AND placement.site_id = document.site_id
+             WHERE item.series_id = ?1 AND item.site_id = ?2
+               AND placement.category_id = series.category_id
+               AND document.published_revision_id IS NOT NULL
+               AND document.status != 'archived'",
+            params![series_id, site_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if published_count >= 500 {
+        return Err(RepositoryError::Validation(
+            "a series cannot contain more than 500 published documents".into(),
+        ));
+    }
+    let next_position: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(position), 0) + ?1
+             FROM series_items WHERE series_id = ?2 AND site_id = ?3",
+            params![SERIES_POSITION_STEP as i64, series_id, site_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if next_position <= 0 {
+        return Err(RepositoryError::Validation(
+            "series position overflow".into(),
+        ));
+    }
+    transaction
+        .execute(
+            "INSERT INTO series_items (
+                series_id, site_id, document_id, position, added_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                series_id,
+                site_id.to_string(),
+                document_id.to_string(),
+                next_position,
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(map_series_constraint_error)?;
+    Ok(())
 }
 
 type StoredUserRow = (String, String, String, String, String, String, String);
@@ -4502,6 +5058,40 @@ fn load_sites(
         .collect()
 }
 
+fn create_category_in_transaction(
+    transaction: &Transaction<'_>,
+    owner_user_id: Uuid,
+    site_id: Uuid,
+    input: CreateCategoryInput,
+) -> Result<CategoryRecord, RepositoryError> {
+    let slug = normalize_new_category_slug(&input.slug)?;
+    let title = validate_required_text(&input.title, "category title", 200)?;
+    let description =
+        validate_optional_text(input.description.as_deref(), "category description", 2_000)?;
+    ensure_category_landing_available(transaction, site_id, &slug)?;
+    let id = Uuid::now_v7();
+    let now = Utc::now();
+    transaction
+        .execute(
+            "INSERT INTO categories (
+                id, site_id, slug, title, description, theme_profile, status,
+                created_by_user_id, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?8)",
+            params![
+                id.to_string(),
+                site_id.to_string(),
+                slug,
+                title,
+                description,
+                input.theme_profile.map(ThemeProfile::as_str),
+                owner_user_id.to_string(),
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(map_category_constraint_error)?;
+    load_category_by_id(transaction, site_id, id)
+}
+
 type StoredCategoryRow = (
     String,
     String,
@@ -4596,6 +5186,292 @@ fn load_category_by_slug(
         .map_err(storage_error)?
         .ok_or(RepositoryError::NotFound)
         .and_then(parse_category_row)
+}
+
+const SERIES_POSITION_STEP: u64 = 1_024;
+
+type StoredSeriesRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    i64,
+    String,
+    String,
+    String,
+);
+
+fn stored_series_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSeriesRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+        row.get(11)?,
+    ))
+}
+
+fn parse_series_row(raw: StoredSeriesRow) -> Result<SeriesRecord, RepositoryError> {
+    let (
+        id,
+        site_id,
+        category_id,
+        slug,
+        title,
+        description,
+        theme_profile,
+        status,
+        home_position,
+        created_by_user_id,
+        created_at,
+        updated_at,
+    ) = raw;
+    Ok(SeriesRecord {
+        id: parse_uuid(&id)?,
+        site_id: parse_uuid(&site_id)?,
+        category_id: parse_uuid(&category_id)?,
+        slug,
+        title,
+        description,
+        theme_profile: theme_profile
+            .as_deref()
+            .map(ThemeProfile::from_str)
+            .transpose()?,
+        status: CategoryStatus::from_str(&status)?,
+        home_position: u64::try_from(home_position)
+            .map_err(|error| RepositoryError::Storage(error.to_string()))?,
+        created_by_user_id: parse_uuid(&created_by_user_id)?,
+        created_at: parse_datetime(&created_at)?,
+        updated_at: parse_datetime(&updated_at)?,
+    })
+}
+
+fn series_select() -> &'static str {
+    "SELECT series.id, series.site_id, series.category_id,
+            category.slug, category.title, category.description,
+            category.theme_profile, category.status, series.home_position,
+            series.created_by_user_id, series.created_at,
+            CASE
+              WHEN category.updated_at > series.updated_at THEN category.updated_at
+              ELSE series.updated_at
+            END
+     FROM series
+     JOIN categories category
+       ON category.id = series.category_id AND category.site_id = series.site_id"
+}
+
+fn load_series_by_id(
+    connection: &Connection,
+    site_id: Uuid,
+    series_id: Uuid,
+) -> Result<SeriesRecord, RepositoryError> {
+    connection
+        .query_row(
+            &format!(
+                "{} WHERE series.id = ?1 AND series.site_id = ?2",
+                series_select()
+            ),
+            params![series_id.to_string(), site_id.to_string()],
+            stored_series_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)
+        .and_then(parse_series_row)
+}
+
+fn load_series_by_category_id(
+    connection: &Connection,
+    site_id: Uuid,
+    category_id: Uuid,
+) -> Result<SeriesRecord, RepositoryError> {
+    connection
+        .query_row(
+            &format!(
+                "{} WHERE series.category_id = ?1 AND series.site_id = ?2",
+                series_select()
+            ),
+            params![category_id.to_string(), site_id.to_string()],
+            stored_series_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)
+        .and_then(parse_series_row)
+}
+
+fn load_series_by_slug(
+    connection: &Connection,
+    site_id: Uuid,
+    slug: &str,
+) -> Result<SeriesRecord, RepositoryError> {
+    connection
+        .query_row(
+            &format!(
+                "{} WHERE series.site_id = ?1 AND category.slug = ?2 COLLATE NOCASE",
+                series_select()
+            ),
+            params![site_id.to_string(), slug],
+            stored_series_row,
+        )
+        .optional()
+        .map_err(storage_error)?
+        .ok_or(RepositoryError::NotFound)
+        .and_then(parse_series_row)
+}
+
+fn list_series_with_connection(
+    connection: &Connection,
+    site_id: Uuid,
+    include_archived: bool,
+    limit: usize,
+) -> Result<Vec<SeriesRecord>, RepositoryError> {
+    let sql = format!(
+        "{} WHERE series.site_id = ?1 AND (?2 OR category.status = 'active')
+         ORDER BY CASE category.status WHEN 'active' THEN 0 ELSE 1 END,
+                  series.home_position, series.id
+         LIMIT ?3",
+        series_select()
+    );
+    let mut statement = connection.prepare(&sql).map_err(storage_error)?;
+    statement
+        .query_map(
+            params![site_id.to_string(), include_archived, limit.min(500) as i64],
+            stored_series_row,
+        )
+        .map_err(storage_error)?
+        .map(|row| row.map_err(storage_error).and_then(parse_series_row))
+        .collect()
+}
+
+fn create_series_for_category_in_transaction(
+    transaction: &Transaction<'_>,
+    owner_user_id: Uuid,
+    site_id: Uuid,
+    category_id: Uuid,
+) -> Result<SeriesRecord, RepositoryError> {
+    load_category_by_id(transaction, site_id, category_id)?;
+    let series_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM series WHERE site_id = ?1",
+            params![site_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if series_count >= 500 {
+        return Err(RepositoryError::Validation(
+            "a site cannot contain more than 500 series".into(),
+        ));
+    }
+    let next_home_position: i64 = transaction
+        .query_row(
+            "SELECT COALESCE(MAX(home_position), 0) + ?1
+             FROM series WHERE site_id = ?2",
+            params![SERIES_POSITION_STEP as i64, site_id.to_string()],
+            |row| row.get(0),
+        )
+        .map_err(storage_error)?;
+    if next_home_position <= 0 {
+        return Err(RepositoryError::Validation(
+            "series home position overflow".into(),
+        ));
+    }
+    let series_id = Uuid::now_v7();
+    let now = Utc::now();
+    transaction
+        .execute(
+            "INSERT INTO series (
+                id, site_id, category_id, home_position, created_by_user_id,
+                created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                series_id.to_string(),
+                site_id.to_string(),
+                category_id.to_string(),
+                next_home_position,
+                owner_user_id.to_string(),
+                now.to_rfc3339(),
+            ],
+        )
+        .map_err(map_series_constraint_error)?;
+    backfill_series_items_in_transaction(transaction, site_id, series_id, category_id, now)?;
+    load_series_by_id(transaction, site_id, series_id)
+}
+
+fn backfill_series_items_in_transaction(
+    transaction: &Transaction<'_>,
+    site_id: Uuid,
+    series_id: Uuid,
+    category_id: Uuid,
+    added_at: DateTime<Utc>,
+) -> Result<(), RepositoryError> {
+    let document_ids = {
+        let mut statement = transaction
+            .prepare(
+                "SELECT document.id
+                 FROM documents document
+                 JOIN revision_categories placement
+                   ON placement.revision_id = document.published_revision_id
+                  AND placement.document_id = document.id
+                  AND placement.site_id = document.site_id
+                 WHERE document.site_id = ?1 AND placement.category_id = ?2
+                   AND document.published_revision_id IS NOT NULL
+                   AND document.status != 'archived'
+                 ORDER BY document.created_at ASC, document.id ASC
+                 LIMIT 501",
+            )
+            .map_err(storage_error)?;
+        statement
+            .query_map(
+                params![site_id.to_string(), category_id.to_string()],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(storage_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage_error)?
+    };
+    if document_ids.len() > 500 {
+        return Err(RepositoryError::Validation(
+            "a series cannot contain more than 500 published documents".into(),
+        ));
+    }
+    for (index, document_id) in document_ids.iter().enumerate() {
+        transaction
+            .execute(
+                "INSERT INTO series_items (
+                    series_id, site_id, document_id, position, added_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    series_id.to_string(),
+                    site_id.to_string(),
+                    document_id,
+                    series_position(index)?,
+                    added_at.to_rfc3339(),
+                ],
+            )
+            .map_err(map_series_constraint_error)?;
+    }
+    Ok(())
+}
+
+fn series_position(index: usize) -> Result<i64, RepositoryError> {
+    let ordinal = u64::try_from(index)
+        .map_err(|error| RepositoryError::Validation(error.to_string()))?
+        .checked_add(1)
+        .and_then(|value| value.checked_mul(SERIES_POSITION_STEP))
+        .ok_or_else(|| RepositoryError::Validation("series position overflow".into()))?;
+    i64::try_from(ordinal).map_err(|error| RepositoryError::Validation(error.to_string()))
 }
 
 type StoredRevisionCategoryPlacementRow = (
@@ -5817,6 +6693,19 @@ fn map_category_constraint_error(error: rusqlite::Error) -> RepositoryError {
     }
 }
 
+fn map_series_constraint_error(error: rusqlite::Error) -> RepositoryError {
+    let text = error.to_string();
+    if text.contains("series.site_id, series.category_id") {
+        RepositoryError::Validation("the category is already a series".into())
+    } else if text.contains("FOREIGN KEY constraint failed") {
+        RepositoryError::NotFound
+    } else if text.contains("CHECK constraint failed") {
+        RepositoryError::Validation("series record violates a storage constraint".into())
+    } else {
+        storage_error(error)
+    }
+}
+
 fn map_community_constraint_error(error: rusqlite::Error) -> RepositoryError {
     let text = error.to_string();
     if text.contains("users.email") {
@@ -6302,6 +7191,50 @@ INSERT INTO schema_migrations(version, applied_at)
 VALUES (8, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#;
 
+const MIGRATION_9: &str = r#"
+CREATE TABLE series (
+  id TEXT PRIMARY KEY,
+  site_id TEXT NOT NULL,
+  category_id TEXT NOT NULL,
+  home_position INTEGER NOT NULL CHECK (home_position > 0),
+  created_by_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (id, site_id),
+  UNIQUE (site_id, category_id),
+  FOREIGN KEY (category_id, site_id)
+    REFERENCES categories(id, site_id) ON DELETE RESTRICT,
+  FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX series_site_home_idx
+  ON series(site_id, home_position, id);
+
+CREATE TABLE series_items (
+  series_id TEXT NOT NULL,
+  site_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  position INTEGER NOT NULL CHECK (position > 0),
+  added_at TEXT NOT NULL,
+  PRIMARY KEY (series_id, document_id),
+  FOREIGN KEY (series_id, site_id)
+    REFERENCES series(id, site_id) ON DELETE CASCADE,
+  FOREIGN KEY (document_id, site_id)
+    REFERENCES documents(id, site_id) ON DELETE CASCADE
+);
+
+CREATE INDEX series_items_order_idx
+  ON series_items(series_id, position, document_id);
+CREATE INDEX series_items_document_idx
+  ON series_items(document_id, series_id);
+
+-- Existing categories remain categories. Promotion into a first-class series
+-- is an explicit, owner-authorized operation so upgrades cannot silently
+-- change the meaning of a general-purpose taxonomy.
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (9, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"#;
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -6715,6 +7648,120 @@ mod tests {
                 .category_id,
             None
         );
+    }
+
+    #[test]
+    fn migration_nine_adds_empty_series_state_explicitly_and_gates_delivery() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("schema-v8.db");
+        let mut connection = Connection::open(&database).unwrap();
+        for migration in [
+            MIGRATION_1,
+            MIGRATION_2,
+            MIGRATION_3,
+            MIGRATION_4,
+            MIGRATION_5,
+            MIGRATION_6,
+            MIGRATION_7,
+            MIGRATION_8,
+        ] {
+            connection.execute_batch(migration).unwrap();
+        }
+        let owner_id = Uuid::now_v7();
+        let site_id = Uuid::now_v7();
+        let category_id = Uuid::now_v7();
+        let now = Utc::now().to_rfc3339();
+        let transaction = connection.transaction().unwrap();
+        transaction
+            .execute(
+                "INSERT INTO users (
+                    id, email, handle, display_name, password_phc, created_at, updated_at
+                 ) VALUES (?1, 'series-v8@example.test', 'series-v8', 'Series V8',
+                           '$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA', ?2, ?2)",
+                params![owner_id.to_string(), now],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO sites (
+                    id, handle, title, description, current_theme_revision, created_at, updated_at
+                 ) VALUES (?1, 'series-v8-site', 'Series V8 site', NULL, 1, ?2, ?2)",
+                params![site_id.to_string(), now],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO site_memberships (site_id, user_id, role, created_at)
+                 VALUES (?1, ?2, 'owner', ?3)",
+                params![site_id.to_string(), owner_id.to_string(), now],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO site_theme_revisions (
+                    site_id, revision, profile, custom_css, created_by_user_id, created_at
+                 ) VALUES (?1, 1, 'paper', NULL, ?2, ?3)",
+                params![site_id.to_string(), owner_id.to_string(), now],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO categories (
+                    id, site_id, slug, title, description, theme_profile, status,
+                    created_by_user_id, created_at, updated_at
+                 ) VALUES (?1, ?2, 'existing-category', 'Existing category', NULL,
+                           NULL, 'active', ?3, ?4, ?4)",
+                params![
+                    category_id.to_string(),
+                    site_id.to_string(),
+                    owner_id.to_string(),
+                    now,
+                ],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        drop(connection);
+
+        assert!(matches!(
+            SqliteRepository::open_read_only(&database),
+            Err(RepositoryError::Storage(_))
+        ));
+        let repository = SqliteRepository::open(&database).unwrap();
+        assert!(
+            repository
+                .list_series(site_id, true, 500)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .get_category_by_id(site_id, category_id)
+                .unwrap()
+                .slug,
+            "existing-category"
+        );
+        repository.migrate().unwrap();
+        let connection = repository.lock().unwrap();
+        let versions: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 9",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(versions, 1);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM series", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(connection);
+        drop(repository);
+
+        let delivery = SqliteRepository::open_read_only(&database).unwrap();
+        assert!(delivery.list_series(site_id, true, 500).unwrap().is_empty());
     }
 
     #[test]
@@ -7804,7 +8851,7 @@ mod tests {
     }
 
     #[test]
-    fn site_export_v3_preserves_categories_and_revision_placements() {
+    fn site_export_v4_preserves_categories_and_revision_placements() {
         let repository = SqliteRepository::open_in_memory().unwrap();
         let owner = community_user(&repository, "category-export-owner");
         let site = community_site(&repository, owner.id, "category-export-site");
@@ -7865,7 +8912,7 @@ mod tests {
             .unwrap();
 
         let export = repository.export_site(site.id).unwrap();
-        assert_eq!(export.schema_version, "open-soverign-blog-export/3");
+        assert_eq!(export.schema_version, "open-soverign-blog-export/4");
         assert_eq!(export.categories.len(), 2);
         assert!(export.categories.iter().any(|item| {
             item.id == empty_archived.id && item.status == CategoryStatus::Archived
@@ -9059,6 +10106,354 @@ mod tests {
     }
 
     #[test]
+    fn series_promotion_is_idempotent_ordered_reorderable_and_exported() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[0x51; 32],
+            )
+            .unwrap();
+        let category = repository
+            .create_category(
+                control.owner_user_id,
+                site_id,
+                CreateCategoryInput {
+                    slug: "yangja".into(),
+                    title: "yangja".into(),
+                    description: Some("양자 컴퓨팅".into()),
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let publish = |title: &str, slug: &str| {
+            let document = repository
+                .create_document_in_writable_site_with_category(
+                    control.owner_user_id,
+                    new_document(site_id, title, slug),
+                    Some(category.id),
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap()
+        };
+        let first = publish("First", "first");
+        let second = publish("Second", "second");
+
+        let promoted = repository
+            .promote_category_to_series(control.owner_user_id, site_id, category.id)
+            .unwrap();
+        assert_eq!(
+            repository
+                .promote_category_to_series(control.owner_user_id, site_id, category.id)
+                .unwrap(),
+            promoted,
+            "an exact promotion retry must not create another series or reorder it"
+        );
+        assert_eq!(
+            repository.get_series_by_id(site_id, promoted.id).unwrap(),
+            promoted
+        );
+        assert_eq!(
+            repository.get_series_by_slug(site_id, "YANGJA").unwrap(),
+            promoted
+        );
+        assert_eq!(
+            repository
+                .get_series_by_category_id(site_id, category.id)
+                .unwrap(),
+            promoted
+        );
+        assert_eq!(
+            repository
+                .list_published_in_series(site_id, promoted.id, 500)
+                .unwrap()
+                .into_iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+
+        let third = publish("Third", "third");
+        assert_eq!(
+            repository
+                .list_published_in_series(site_id, promoted.id, 500)
+                .unwrap()
+                .into_iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id, third.id],
+            "publication appends a new member to the series tail"
+        );
+
+        let reordered = [third.id, first.id, second.id];
+        let items = repository
+            .replace_series_order(control.owner_user_id, site_id, promoted.id, &reordered)
+            .unwrap();
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.document_id)
+                .collect::<Vec<_>>(),
+            reordered
+        );
+        assert_eq!(
+            items.iter().map(|item| item.position).collect::<Vec<_>>(),
+            vec![1_024, 2_048, 3_072]
+        );
+        assert_eq!(
+            repository
+                .list_published_in_series(site_id, promoted.id, 500)
+                .unwrap()
+                .into_iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            reordered
+        );
+        assert!(matches!(
+            repository.replace_series_order(
+                control.owner_user_id,
+                site_id,
+                promoted.id,
+                &[first.id, second.id]
+            ),
+            Err(RepositoryError::RevisionConflict)
+        ));
+        assert!(matches!(
+            repository.replace_series_order(
+                control.owner_user_id,
+                site_id,
+                promoted.id,
+                &[first.id, first.id, third.id]
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+        assert_eq!(
+            repository
+                .list_published_in_series(site_id, promoted.id, 500)
+                .unwrap()
+                .into_iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            reordered,
+            "failed reorder requests must leave the committed order untouched"
+        );
+
+        let updated = repository
+            .update_series(
+                control.owner_user_id,
+                site_id,
+                promoted.id,
+                UpdateCategoryInput {
+                    title: "Quantum notes".into(),
+                    description: Some("Ordered quantum notes".into()),
+                    theme_profile: Some(ThemeProfile::Ink),
+                },
+            )
+            .unwrap();
+        assert_eq!(updated.slug, "yangja");
+        assert_eq!(updated.title, "Quantum notes");
+        assert_eq!(updated.theme_profile, Some(ThemeProfile::Ink));
+        assert_eq!(
+            repository
+                .get_category_by_id(site_id, category.id)
+                .unwrap()
+                .title,
+            "Quantum notes"
+        );
+
+        let home = repository.home_feed(site_id, 500).unwrap();
+        assert!(home.category_sections.is_empty());
+        assert_eq!(home.series_sections.len(), 1);
+        assert_eq!(home.series_sections[0].series.id, promoted.id);
+        assert_eq!(
+            home.series_sections[0]
+                .items
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            reordered
+        );
+
+        let export = repository.export_site(site_id).unwrap();
+        assert_eq!(export.schema_version, "open-soverign-blog-export/4");
+        assert_eq!(export.series, vec![updated.clone()]);
+        assert_eq!(
+            export
+                .series_items
+                .iter()
+                .map(|item| item.document_id)
+                .collect::<Vec<_>>(),
+            reordered
+        );
+        let encoded = serde_json::to_string(&export).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SiteExport>(&encoded).unwrap(),
+            export
+        );
+
+        let archived = repository
+            .archive_series(control.owner_user_id, site_id, promoted.id)
+            .unwrap();
+        assert_eq!(archived.status, CategoryStatus::Archived);
+        assert!(
+            repository
+                .list_series(site_id, false, 500)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .list_published_in_series(site_id, promoted.id, 500)
+                .unwrap()
+                .len(),
+            3,
+            "archiving retains the historical public collection"
+        );
+        assert!(matches!(
+            repository.create_document_in_writable_site_with_category(
+                control.owner_user_id,
+                new_document(site_id, "Rejected", "rejected"),
+                Some(category.id),
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn series_membership_follows_only_the_exact_published_revision() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = community_user(&repository, "series-revision-owner");
+        let site = community_site(&repository, owner.id, "series-revision-site");
+        let first_series = repository
+            .create_series(
+                owner.id,
+                site.id,
+                CreateSeriesInput {
+                    slug: "first-series".into(),
+                    title: "First series".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let second_series = repository
+            .create_series(
+                owner.id,
+                site.id,
+                CreateSeriesInput {
+                    slug: "second-series".into(),
+                    title: "Second series".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let draft = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                new_document(site.id, "Series post", "series-post"),
+                Some(first_series.category_id),
+            )
+            .unwrap();
+        let first_revision_id = draft.current_revision_id;
+        repository
+            .publish_document_in_owned_site(owner.id, site.id, draft.id, first_revision_id)
+            .unwrap();
+        let moved = repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: draft.id,
+                    base_revision_id: draft.current_revision_id,
+                    title: "Series post moved".into(),
+                    slug: "series-post".into(),
+                    source_markdown: "A private move must not affect readers.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                Some(Some(second_series.category_id)),
+            )
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_published_in_series(site.id, first_series.id, 500)
+                .unwrap()
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            vec![draft.id]
+        );
+        assert!(
+            repository
+                .list_published_in_series(site.id, second_series.id, 500)
+                .unwrap()
+                .is_empty(),
+            "the current private revision must not leak into series delivery"
+        );
+
+        repository
+            .publish_document_in_owned_site(owner.id, site.id, draft.id, moved.id)
+            .unwrap();
+        assert!(
+            repository
+                .list_published_in_series(site.id, first_series.id, 500)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            repository
+                .list_published_in_series(site.id, second_series.id, 500)
+                .unwrap()[0]
+                .id,
+            draft.id
+        );
+
+        repository
+            .publish_document_in_owned_site(owner.id, site.id, draft.id, first_revision_id)
+            .unwrap();
+        assert_eq!(
+            repository
+                .list_published_in_series(site.id, first_series.id, 500)
+                .unwrap()[0]
+                .id,
+            draft.id,
+            "publishing historical content can reuse its retained series item"
+        );
+        assert!(
+            repository
+                .list_published_in_series(site.id, second_series.id, 500)
+                .unwrap()
+                .is_empty()
+        );
+        let export = repository.export_site(site.id).unwrap();
+        assert_eq!(export.series.len(), 2);
+        assert_eq!(
+            export
+                .series_items
+                .iter()
+                .filter(|item| item.document_id == draft.id)
+                .count(),
+            2,
+            "historical memberships are portable and public filtering remains revision-scoped"
+        );
+    }
+
+    #[test]
     fn global_home_curation_is_atomic_bounded_and_excludes_pins_from_recent() {
         let repository = SqliteRepository::open_in_memory().unwrap();
         let site_id = Uuid::now_v7();
@@ -9544,7 +10939,7 @@ mod tests {
         assert_eq!(records[0].envelope, envelope);
 
         let export = repository.export_site(site_id).unwrap();
-        assert_eq!(export.schema_version, "open-soverign-blog-export/3");
+        assert_eq!(export.schema_version, "open-soverign-blog-export/4");
         assert_eq!(export.documents[0].ai_proposals, records);
     }
 

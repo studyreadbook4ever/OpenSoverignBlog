@@ -9,6 +9,7 @@ intent = "personal" # personal | community | delivery
 bind = "0.0.0.0:8787"
 public_url = "http://localhost:8787"
 article_base_path = "blog"
+language = "ko" # ko | en
 site_id = "00000000-0000-7000-8000-000000000001"
 no_index = false
 
