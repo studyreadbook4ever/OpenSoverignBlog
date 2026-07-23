@@ -7,6 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-osb-kernel = { version = "=0.1.0", path = "../../crates/kernel" }
+osb-kernel = { version = "=0.1.1", path = "../../crates/kernel" }
 serde.workspace = true
 thiserror.workspace = true

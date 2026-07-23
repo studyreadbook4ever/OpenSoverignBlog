@@ -979,7 +979,7 @@ def command_self_test(_: argparse.Namespace) -> None:
     repository_example = Path(__file__).resolve().parent.parent / "osb.lock.example.json"
     if repository_example.is_file():
         example_lock = load_lock(repository_example)
-        assert example_lock["engine"]["version"] == "0.1.0"
+        assert example_lock["engine"]["version"] == "0.1.1"
         assert example_lock["selection"]["cache"] == "redis_managed"
     with tempfile.TemporaryDirectory(prefix="osb-update-support-test-") as raw:
         root = Path(raw)
@@ -1043,7 +1043,7 @@ def command_self_test(_: argparse.Namespace) -> None:
                 argparse.Namespace(
                     source=retained_candidate_path,
                     target=promoted_live,
-                    from_version="0.1.0",
+                    from_version="0.1.1",
                     to_version="0.2.0",
                 )
             )

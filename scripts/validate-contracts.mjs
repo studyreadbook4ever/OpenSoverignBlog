@@ -30,6 +30,45 @@ if (
 ) {
   throw new Error(`${openApiPath}: BlogSummary must require the boolean isPrimary route identity`);
 }
+const capabilitiesSchema = openApi.components?.schemas?.Capabilities;
+if (
+  !capabilitiesSchema?.required?.includes("language")
+  || JSON.stringify(capabilitiesSchema.properties?.language?.enum) !== JSON.stringify(["ko", "en"])
+) {
+  throw new Error(`${openApiPath}: Capabilities must require the ko/en installation language`);
+}
+const seriesSummarySchema = openApi.components?.schemas?.SeriesSummary;
+for (const property of [
+  "id",
+  "categoryId",
+  "slug",
+  "title",
+  "status",
+  "homePosition",
+  "createdAt",
+  "updatedAt",
+]) {
+  if (!seriesSummarySchema?.required?.includes(property)) {
+    throw new Error(`${openApiPath}: SeriesSummary must require ${property}`);
+  }
+}
+const seriesOrderSchema = openApi.components?.schemas?.SeriesOrderRequest;
+if (
+  seriesOrderSchema?.additionalProperties !== false
+  || !seriesOrderSchema.required?.includes("documentIds")
+  || seriesOrderSchema.properties?.documentIds?.maxItems !== 500
+  || seriesOrderSchema.properties?.documentIds?.uniqueItems !== true
+) {
+  throw new Error(`${openApiPath}: SeriesOrderRequest must require at most 500 unique documentIds`);
+}
+const homeResponseSchema = openApi.components?.schemas?.HomeResponse;
+if (
+  !homeResponseSchema?.required?.includes("seriesSections")
+  || homeResponseSchema.properties?.seriesSections?.items?.$ref
+    !== "#/components/schemas/HomeSeriesSection"
+) {
+  throw new Error(`${openApiPath}: HomeResponse must require typed seriesSections`);
+}
 
 const httpMethods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 const documentedRoutes = new Map();
@@ -71,6 +110,67 @@ const visitReferences = (value, location = "#") => {
   for (const [key, child] of Object.entries(value)) visitReferences(child, `${location}/${key}`);
 };
 visitReferences(openApi);
+
+const responseSchemaReference = (route, method, status = "200") =>
+  openApi.paths?.[route]?.[method]?.responses?.[status]?.content?.["application/json"]?.schema?.$ref;
+const seriesResponseContracts = new Map([
+  ["GET /api/v1/blogs/{handle}/series", "#/components/schemas/SeriesListResponse"],
+  ["GET /api/v1/blogs/{handle}/series/{series}", "#/components/schemas/BlogSeriesResponse"],
+  ["GET /api/v1/blogs/{handle}/series/{series}/posts", "#/components/schemas/FeedResponse"],
+  ["GET /api/v1/primary/series", "#/components/schemas/SeriesListResponse"],
+  ["GET /api/v1/primary/series/{series}", "#/components/schemas/BlogSeriesResponse"],
+  ["GET /api/v1/primary/series/{series}/posts", "#/components/schemas/FeedResponse"],
+  ["GET /api/v1/studio/series", "#/components/schemas/SeriesListResponse"],
+  ["POST /api/v1/studio/series/promote", "#/components/schemas/SeriesSummary"],
+  ["PUT /api/v1/studio/series/{id}", "#/components/schemas/SeriesSummary"],
+  ["POST /api/v1/studio/series/{id}/archive", "#/components/schemas/SeriesSummary"],
+]);
+for (const [operation, expectedReference] of seriesResponseContracts) {
+  const [method, route] = operation.split(" ");
+  const actualReference = responseSchemaReference(route, method.toLowerCase());
+  if (actualReference !== expectedReference) {
+    throw new Error(
+      `${openApiPath}: ${operation} response must reference ${expectedReference}`,
+    );
+  }
+}
+if (
+  responseSchemaReference("/api/v1/studio/series", "post", "201")
+    !== "#/components/schemas/SeriesSummary"
+) {
+  throw new Error(`${openApiPath}: POST /api/v1/studio/series must return SeriesSummary`);
+}
+const seriesRequestContracts = new Map([
+  ["POST /api/v1/studio/series", "#/components/schemas/CreateSeriesRequest"],
+  ["POST /api/v1/studio/series/promote", "#/components/schemas/PromoteSeriesRequest"],
+  ["PUT /api/v1/studio/series/{id}", "#/components/schemas/UpdateSeriesRequest"],
+  ["PUT /api/v1/studio/series/{id}/items", "#/components/schemas/SeriesOrderRequest"],
+]);
+for (const [operation, expectedReference] of seriesRequestContracts) {
+  const [method, route] = operation.split(" ");
+  const actualReference =
+    openApi.paths?.[route]?.[method.toLowerCase()]?.requestBody
+      ?.content?.["application/json"]?.schema?.$ref;
+  if (actualReference !== expectedReference) {
+    throw new Error(
+      `${openApiPath}: ${operation} request must reference ${expectedReference}`,
+    );
+  }
+}
+for (const method of ["get", "put"]) {
+  const itemsSchema =
+    openApi.paths?.["/api/v1/studio/series/{id}/items"]?.[method]
+      ?.responses?.["200"]?.content?.["application/json"]?.schema;
+  if (
+    itemsSchema?.type !== "array"
+    || itemsSchema.maxItems !== 500
+    || itemsSchema.items?.$ref !== "#/components/schemas/DocumentSnapshot"
+  ) {
+    throw new Error(
+      `${openApiPath}: ${method.toUpperCase()} Studio series items must return bounded DocumentSnapshot arrays`,
+    );
+  }
+}
 
 const discoveryComponentNames = [
   "A2AProtocolStatus",
@@ -240,6 +340,13 @@ const sessionRoutes = new Set([
   "POST /api/v1/studio/categories",
   "PUT /api/v1/studio/categories/{id}",
   "POST /api/v1/studio/categories/{id}/archive",
+  "GET /api/v1/studio/series",
+  "POST /api/v1/studio/series",
+  "POST /api/v1/studio/series/promote",
+  "PUT /api/v1/studio/series/{id}",
+  "POST /api/v1/studio/series/{id}/archive",
+  "GET /api/v1/studio/series/{id}/items",
+  "PUT /api/v1/studio/series/{id}/items",
   "POST /api/v1/studio/preview",
   "GET /api/v1/studio/ai-summary/providers",
   "POST /api/v1/studio/ai-summary/generate",

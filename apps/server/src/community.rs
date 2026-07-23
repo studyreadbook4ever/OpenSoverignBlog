@@ -30,8 +30,9 @@ use osb_kernel::{
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
     AdminAuthMode as StoredAdminAuthMode, CategoryRecord, CategoryStatus, CommentRecord,
-    CreateCategoryInput, SessionAuthMethod, SiteMembershipRecord, SiteMembershipRole, SiteRecord,
-    SqliteRepository, ThemeProfile, UpdateCategoryInput, UserRecord,
+    CreateCategoryInput, CreateSeriesInput, SeriesRecord, SessionAuthMethod, SiteMembershipRecord,
+    SiteMembershipRole, SiteRecord, SqliteRepository, ThemeProfile, UpdateCategoryInput,
+    UserRecord,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -130,6 +131,15 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/api/v1/blogs/{handle}/categories/{category}/posts/{slug}",
             get(get_blog_category_post),
         )
+        .route("/api/v1/blogs/{handle}/series", get(list_blog_series))
+        .route(
+            "/api/v1/blogs/{handle}/series/{series}",
+            get(get_blog_series),
+        )
+        .route(
+            "/api/v1/blogs/{handle}/series/{series}/posts",
+            get(list_blog_series_posts),
+        )
         .route("/api/v1/primary/categories", get(list_primary_categories))
         .route(
             "/api/v1/primary/categories/{category}",
@@ -142,6 +152,12 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(
             "/api/v1/primary/categories/{category}/posts/{slug}",
             get(get_primary_category_post),
+        )
+        .route("/api/v1/primary/series", get(list_primary_series))
+        .route("/api/v1/primary/series/{series}", get(get_primary_series))
+        .route(
+            "/api/v1/primary/series/{series}/posts",
+            get(list_primary_series_posts),
         );
     if state.custom_css_enabled {
         public = public.route(
@@ -158,6 +174,11 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/api/v1/studio/documents", get(list_studio_documents))
         .route("/api/v1/studio/documents/{id}", get(get_studio_document))
         .route("/api/v1/studio/categories", get(list_studio_categories))
+        .route("/api/v1/studio/series", get(list_studio_series))
+        .route(
+            "/api/v1/studio/series/{id}/items",
+            get(list_studio_series_items),
+        )
         .route("/api/v1/studio/settings", get(get_studio_settings));
     if state.collaboration_enabled {
         private_reads = private_reads.route(
@@ -179,6 +200,20 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/api/v1/studio/preview", post(preview_studio))
         .route("/api/v1/studio/assets", post(upload_studio_asset))
         .route("/api/v1/studio/categories", post(create_studio_category))
+        .route("/api/v1/studio/series", post(create_studio_series))
+        .route(
+            "/api/v1/studio/series/promote",
+            post(promote_studio_category_to_series),
+        )
+        .route("/api/v1/studio/series/{id}", put(update_studio_series))
+        .route(
+            "/api/v1/studio/series/{id}/archive",
+            post(archive_studio_series),
+        )
+        .route(
+            "/api/v1/studio/series/{id}/items",
+            put(replace_studio_series_order),
+        )
         .route(
             "/api/v1/studio/categories/{id}",
             put(update_studio_category),
@@ -806,10 +841,26 @@ async fn home(
                 })
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?;
+        let series_sections = home
+            .series_sections
+            .into_iter()
+            .map(|section| {
+                let items = section
+                    .items
+                    .into_iter()
+                    .map(|document| feed_item(&repository, document, primary_site_id))
+                    .collect::<Result<Vec<_>, RepositoryError>>()?;
+                Ok(HomeSeriesSection {
+                    series: series_summary(section.series),
+                    items,
+                })
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
         Ok(HomeResponse {
             pinned_items,
             recent_items,
             category_sections,
+            series_sections,
         })
     })
     .await?;
@@ -911,6 +962,144 @@ async fn list_primary_categories(
     })
     .await?;
     public_json(&headers, &response)
+}
+
+async fn list_blog_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(handle): Path<String>,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let response = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let items = repository
+            .list_series(site.id, false, 500)?
+            .into_iter()
+            .map(series_summary)
+            .collect();
+        Ok(SeriesListResponse { items })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn list_primary_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let response = repository_task(move || {
+        repository.get_site_by_id(site_id)?;
+        let items = repository
+            .list_series(site_id, false, 500)?
+            .into_iter()
+            .map(series_summary)
+            .collect();
+        Ok(SeriesListResponse { items })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn get_blog_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((handle, series_slug)): Path<(String, String)>,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
+    let custom_css_enabled = state.custom_css_enabled;
+    let seo_policy = Arc::clone(&state.seo_policy);
+    let response = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let series = repository.get_series_by_slug(site.id, &series_slug)?;
+        let post_count = repository
+            .list_published_in_series(site.id, series.id, 500)?
+            .len();
+        Ok(BlogSeriesResponse {
+            series: series_summary(series),
+            blog: blog_summary_with_css(
+                site,
+                owner,
+                primary_site_id,
+                custom_css_enabled,
+                &seo_policy,
+            ),
+            post_count,
+        })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn get_primary_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(series_slug): Path<String>,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let custom_css_enabled = state.custom_css_enabled;
+    let seo_policy = Arc::clone(&state.seo_policy);
+    let response = repository_task(move || {
+        let site = repository.get_site_by_id(site_id)?;
+        let owner = repository.get_user_by_id(site.owner_user_id)?;
+        let series = repository.get_series_by_slug(site.id, &series_slug)?;
+        let post_count = repository
+            .list_published_in_series(site.id, series.id, 500)?
+            .len();
+        Ok(BlogSeriesResponse {
+            series: series_summary(series),
+            blog: blog_summary_with_css(site, owner, site_id, custom_css_enabled, &seo_policy),
+            post_count,
+        })
+    })
+    .await?;
+    public_json(&headers, &response)
+}
+
+async fn list_blog_series_posts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((handle, series_slug)): Path<(String, String)>,
+) -> Result<Response, CommunityApiError> {
+    validate_handle(&handle, "blog handle")?;
+    let repository = Arc::clone(&state.repository);
+    let primary_site_id = state.site_id;
+    let items = repository_task(move || {
+        let site = repository.get_site_by_handle(&handle)?;
+        let series = repository.get_series_by_slug(site.id, &series_slug)?;
+        repository
+            .list_published_in_series(site.id, series.id, 500)?
+            .into_iter()
+            .map(|document| feed_item(&repository, document, primary_site_id))
+            .collect::<Result<Vec<_>, RepositoryError>>()
+    })
+    .await?;
+    public_json(&headers, &FeedResponse { items })
+}
+
+async fn list_primary_series_posts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(series_slug): Path<String>,
+) -> Result<Response, CommunityApiError> {
+    let repository = Arc::clone(&state.repository);
+    let site_id = state.site_id;
+    let items = repository_task(move || {
+        let series = repository.get_series_by_slug(site_id, &series_slug)?;
+        repository
+            .list_published_in_series(site_id, series.id, 500)?
+            .into_iter()
+            .map(|document| feed_item(&repository, document, site_id))
+            .collect::<Result<Vec<_>, RepositoryError>>()
+    })
+    .await?;
+    public_json(&headers, &FeedResponse { items })
 }
 
 async fn get_blog_category(
@@ -1227,6 +1416,157 @@ async fn list_studio_categories(
         .map(category_summary)
         .collect();
     Ok(Json(CategoryListResponse { items }))
+}
+
+async fn list_studio_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<SeriesListResponse>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = studio_access(&state, user.id).await?;
+    let repository = Arc::clone(&state.repository);
+    let items = repository_task(move || repository.list_series(access.site.id, true, 500))
+        .await?
+        .into_iter()
+        .map(series_summary)
+        .collect();
+    Ok(Json(SeriesListResponse { items }))
+}
+
+async fn list_studio_series_items(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(series_id): Path<Uuid>,
+) -> Result<Json<Vec<StudioDocumentView>>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = studio_access(&state, user.id).await?;
+    let repository = Arc::clone(&state.repository);
+    Ok(Json(
+        repository_task(move || {
+            repository
+                .list_published_in_series(access.site.id, series_id, 500)?
+                .into_iter()
+                .map(|document| studio_document_view(&repository, document))
+                .collect()
+        })
+        .await?,
+    ))
+}
+
+async fn create_studio_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CreateStudioSeriesRequest>,
+) -> Result<(StatusCode, Json<SeriesSummary>), CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    if category_slug_conflicts_with_article_route(&input.slug, &state.seo_policy.article_base_path)
+    {
+        return Err(CommunityApiError::BadRequest(
+            "series slug conflicts with the configured article route".into(),
+        ));
+    }
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let series = repository_task(move || {
+        repository.create_series(
+            user.id,
+            access.site.id,
+            CreateSeriesInput {
+                slug: input.slug,
+                title: input.title,
+                description: input.description,
+                theme_profile: input.theme_preset,
+            },
+        )
+    })
+    .await?;
+    Ok((StatusCode::CREATED, Json(series_summary(series))))
+}
+
+async fn promote_studio_category_to_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<PromoteStudioSeriesRequest>,
+) -> Result<Json<SeriesSummary>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let series = repository_task(move || {
+        repository.promote_category_to_series(user.id, access.site.id, input.category_id)
+    })
+    .await?;
+    Ok(Json(series_summary(series)))
+}
+
+async fn update_studio_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(series_id): Path<Uuid>,
+    Json(input): Json<UpdateStudioSeriesRequest>,
+) -> Result<Json<SeriesSummary>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let series = repository_task(move || {
+        repository.update_series(
+            user.id,
+            access.site.id,
+            series_id,
+            UpdateCategoryInput {
+                title: input.title,
+                description: input.description,
+                theme_profile: input.theme_preset,
+            },
+        )
+    })
+    .await?;
+    Ok(Json(series_summary(series)))
+}
+
+async fn archive_studio_series(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(series_id): Path<Uuid>,
+) -> Result<Json<SeriesSummary>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    let series =
+        repository_task(move || repository.archive_series(user.id, access.site.id, series_id))
+            .await?;
+    Ok(Json(series_summary(series)))
+}
+
+async fn replace_studio_series_order(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(series_id): Path<Uuid>,
+    Json(input): Json<ReplaceStudioSeriesOrderRequest>,
+) -> Result<Json<Vec<StudioDocumentView>>, CommunityApiError> {
+    let user = require_user(&state, &headers).await?;
+    let access = owner_studio_access(&state, user.id).await?;
+    let _cache_mutation = begin_public_mutation(&state);
+    let repository = Arc::clone(&state.repository);
+    Ok(Json(
+        repository_task(move || {
+            repository.replace_series_order(
+                user.id,
+                access.site.id,
+                series_id,
+                &input.document_ids,
+            )?;
+            repository
+                .list_published_in_series(access.site.id, series_id, 500)?
+                .into_iter()
+                .map(|document| studio_document_view(&repository, document))
+                .collect()
+        })
+        .await?,
+    ))
 }
 
 async fn create_studio_category(
@@ -1835,6 +2175,21 @@ fn category_summary(category: CategoryRecord) -> CategorySummary {
     }
 }
 
+fn series_summary(series: SeriesRecord) -> SeriesSummary {
+    SeriesSummary {
+        id: series.id,
+        category_id: series.category_id,
+        slug: series.slug,
+        title: series.title,
+        description: series.description,
+        theme_preset: series.theme_profile,
+        status: series.status,
+        home_position: series.home_position,
+        created_at: series.created_at,
+        updated_at: series.updated_at,
+    }
+}
+
 /// Keeps conditional public-post responses coherent with mutable category
 /// presentation. A category title or theme can change without creating a new
 /// content revision or site-theme revision, so it must be part of the ETag
@@ -2303,6 +2658,39 @@ struct UpdateStudioCategoryRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateStudioSeriesRequest {
+    slug: String,
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    theme_preset: Option<ThemeProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UpdateStudioSeriesRequest {
+    title: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    theme_preset: Option<ThemeProfile>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PromoteStudioSeriesRequest {
+    category_id: Uuid,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReplaceStudioSeriesOrderRequest {
+    document_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StudioRevisionInput {
     base_revision_id: Uuid,
     title: String,
@@ -2428,15 +2816,45 @@ struct CategorySummary {
     status: CategoryStatus,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SeriesSummary {
+    id: Uuid,
+    category_id: Uuid,
+    slug: String,
+    title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    theme_preset: Option<ThemeProfile>,
+    status: CategoryStatus,
+    home_position: u64,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Serialize)]
 struct CategoryListResponse {
     items: Vec<CategorySummary>,
 }
 
 #[derive(Debug, Serialize)]
+struct SeriesListResponse {
+    items: Vec<SeriesSummary>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BlogCategoryResponse {
     category: CategorySummary,
+    blog: BlogSummary,
+    post_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BlogSeriesResponse {
+    series: SeriesSummary,
     blog: BlogSummary,
     post_count: usize,
 }
@@ -2453,11 +2871,18 @@ struct HomeCategorySection {
 }
 
 #[derive(Debug, Serialize)]
+struct HomeSeriesSection {
+    series: SeriesSummary,
+    items: Vec<FeedPostSummary>,
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HomeResponse {
     pinned_items: Vec<FeedPostSummary>,
     recent_items: Vec<FeedPostSummary>,
     category_sections: Vec<HomeCategorySection>,
+    series_sections: Vec<HomeSeriesSection>,
 }
 
 #[derive(Debug, Serialize)]

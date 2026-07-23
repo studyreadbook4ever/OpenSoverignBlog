@@ -19,20 +19,22 @@ import type {
   CreatePostInput,
   DocumentSnapshot,
   EmbedReference,
-  FeedPostSummary,
   OntologySidecar,
   PublishArtifact,
+  SeriesSummary,
   StudioSettings,
   ThemePresetId,
 } from "@opensoverignblog/sdk";
+import { AdminAccessKeyForm } from "./admin-access";
 import { useSession } from "./app";
-import { studioAccessFor } from "./auth-policy";
+import { adminAuthChoices, studioAccessFor } from "./auth-policy";
 import { socialEmbedFromUrl } from "./social-embeds";
 import {
   acceptedEditorState,
   aiSummarySourceHash,
   editorFingerprint,
   homeCurationCandidates,
+  type HomeCurationCandidate,
   isAiSummarySourceCurrent,
   normalizeSavePayload,
   normalizedEditorTitle,
@@ -49,6 +51,8 @@ import {
   isNotFound,
   navigate,
   slugify,
+  text,
+  uiLanguage,
   usePageTitle,
 } from "./lib";
 
@@ -93,10 +97,17 @@ interface StoredStudioDraft {
   expiresAt?: string;
 }
 
+type HomePinLoadState = "unavailable" | "loading" | "ready" | "error";
+
 export function StudioDashboard({ capabilities }: { capabilities: Capabilities | undefined }) {
   const { session, capabilitiesError, refreshCapabilities } = useSession();
   const [documents, setDocuments] = useState<DocumentSnapshot[]>([]);
   const [categories, setCategories] = useState<CategorySummary[]>([]);
+  const [homePins, setHomePins] = useState<string[]>([]);
+  const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
+  const [homePinState, setHomePinState] = useState<HomePinLoadState>("unavailable");
+  const [homePinNotice, setHomePinNotice] = useState<{ kind: "success" | "error"; text: string }>();
+  const [savingHomePins, setSavingHomePins] = useState(false);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string>();
   usePageTitle("Studio");
@@ -107,10 +118,15 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     && session?.state === "authenticated"
     && session.blog,
   );
+  const canCurateHome = Boolean(
+    session?.state === "authenticated"
+    && session.instanceAdministrator
+    && capabilities?.features.includes("home_curation"),
+  );
 
   async function load() {
     setLoading(true);
-    setStatus("문서를 불러오는 중…");
+    setStatus(text("문서를 불러오는 중…", "Loading documents…"));
     try {
       const [values, categoryResponse] = await Promise.all([
         client.listStudioDocuments(),
@@ -118,7 +134,7 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
       ]);
       setDocuments(values);
       setCategories(categoryResponse.items);
-      setStatus(values.length ? `${values.length}개의 문서를 불러왔습니다.` : undefined);
+      setStatus(values.length ? text(`${values.length}개의 문서를 불러왔습니다.`, `Loaded ${values.length} documents.`) : undefined);
     } catch (reason) {
       setStatus(asMessage(reason));
     } finally {
@@ -126,11 +142,35 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     }
   }
 
+  async function loadHomePins() {
+    if (!canCurateHome) {
+      setHomePinState("unavailable");
+      setHomePins([]);
+      setSavedHomePins([]);
+      return;
+    }
+    setHomePinState("loading");
+    setHomePinNotice(undefined);
+    try {
+      const pins = await client.getHomePins();
+      setHomePins(pins.documentIds);
+      setSavedHomePins(pins.documentIds);
+      setHomePinState("ready");
+    } catch (reason) {
+      if (isNotFound(reason)) setHomePinState("unavailable");
+      else {
+        setHomePinState("error");
+        setHomePinNotice({ kind: "error", text: asMessage(reason) });
+      }
+    }
+  }
+
   useEffect(() => {
     if (!canLoad) return;
     void load();
+    void loadHomePins();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canLoad]);
+  }, [canLoad, canCurateHome]);
 
   const published = documents.filter((document) => Boolean(document.publishedRevisionId)).length;
   const drafts = documents.filter((document) => document.publishedRevisionId !== document.currentRevisionId).length;
@@ -138,25 +178,56 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const collaboratorSession = studioAccess === "members" && session?.state === "authenticated"
     && Boolean(session.membershipRole && session.membershipRole !== "owner");
   const categoryById = new Map(categories.map((category) => [category.id, category]));
+  const documentById = new Map(documents.map((document) => [document.id, document]));
+  const homePinsChanged = homePins.join(":") !== savedHomePins.join(":");
+
+  function toggleDashboardHomePin(documentId: string) {
+    setHomePinNotice(undefined);
+    if (homePins.includes(documentId)) {
+      setHomePins(homePins.filter((id) => id !== documentId));
+      return;
+    }
+    if (homePins.length >= 3) {
+      setHomePinNotice({ kind: "error", text: text("홈에는 글을 최대 3개까지 고정할 수 있습니다.", "You can pin up to three posts on the home page.") });
+      return;
+    }
+    setHomePins([...homePins, documentId]);
+  }
+
+  async function saveDashboardHomePins() {
+    if (!homePinsChanged || savingHomePins) return;
+    setSavingHomePins(true);
+    setHomePinNotice(undefined);
+    try {
+      const saved = await client.replaceHomePins(homePins);
+      setHomePins(saved.documentIds);
+      setSavedHomePins(saved.documentIds);
+      setHomePinNotice({ kind: "success", text: text("홈 상단 고정 글을 저장했습니다.", "Saved home page pins.") });
+    } catch (reason) {
+      setHomePinNotice({ kind: "error", text: asMessage(reason) });
+    } finally {
+      setSavingHomePins(false);
+    }
+  }
 
   if (!capabilities && capabilitiesError) {
-    return <StudioAccessGate detail={`서버 기능을 확인하지 못했습니다: ${capabilitiesError}`} onRetry={() => void refreshCapabilities()} />;
+    return <StudioAccessGate detail={text(`서버 기능을 확인하지 못했습니다: ${capabilitiesError}`, `Could not check server capabilities: ${capabilitiesError}`)} onRetry={() => void refreshCapabilities()} />;
   }
   if (!capabilities || !session) {
-    return <div className="dashboard-loading" role="status">Studio 접근 권한을 확인하는 중…</div>;
+    return <div className="dashboard-loading" role="status">{text("Studio 접근 권한을 확인하는 중…", "Checking Studio access…")}</div>;
   }
   if (studioAccess === "disabled") {
-    return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 Studio가 비활성화되어 있습니다." />;
+    return <StudioAccessGate detail={text("이 인스턴스는 공개 읽기 전용으로 배포되어 Studio가 비활성화되어 있습니다.", "Studio is disabled because this instance is deployed public read-only.")} />;
   }
   if (session.state !== "authenticated") {
-    return <StudioAccessGate detail="블로그의 글을 쓰고 관리하려면 먼저 인증해 주세요." login />;
+    return <StudioAccessGate detail={text("블로그의 글을 쓰고 관리하려면 먼저 인증해 주세요.", "Authenticate before writing and managing blog posts.")} login />;
   }
   const blog = session.blog;
   if (!blog) {
-    return <StudioAccessGate detail="글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요." onboarding />;
+    return <StudioAccessGate detail={text("글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요.", "Choose a blog name and first theme before writing.")} onboarding />;
   }
   if (!canLoad) {
-    return <StudioAccessGate detail="이 서버가 지원하는 글쓰기 프로필을 확인할 수 없습니다." />;
+    return <StudioAccessGate detail={text("이 서버가 지원하는 글쓰기 프로필을 확인할 수 없습니다.", "Could not determine the writing profile supported by this server.")} />;
   }
   const blogHandle = blog.handle;
 
@@ -164,55 +235,108 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     <div className="studio-dashboard">
       <header className="studio-heading">
         <div>
-          <p className="eyebrow">글쓰기 공간</p>
-          <h1>{displayName}님의 Studio</h1>
+          <p className="eyebrow">{text("글쓰기 공간", "Writing space")}</p>
+          <h1>{text(`${displayName}님의 Studio`, `${displayName}'s Studio`)}</h1>
           <p>{collaboratorSession
-            ? "초안을 편하게 쓰고 안전하게 저장하세요. 공개 발행과 블로그 설정은 소유자가 맡습니다."
-            : "편하게 쓰고 안전하게 저장한 뒤, 준비된 글만 블로그에 공개하세요."}</p>
+            ? text("초안을 편하게 쓰고 안전하게 저장하세요. 공개 발행과 블로그 설정은 소유자가 맡습니다.", "Write and save drafts safely. The owner handles public publishing and blog settings.")
+            : text("편하게 쓰고 안전하게 저장한 뒤, 준비된 글만 블로그에 공개하세요.", "Write comfortably, save safely, and publish only when a post is ready.")}</p>
         </div>
         <div className="studio-heading-actions">
           {session.state === "authenticated" && (!session.membershipRole || session.membershipRole === "owner") ? (
             <>
-              <AppLink className="button button-ghost" href="/studio/categories"><span aria-hidden="true">▦</span> 카테고리</AppLink>
-              <AppLink className="button button-ghost" href="/studio/settings"><span aria-hidden="true">⚙</span> 블로그 설정</AppLink>
+              <AppLink className="button button-ghost" href="/studio/categories"><span aria-hidden="true">▦</span> {text("카테고리", "Categories")}</AppLink>
+              <AppLink className="button button-ghost" href="/studio/settings"><span aria-hidden="true">⚙</span> {text("블로그 설정", "Blog settings")}</AppLink>
             </>
           ) : null}
           {session.instanceAdministrator ? (
-            <AppLink className="button button-ghost" href="/studio/system"><span aria-hidden="true">⌘</span> 시스템 구조</AppLink>
+            <AppLink className="button button-ghost" href="/studio/system"><span aria-hidden="true">⌘</span> {text("시스템 구조", "System structure")}</AppLink>
           ) : null}
-          <AppLink className="button button-primary" href="/studio/write">새 글 쓰기 <span aria-hidden="true">＋</span></AppLink>
+          <AppLink className="button button-primary" href="/studio/new">{text("새 콘텐츠", "New content")} <span aria-hidden="true">＋</span></AppLink>
         </div>
       </header>
 
-      <section className="studio-metrics" aria-label="문서 현황">
-        <div><span>전체 문서</span><strong>{documents.length}</strong></div>
-        <div><span>초안</span><strong>{drafts}</strong></div>
-        <div><span>발행됨</span><strong>{published}</strong></div>
-        <div><span>운영 상태</span><strong className="metric-mode">{capabilityModeLabel(capabilities)}</strong></div>
+      <section className="studio-metrics" aria-label={text("문서 현황", "Document status")}>
+        <div><span>{text("전체 문서", "All documents")}</span><strong>{documents.length}</strong></div>
+        <div><span>{text("초안", "Drafts")}</span><strong>{drafts}</strong></div>
+        <div><span>{text("발행됨", "Published")}</span><strong>{published}</strong></div>
+        <div><span>{text("운영 상태", "Operating mode")}</span><strong className="metric-mode">{capabilityModeLabel(capabilities)}</strong></div>
       </section>
+
+      {canCurateHome ? (
+        <section className="studio-home-pin-panel" aria-labelledby="studio-home-pin-title">
+          <div>
+            <p className="eyebrow">Home curation</p>
+            <h2 id="studio-home-pin-title">{text("홈 상단 고정", "Pin to home")}</h2>
+            <p>{text("발행된 문서 카드에서 최대 3개를 선택하세요. 선택한 순서대로 공개 홈 맨 위에 표시됩니다.", "Choose up to three published documents. They appear at the top of the public home page in the selected order.")}</p>
+          </div>
+          <span className="studio-home-pin-count">{homePins.length} / 3</span>
+          {homePinState === "loading" ? <p className="studio-home-pin-message" role="status">{text("현재 고정 글을 불러오는 중…", "Loading pinned posts…")}</p> : null}
+          {homePinState === "error" ? <p className="studio-home-pin-message is-error" role="alert">{homePinNotice?.text}</p> : null}
+          {homePinState === "ready" ? (
+            <>
+              <ol className="studio-home-pin-list" aria-label={text("현재 홈 상단 고정 순서", "Current home pin order")}>
+                {homePins.map((documentId, index) => {
+                  const document = documentById.get(documentId);
+                  return (
+                    <li key={documentId}>
+                      <span aria-hidden="true">{index + 1}</span>
+                      <strong>{document?.revision.title || text(`발행 문서 ${documentId.slice(0, 8)}`, `Published document ${documentId.slice(0, 8)}`)}</strong>
+                      <button aria-label={text(`${document?.revision.title || "고정 글"} 고정 해제`, `Unpin ${document?.revision.title || "pinned post"}`)} onClick={() => toggleDashboardHomePin(documentId)} type="button">{text("해제", "Unpin")}</button>
+                    </li>
+                  );
+                })}
+              </ol>
+              {!homePins.length ? <p className="studio-home-pin-empty">{text("아직 고정한 글이 없습니다.", "No posts are pinned yet.")}</p> : null}
+              <div className="studio-home-pin-actions">
+                <AppLink className="button button-ghost" href="/studio/settings">{text("순서 자세히 관리", "Manage order")}</AppLink>
+                <button className="button button-primary" disabled={!homePinsChanged || savingHomePins} onClick={() => void saveDashboardHomePins()} type="button">
+                  {savingHomePins ? text("저장하는 중…", "Saving…") : text("홈 고정 저장", "Save home pins")}
+                </button>
+              </div>
+              {homePinNotice ? <p className={`studio-home-pin-message is-${homePinNotice.kind}`} role={homePinNotice.kind === "error" ? "alert" : "status"}>{homePinNotice.text}</p> : null}
+            </>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="document-section" aria-labelledby="documents-title">
         <div className="section-heading">
-          <div><p className="eyebrow">Documents</p><h2 id="documents-title">블로그 문서</h2></div>
-          <button className="button button-ghost" onClick={() => void load()} type="button">새로고침</button>
+          <div><p className="eyebrow">Documents</p><h2 id="documents-title">{text("블로그 문서", "Blog documents")}</h2></div>
+          <button className="button button-ghost" onClick={() => { void load(); void loadHomePins(); }} type="button">{text("새로고침", "Refresh")}</button>
         </div>
-        {loading ? <div className="dashboard-loading" role="status">문서 목록을 불러오는 중…</div> : null}
+        {loading ? <div className="dashboard-loading" role="status">{text("문서 목록을 불러오는 중…", "Loading documents…")}</div> : null}
         {!loading && documents.length === 0 ? (
-          <div className="dashboard-empty"><span aria-hidden="true">✎</span><h3>아직 문서가 없습니다</h3><p>첫 글 초안을 시작해 보세요.</p><AppLink className="button button-primary" href="/studio/write">첫 글 쓰기</AppLink></div>
+          <div className="dashboard-empty"><span aria-hidden="true">✎</span><h3>{text("아직 문서가 없습니다", "No documents yet")}</h3><p>{text("첫 포스트나 시리즈를 시작해 보세요.", "Start your first post or series.")}</p><AppLink className="button button-primary" href="/studio/new">{text("첫 콘텐츠 만들기", "Create first content")}</AppLink></div>
         ) : null}
         {documents.length ? (
           <div className="document-cards">
             {documents.map((document) => (
               <article className="document-card" key={document.id}>
                 <div className="document-status-row">
-                  <span className={`status-badge status-${document.status}`}>{document.status === "archived" ? "보관됨" : document.publishedRevisionId === document.currentRevisionId ? "발행됨" : document.publishedRevisionId ? "발행 대기 변경" : "초안"}</span>
+                  <span className={`status-badge status-${document.status}`}>{document.status === "archived" ? text("보관됨", "Archived") : document.publishedRevisionId === document.currentRevisionId ? text("발행됨", "Published") : document.publishedRevisionId ? text("발행 대기 변경", "Changes pending publication") : text("초안", "Draft")}</span>
                   <time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time>
                 </div>
-                <h3><AppLink href={`/studio/write/${document.id}`}>{document.revision.title || "제목 없는 글"}</AppLink></h3>
+                <h3><AppLink href={`/studio/write/${document.id}`}>{document.revision.title || text("제목 없는 글", "Untitled post")}</AppLink></h3>
                 <p className="document-slug">{document.categoryId && categoryById.get(document.categoryId)
                   ? `${session.instanceAdministrator ? "" : `/@${blogHandle}`}/${categoryById.get(document.categoryId)!.slug}/${document.revision.slug || "untitled"}`
                   : `/@${session?.state === "authenticated" && session.blog ? session.blog.handle : "blog"}/${document.revision.slug || "untitled"}`}</p>
-                <div className="document-card-footer"><span>저장 버전 {document.revision.revisionNumber}</span><AppLink href={`/studio/write/${document.id}`}>계속 쓰기 <span aria-hidden="true">→</span></AppLink></div>
+                <div className="document-card-footer">
+                  <span>{text(`저장 버전 ${document.revision.revisionNumber}`, `Saved revision ${document.revision.revisionNumber}`)}</span>
+                  <div className="document-card-actions">
+                    {canCurateHome && homePinState === "ready" && document.publishedRevisionId && document.status !== "archived" ? (
+                      <button
+                        aria-pressed={homePins.includes(document.id)}
+                        className="document-home-pin"
+                        disabled={!homePins.includes(document.id) && homePins.length >= 3}
+                        onClick={() => toggleDashboardHomePin(document.id)}
+                        type="button"
+                      >
+                        {homePins.includes(document.id) ? text("홈 고정 해제", "Unpin from home") : text("홈에 고정", "Pin to home")}
+                      </button>
+                    ) : null}
+                    <AppLink href={`/studio/write/${document.id}`}>{text("계속 쓰기", "Continue writing")} <span aria-hidden="true">→</span></AppLink>
+                  </div>
+                </div>
               </article>
             ))}
           </div>
@@ -236,7 +360,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const [customCss, setCustomCss] = useState("");
   const [saving, setSaving] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<{ kind: "success" | "error"; text: string }>();
-  const [curationPosts, setCurationPosts] = useState<FeedPostSummary[]>([]);
+  const [curationPosts, setCurationPosts] = useState<HomeCurationCandidate[]>([]);
   const [homePins, setHomePins] = useState<string[]>([]);
   const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
   const [curationState, setCurationState] = useState<SettingsLoadState>("unavailable");
@@ -252,7 +376,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const [confirmRemovalUserId, setConfirmRemovalUserId] = useState<string>();
   const [collaborationNotice, setCollaborationNotice] = useState<{ kind: "success" | "error"; text: string }>();
   const [loadAttempt, setLoadAttempt] = useState(0);
-  usePageTitle("블로그 설정");
+  usePageTitle(text("블로그 설정", "Blog settings"));
 
   const studioAccess = capabilities ? studioAccessFor(capabilities) : undefined;
   const ownerSession = session?.state === "authenticated" && Boolean(session.blog) && (
@@ -329,9 +453,10 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     void Promise.all([
       client.home(controller.signal),
       client.getHomePins(controller.signal),
-    ]).then(([home, pins]) => {
+      client.listStudioDocuments(controller.signal),
+    ]).then(([home, pins, documents]) => {
       if (controller.signal.aborted) return;
-      setCurationPosts(homeCurationCandidates(home));
+      setCurationPosts(homeCurationCandidates(home, documents, uiLanguage));
       setHomePins(pins.documentIds);
       setSavedHomePins(pins.documentIds);
       setCurationState("ready");
@@ -370,7 +495,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       setCustomCss(updated.customCss ?? "");
       setSettingsNotice({
         kind: "success",
-        text: `저장했습니다. 테마 버전 ${updated.themeRevision}이 지금부터 공개 블로그에 적용됩니다.`,
+        text: text(`저장했습니다. 테마 버전 ${updated.themeRevision}이 지금부터 공개 블로그에 적용됩니다.`, `Saved. Theme revision ${updated.themeRevision} is now live on the public blog.`),
       });
     } catch (reason) {
       if (isNotFound(reason)) {
@@ -394,11 +519,14 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       setCollaborators((current) => [
         ...current.filter((item) => item.userId !== added.userId),
         added,
-      ].sort((left, right) => left.displayName.localeCompare(right.displayName, "ko")));
+      ].sort((left, right) => left.displayName.localeCompare(
+        right.displayName,
+        uiLanguage === "en" ? "en-US" : "ko-KR",
+      )));
       setCollaboratorEmail("");
       setCollaborationNotice({
         kind: "success",
-        text: `${added.displayName}님을 ${collaboratorRoleLabel(added.role)}로 추가했습니다.`,
+        text: text(`${added.displayName}님을 ${collaboratorRoleLabel(added.role)}로 추가했습니다.`, `Added ${added.displayName} as ${collaboratorRoleLabel(added.role)}.`),
       });
     } catch (reason) {
       if (isNotFound(reason)) {
@@ -438,7 +566,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       const saved = await client.replaceHomePins(homePins);
       setHomePins(saved.documentIds);
       setSavedHomePins(saved.documentIds);
-      setCurationNotice({ kind: "success", text: "홈 주요 글을 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다." });
+      setCurationNotice({ kind: "success", text: text("홈 주요 글을 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다.", "Saved featured home posts. The public home cache will also refresh.") });
     } catch (reason) {
       setCurationNotice({ kind: "error", text: asMessage(reason) });
     } finally {
@@ -455,7 +583,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       await client.removeStudioCollaborator(collaborator.userId);
       setCollaborators((current) => current.filter((item) => item.userId !== collaborator.userId));
       setConfirmRemovalUserId(undefined);
-      setCollaborationNotice({ kind: "success", text: `${collaborator.displayName}님의 공동 작업 권한을 제거했습니다.` });
+      setCollaborationNotice({ kind: "success", text: text(`${collaborator.displayName}님의 공동 작업 권한을 제거했습니다.`, `Removed collaboration access for ${collaborator.displayName}.`) });
     } catch (reason) {
       if (isNotFound(reason)) {
         setCollaborationState("unavailable");
@@ -468,22 +596,22 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   }
 
   if (!capabilities && capabilitiesError) {
-    return <StudioAccessGate detail={`서버 기능을 확인하지 못했습니다: ${capabilitiesError}`} onRetry={() => void refreshCapabilities()} />;
+    return <StudioAccessGate detail={text(`서버 기능을 확인하지 못했습니다: ${capabilitiesError}`, `Could not check server capabilities: ${capabilitiesError}`)} onRetry={() => void refreshCapabilities()} />;
   }
   if (!capabilities || !session) {
-    return <div className="dashboard-loading" role="status">블로그 설정 접근 권한을 확인하는 중…</div>;
+    return <div className="dashboard-loading" role="status">{text("블로그 설정 접근 권한을 확인하는 중…", "Checking blog settings access…")}</div>;
   }
   if (studioAccess === "disabled") {
-    return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 블로그 설정을 바꿀 수 없습니다." />;
+    return <StudioAccessGate detail={text("이 인스턴스는 공개 읽기 전용으로 배포되어 블로그 설정을 바꿀 수 없습니다.", "Blog settings cannot be changed because this instance is deployed public read-only.")} />;
   }
   if (session.state !== "authenticated") {
-    return <StudioAccessGate detail="블로그 설정을 열려면 먼저 로그인해 주세요." login />;
+    return <StudioAccessGate detail={text("블로그 설정을 열려면 먼저 로그인해 주세요.", "Log in before opening blog settings.")} login />;
   }
   if (!session.blog) {
-    return <StudioAccessGate detail="설정할 블로그를 먼저 만들어 주세요." onboarding />;
+    return <StudioAccessGate detail={text("설정할 블로그를 먼저 만들어 주세요.", "Create a blog before changing its settings.")} onboarding />;
   }
   if (session.membershipRole && session.membershipRole !== "owner") {
-    return <StudioAccessGate detail="테마와 공동 작업자 설정은 블로그 소유자만 바꿀 수 있습니다." />;
+    return <StudioAccessGate detail={text("테마와 공동 작업자 설정은 블로그 소유자만 바꿀 수 있습니다.", "Only the blog owner can change themes and collaborator settings.")} />;
   }
 
   return (
@@ -491,23 +619,23 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       <header className="settings-heading">
         <div>
           <p className="eyebrow">Blog settings</p>
-          <h1>내 블로그 꾸미기</h1>
-          <p>코드를 몰라도 테마를 고를 수 있고, 필요한 경우에만 고급 CSS와 공동 작업자를 관리할 수 있습니다.</p>
+          <h1>{text("내 블로그 꾸미기", "Customize my blog")}</h1>
+          <p>{text("코드를 몰라도 테마를 고를 수 있고, 필요한 경우에만 고급 CSS와 공동 작업자를 관리할 수 있습니다.", "Choose a theme without coding, and manage advanced CSS or collaborators only when needed.")}</p>
         </div>
-        <AppLink className="button button-ghost" href="/studio"><span aria-hidden="true">←</span> Studio로</AppLink>
+        <AppLink className="button button-ghost" href="/studio"><span aria-hidden="true">←</span> {text("Studio로", "Back to Studio")}</AppLink>
       </header>
 
-      {settingsState === "loading" ? <div className="settings-loading" role="status">현재 블로그 설정을 불러오는 중…</div> : null}
+      {settingsState === "loading" ? <div className="settings-loading" role="status">{text("현재 블로그 설정을 불러오는 중…", "Loading current blog settings…")}</div> : null}
       {settingsState === "unavailable" ? (
         <section className="settings-feature-notice" aria-labelledby="settings-off-title">
           <span aria-hidden="true">○</span>
-          <div><h2 id="settings-off-title">블로그 설정 기능이 서버에서 꺼져 있습니다</h2><p>화면 오류가 아닙니다. 서버 운영자가 Studio 설정 API를 켜면 이곳에서 테마를 관리할 수 있습니다.</p></div>
+          <div><h2 id="settings-off-title">{text("블로그 설정 기능이 서버에서 꺼져 있습니다", "Blog settings are disabled on the server")}</h2><p>{text("화면 오류가 아닙니다. 서버 운영자가 Studio 설정 API를 켜면 이곳에서 테마를 관리할 수 있습니다.", "This is not a display error. You can manage themes here once the server operator enables the Studio settings API.")}</p></div>
         </section>
       ) : null}
       {settingsState === "error" ? (
         <section className="settings-feature-notice is-error" role="alert">
           <span aria-hidden="true">!</span>
-          <div><h2>설정을 불러오지 못했습니다</h2><p>{settingsError}</p><button className="button button-ghost" onClick={() => setLoadAttempt((value) => value + 1)} type="button">다시 시도</button></div>
+          <div><h2>{text("설정을 불러오지 못했습니다", "Could not load settings")}</h2><p>{settingsError}</p><button className="button button-ghost" onClick={() => setLoadAttempt((value) => value + 1)} type="button">{text("다시 시도", "Try again")}</button></div>
         </section>
       ) : null}
 
@@ -515,11 +643,11 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
         <>
           <section className="settings-panel" aria-labelledby="appearance-title">
             <div className="settings-panel-heading">
-              <div><span className="settings-step" aria-hidden="true">01</span><div><h2 id="appearance-title">읽기 테마</h2><p>카드를 선택하면 바로 미리 볼 수 있습니다. 저장하기 전에는 독자 화면이 바뀌지 않습니다.</p></div></div>
-              <span className="settings-revision">현재 버전 {settings.themeRevision}</span>
+              <div><span className="settings-step" aria-hidden="true">01</span><div><h2 id="appearance-title">{text("읽기 테마", "Reading theme")}</h2><p>{text("카드를 선택하면 바로 미리 볼 수 있습니다. 저장하기 전에는 독자 화면이 바뀌지 않습니다.", "Select a card for an immediate preview. Readers will not see a change until you save.")}</p></div></div>
+              <span className="settings-revision">{text(`현재 버전 ${settings.themeRevision}`, `Current revision ${settings.themeRevision}`)}</span>
             </div>
             <fieldset className="settings-theme-grid">
-              <legend className="sr-only">블로그 읽기 테마 선택</legend>
+              <legend className="sr-only">{text("블로그 읽기 테마 선택", "Choose blog reading theme")}</legend>
               {THEME_PRESETS.map((preset) => (
                 <label className="settings-theme-option" data-theme={preset.id} key={preset.id}>
                   <input checked={themePreset === preset.id} name="settings-theme" onChange={() => setThemePreset(preset.id)} type="radio" value={preset.id} />
@@ -532,20 +660,20 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
 
             {settings.customCssEnabled ? (
               <details className="settings-advanced">
-                <summary><span><strong>고급: 직접 CSS 쓰기</strong><small>필요할 때만 열어 주세요</small></span><span aria-hidden="true">＋</span></summary>
+                <summary><span><strong>{text("고급: 직접 CSS 쓰기", "Advanced: write custom CSS")}</strong><small>{text("필요할 때만 열어 주세요", "Open only when needed")}</small></span><span aria-hidden="true">＋</span></summary>
                 <div className="settings-advanced-body">
-                  <p className="css-safety-note"><strong>이 CSS는 내 블로그 안에서만 적용됩니다.</strong> 방문자를 보호하기 위해 <code>@import</code>를 포함한 모든 @규칙과 <code>url()</code> 같은 외부 리소스 호출은 저장할 수 없습니다.</p>
-                  <label htmlFor="blog-custom-css">블로그 CSS</label>
+                  <p className="css-safety-note"><strong>{text("이 CSS는 내 블로그 안에서만 적용됩니다.", "This CSS applies only inside your blog.")}</strong> {text("방문자를 보호하기 위해", "To protect visitors,")} <code>@import</code>{text("를 포함한 모든 @규칙과", " and all other @-rules, plus external resource calls such as")} <code>url()</code>{text(" 같은 외부 리소스 호출은 저장할 수 없습니다.", ", cannot be saved.")}</p>
+                  <label htmlFor="blog-custom-css">{text("블로그 CSS", "Blog CSS")}</label>
                   <textarea aria-describedby="custom-css-help custom-css-count" id="blog-custom-css" onChange={(event) => setCustomCss(event.target.value)} placeholder={".article-content h2 {\n  color: #315c46;\n}"} spellCheck={false} value={customCss} />
-                  <div className="css-editor-meta"><span id="custom-css-help">HTML, 역슬래시, 외부 URL도 차단됩니다.</span><span id="custom-css-count">{new TextEncoder().encode(customCss).length.toLocaleString("ko-KR")} / 65,536 bytes</span></div>
+                  <div className="css-editor-meta"><span id="custom-css-help">{text("HTML, 역슬래시, 외부 URL도 차단됩니다.", "HTML, backslashes, and external URLs are also blocked.")}</span><span id="custom-css-count">{new TextEncoder().encode(customCss).length.toLocaleString(uiLanguage === "en" ? "en-US" : "ko-KR")} / 65,536 bytes</span></div>
                   {cssValidationMessage ? <p className="settings-message is-error" role="alert">{cssValidationMessage}</p> : null}
                 </div>
               </details>
             ) : null}
 
             <div className="settings-save-row">
-              <p>{settingsChanged ? "저장하지 않은 변경이 있습니다." : "공개 블로그와 설정이 같습니다."}</p>
-              <button className="button button-primary" disabled={!settingsChanged || saving || Boolean(cssValidationMessage)} onClick={() => void saveSettings()} type="button">{saving ? "저장하는 중…" : "테마 설정 저장"}</button>
+              <p>{settingsChanged ? text("저장하지 않은 변경이 있습니다.", "You have unsaved changes.") : text("공개 블로그와 설정이 같습니다.", "Settings match the public blog.")}</p>
+              <button className="button button-primary" disabled={!settingsChanged || saving || Boolean(cssValidationMessage)} onClick={() => void saveSettings()} type="button">{saving ? text("저장하는 중…", "Saving…") : text("테마 설정 저장", "Save theme settings")}</button>
             </div>
             {settingsNotice ? <p className={`settings-message is-${settingsNotice.kind}`} role={settingsNotice.kind === "error" ? "alert" : "status"}>{settingsNotice.text}</p> : null}
           </section>
@@ -553,12 +681,12 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
           {homeCurationAvailable ? (
             <section className="settings-panel home-curation-panel" aria-labelledby="home-curation-title">
               <div className="settings-panel-heading">
-                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">홈 주요 글</h2><p>발행된 글 중 최대 3개를 골라 공개 홈의 맨 위에 순서대로 고정합니다.</p></div></div>
+                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">{text("홈 주요 글", "Featured home posts")}</h2><p>{text("발행된 글 중 최대 3개를 골라 공개 홈의 맨 위에 순서대로 고정합니다.", "Choose up to three published posts and pin them in order at the top of the public home page.")}</p></div></div>
                 <span className="settings-revision">{homePins.length} / 3</span>
               </div>
-              {curationState === "loading" ? <div className="collaboration-loading" role="status">홈 구성을 불러오는 중…</div> : null}
-              {curationState === "error" ? <div className="collaboration-off is-error" role="alert"><strong>홈 구성을 불러오지 못했습니다.</strong><p>{curationNotice?.text}</p></div> : null}
-              {curationState === "unavailable" ? <div className="collaboration-off"><strong>홈 큐레이션 DLC가 활성화되지 않았습니다.</strong><p>공개 피드는 계속 최신순으로 동작합니다.</p></div> : null}
+              {curationState === "loading" ? <div className="collaboration-loading" role="status">{text("홈 구성을 불러오는 중…", "Loading home curation…")}</div> : null}
+              {curationState === "error" ? <div className="collaboration-off is-error" role="alert"><strong>{text("홈 구성을 불러오지 못했습니다.", "Could not load home curation.")}</strong><p>{curationNotice?.text}</p></div> : null}
+              {curationState === "unavailable" ? <div className="collaboration-off"><strong>{text("홈 큐레이션 DLC가 활성화되지 않았습니다.", "Home curation is not enabled.")}</strong><p>{text("공개 피드는 계속 최신순으로 동작합니다.", "The public feed continues to use most-recent-first order.")}</p></div> : null}
               {curationState === "ready" ? (
                 <>
                   {curationPosts.length ? (
@@ -576,23 +704,23 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
                               type="button"
                             >
                               <span aria-hidden="true">{selected ? position + 1 : "＋"}</span>
-                              <span><strong>{post.title}</strong><small>@{post.blog.handle} · /{post.slug}</small></span>
-                              <span>{selected ? "고정 해제" : "고정"}</span>
+                              <span><strong>{post.title}</strong><small>{post.locationLabel}</small></span>
+                              <span>{selected ? text("고정 해제", "Unpin") : text("고정", "Pin")}</span>
                             </button>
                             {selected ? (
-                              <div className="home-curation-order" aria-label={`${post.title} 순서 변경`}>
-                                <button disabled={position === 0} onClick={() => moveHomePin(post.id, -1)} type="button">위</button>
-                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(post.id, 1)} type="button">아래</button>
+                              <div className="home-curation-order" aria-label={text(`${post.title} 순서 변경`, `Change order for ${post.title}`)}>
+                                <button disabled={position === 0} onClick={() => moveHomePin(post.id, -1)} type="button">{text("위", "Up")}</button>
+                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(post.id, 1)} type="button">{text("아래", "Down")}</button>
                               </div>
                             ) : null}
                           </li>
                         );
                       })}
                     </ol>
-                  ) : <div className="collaborator-empty"><p>먼저 글을 하나 발행하면 여기에서 고를 수 있습니다.</p></div>}
+                  ) : <div className="collaborator-empty"><p>{text("먼저 글을 하나 발행하면 여기에서 고를 수 있습니다.", "Publish a post first, then choose it here.")}</p></div>}
                   <div className="settings-save-row">
-                    <p>고정 글은 최근 글 목록에서 중복해서 나오지 않습니다.</p>
-                    <button className="button button-primary" disabled={!homePinsChanged || savingCuration} onClick={() => void saveHomeCuration()} type="button">{savingCuration ? "저장하는 중…" : "홈 구성 저장"}</button>
+                    <p>{text("고정 글은 최근 글 목록에서 중복해서 나오지 않습니다.", "Pinned posts are not duplicated in the recent-post list.")}</p>
+                    <button className="button button-primary" disabled={!homePinsChanged || savingCuration} onClick={() => void saveHomeCuration()} type="button">{savingCuration ? text("저장하는 중…", "Saving…") : text("홈 구성 저장", "Save home curation")}</button>
                   </div>
                   {curationNotice ? <p className={`settings-message is-${curationNotice.kind}`} role={curationNotice.kind === "error" ? "alert" : "status"}>{curationNotice.text}</p> : null}
                 </>
@@ -602,32 +730,32 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
 
           <section className="settings-panel" aria-labelledby="collaboration-title">
             <div className="settings-panel-heading">
-              <div><span className="settings-step" aria-hidden="true">{homeCurationAvailable ? "03" : "02"}</span><div><h2 id="collaboration-title">함께 쓰는 사람</h2><p>소유권은 그대로 둔 채 글을 쓰거나 편집할 사람만 추가합니다.</p></div></div>
+              <div><span className="settings-step" aria-hidden="true">{homeCurationAvailable ? "03" : "02"}</span><div><h2 id="collaboration-title">{text("함께 쓰는 사람", "Collaborators")}</h2><p>{text("소유권은 그대로 둔 채 글을 쓰거나 편집할 사람만 추가합니다.", "Add people who can write or edit while retaining ownership.")}</p></div></div>
             </div>
             {collaborationState === "off" || collaborationState === "unavailable" ? (
-              <div className="collaboration-off" role="status"><strong>공동 작업 기능이 서버에서 꺼져 있습니다.</strong><p>개인 블로그에는 이 상태가 가장 단순합니다. 필요할 때 운영 설정에서 collaboration을 켤 수 있습니다.</p></div>
+              <div className="collaboration-off" role="status"><strong>{text("공동 작업 기능이 서버에서 꺼져 있습니다.", "Collaboration is disabled on the server.")}</strong><p>{text("개인 블로그에는 이 상태가 가장 단순합니다. 필요할 때 운영 설정에서 collaboration을 켤 수 있습니다.", "This is the simplest setup for a personal blog. Enable collaboration in server settings when needed.")}</p></div>
             ) : null}
-            {collaborationState === "loading" ? <div className="collaboration-loading" role="status">공동 작업자 목록을 불러오는 중…</div> : null}
+            {collaborationState === "loading" ? <div className="collaboration-loading" role="status">{text("공동 작업자 목록을 불러오는 중…", "Loading collaborators…")}</div> : null}
             {collaborationState === "error" ? (
-              <div className="collaboration-off is-error" role="alert"><strong>공동 작업자 목록을 불러오지 못했습니다.</strong><p>{collaborationError}</p><button className="button button-ghost" onClick={() => setLoadAttempt((value) => value + 1)} type="button">다시 시도</button></div>
+              <div className="collaboration-off is-error" role="alert"><strong>{text("공동 작업자 목록을 불러오지 못했습니다.", "Could not load collaborators.")}</strong><p>{collaborationError}</p><button className="button button-ghost" onClick={() => setLoadAttempt((value) => value + 1)} type="button">{text("다시 시도", "Try again")}</button></div>
             ) : null}
             {collaborationState === "ready" ? (
               <>
                 <form className="collaborator-invite" onSubmit={(event) => void inviteCollaborator(event)}>
-                  <div><label htmlFor="collaborator-email">계정 이메일</label><input autoComplete="email" id="collaborator-email" onChange={(event) => setCollaboratorEmail(event.target.value)} placeholder="writer@example.com" required type="email" value={collaboratorEmail} /></div>
-                  <div><label htmlFor="collaborator-role">할 수 있는 일</label><select id="collaborator-role" onChange={(event) => setCollaboratorRole(event.target.value as CollaboratorRole)} value={collaboratorRole}><option value="writer">Writer · 초안 작성·편집</option><option value="editor">Editor · 초안 작성·편집</option></select></div>
-                  <button className="button button-primary" disabled={inviting} type="submit">{inviting ? "추가하는 중…" : "공동 작업자로 초대"}</button>
-                  <p>이미 이 서버에 가입한 계정의 이메일을 입력하세요. 현재 Writer와 Editor 모두 초안을 만들고 편집할 수 있으며, 공개 발행과 설정은 소유자만 할 수 있습니다. 블로그 소유자는 이 화면에서 제거할 수 없습니다.</p>
+                  <div><label htmlFor="collaborator-email">{text("계정 이메일", "Account email")}</label><input autoComplete="email" id="collaborator-email" onChange={(event) => setCollaboratorEmail(event.target.value)} placeholder="writer@example.com" required type="email" value={collaboratorEmail} /></div>
+                  <div><label htmlFor="collaborator-role">{text("할 수 있는 일", "Role")}</label><select id="collaborator-role" onChange={(event) => setCollaboratorRole(event.target.value as CollaboratorRole)} value={collaboratorRole}><option value="writer">{text("Writer · 초안 작성·편집", "Writer · create and edit drafts")}</option><option value="editor">{text("Editor · 초안 작성·편집", "Editor · create and edit drafts")}</option></select></div>
+                  <button className="button button-primary" disabled={inviting} type="submit">{inviting ? text("추가하는 중…", "Adding…") : text("공동 작업자로 초대", "Invite collaborator")}</button>
+                  <p>{text("이미 이 서버에 가입한 계정의 이메일을 입력하세요. 현재 Writer와 Editor 모두 초안을 만들고 편집할 수 있으며, 공개 발행과 설정은 소유자만 할 수 있습니다. 블로그 소유자는 이 화면에서 제거할 수 없습니다.", "Enter the email of an account already registered on this server. Writers and editors can create and edit drafts; only the owner can publish and change settings. The blog owner cannot be removed here.")}</p>
                 </form>
-                {collaborators.length === 0 ? <div className="collaborator-empty"><span aria-hidden="true">☰</span><p>아직 공동 작업자가 없습니다. 혼자 운영 중입니다.</p></div> : (
-                  <ul className="collaborator-list" aria-label="현재 공동 작업자">
+                {collaborators.length === 0 ? <div className="collaborator-empty"><span aria-hidden="true">☰</span><p>{text("아직 공동 작업자가 없습니다. 혼자 운영 중입니다.", "There are no collaborators yet. You are working solo.")}</p></div> : (
+                  <ul className="collaborator-list" aria-label={text("현재 공동 작업자", "Current collaborators")}>
                     {collaborators.map((collaborator) => (
                       <li key={collaborator.userId}>
                         <div className="collaborator-identity"><span className="avatar avatar-small" aria-hidden="true">{collaborator.displayName.slice(0, 2).toLocaleUpperCase()}</span><div><strong>{collaborator.displayName}</strong><span>{collaborator.email} · @{collaborator.handle}</span></div></div>
                         <span className={`collaborator-role role-${collaborator.role}`}>{collaboratorRoleLabel(collaborator.role)}</span>
                         {confirmRemovalUserId === collaborator.userId ? (
-                          <div className="collaborator-remove-confirm" role="alert"><p><strong>{collaborator.displayName}님을 제거할까요?</strong> 이 블로그의 Studio 접근 권한을 잃습니다.</p><div><button className="button button-ghost" disabled={removingUserId === collaborator.userId} onClick={() => setConfirmRemovalUserId(undefined)} type="button">취소</button><button className="button button-danger" disabled={removingUserId === collaborator.userId} onClick={() => void removeCollaborator(collaborator)} type="button">{removingUserId === collaborator.userId ? "제거 중…" : "권한 제거"}</button></div></div>
-                        ) : <button className="button button-ghost collaborator-remove" onClick={() => setConfirmRemovalUserId(collaborator.userId)} type="button">제거</button>}
+                          <div className="collaborator-remove-confirm" role="alert"><p><strong>{text(`${collaborator.displayName}님을 제거할까요?`, `Remove ${collaborator.displayName}?`)}</strong> {text("이 블로그의 Studio 접근 권한을 잃습니다.", "They will lose Studio access to this blog.")}</p><div><button className="button button-ghost" disabled={removingUserId === collaborator.userId} onClick={() => setConfirmRemovalUserId(undefined)} type="button">{text("취소", "Cancel")}</button><button className="button button-danger" disabled={removingUserId === collaborator.userId} onClick={() => void removeCollaborator(collaborator)} type="button">{removingUserId === collaborator.userId ? text("제거 중…", "Removing…") : text("권한 제거", "Remove access")}</button></div></div>
+                        ) : <button className="button button-ghost collaborator-remove" onClick={() => setConfirmRemovalUserId(collaborator.userId)} type="button">{text("제거", "Remove")}</button>}
                       </li>
                     ))}
                   </ul>
@@ -663,6 +791,11 @@ export function StudioEditor({
   const draftOwner = session?.state === "authenticated" ? `user-${session.user.id}` : "anonymous";
   const draftKey = `${DRAFT_KEY_PREFIX}:${draftOwner}:${documentId ?? "new"}`;
   const [initial] = useState(() => loadDraft(draftKey));
+  const [requestedSeriesCategoryId] = useState(() => (
+    documentId
+      ? undefined
+      : new URLSearchParams(window.location.search).get("series") ?? undefined
+  ));
   const [draft, setDraft] = useState<CreatePostInput>(initial.value.post);
   const [intentEnabled, setIntentEnabled] = useState(Boolean(initial.value.post.intent));
   const [embedText, setEmbedText] = useState(initial.value.embedText);
@@ -693,13 +826,14 @@ export function StudioEditor({
   const [previewArtifact, setPreviewArtifact] = useState<PublishArtifact>();
   const [previewState, setPreviewState] = useState<"idle" | "loading" | "ready" | "local">("idle");
   const [categories, setCategories] = useState<CategorySummary[]>([]);
+  const [series, setSeries] = useState<SeriesSummary[]>([]);
   const [categoriesLoading, setCategoriesLoading] = useState(false);
   const [categoriesError, setCategoriesError] = useState<string>();
   const [currentAiSummarySourceHash, setCurrentAiSummarySourceHash] = useState<string | null>();
   const titleInputRef = useRef<HTMLTextAreaElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  usePageTitle(draft.title || "새 글");
+  usePageTitle(draft.title || text("새 글", "New post"));
 
   const aiSummaryEnabled = capabilities?.features.includes("ai_summary") ?? false;
   const aiSummaryVisible = aiSummaryEnabled || Boolean(draft.aiSummary);
@@ -709,9 +843,29 @@ export function StudioEditor({
     const controller = new AbortController();
     setCategoriesLoading(true);
     setCategoriesError(undefined);
-    void client.listStudioCategories(controller.signal)
-      .then((response) => {
-        if (!controller.signal.aborted) setCategories(response.items);
+    void Promise.all([
+      client.listStudioCategories(controller.signal),
+      client.listStudioSeries(controller.signal),
+    ])
+      .then(([categoryResponse, seriesResponse]) => {
+        if (!controller.signal.aborted) {
+          setCategories(categoryResponse.items);
+          setSeries(seriesResponse.items);
+          if (
+            !initial.restored
+            && requestedSeriesCategoryId
+            && seriesResponse.items.some(
+              (item) => item.status === "active"
+                && item.categoryId === requestedSeriesCategoryId,
+            )
+          ) {
+            setDraft((current) => (
+              current.categoryId === undefined
+                ? { ...current, categoryId: requestedSeriesCategoryId }
+                : current
+            ));
+          }
+        }
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) setCategoriesError(asMessage(reason));
@@ -720,7 +874,7 @@ export function StudioEditor({
         if (!controller.signal.aborted) setCategoriesLoading(false);
       });
     return () => controller.abort();
-  }, [canEdit]);
+  }, [canEdit, initial.restored, requestedSeriesCategoryId]);
 
   useEffect(() => {
     if (!aiSummaryVisible) {
@@ -774,8 +928,8 @@ export function StudioEditor({
         );
         applyDocument(document, restoreLocal);
         setStatus(restoreLocal
-          ? `이 브라우저에 남은 초안을 복구했습니다 · 서버 기준 ${initial.value.editing?.baseRevisionId.slice(0, 8)}`
-          : `서버 저장본 ${document.currentRevisionId.slice(0, 8)}을 불러왔습니다.`);
+          ? text(`이 브라우저에 남은 초안을 복구했습니다 · 서버 기준 ${initial.value.editing?.baseRevisionId.slice(0, 8)}`, `Recovered a draft left in this browser · server base ${initial.value.editing?.baseRevisionId.slice(0, 8)}`)
+          : text(`서버 저장본 ${document.currentRevisionId.slice(0, 8)}을 불러왔습니다.`, `Loaded server revision ${document.currentRevisionId.slice(0, 8)}.`));
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) setLoadError(asMessage(reason));
@@ -908,7 +1062,7 @@ export function StudioEditor({
   function handlePaste(field: PasteReceipt["field"], event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
     if (pastePolicy === "block") {
       event.preventDefault();
-      setStatus(`${field} 붙여넣기를 현재 초안 정책이 차단했습니다.`);
+      setStatus(text(`${field} 붙여넣기를 현재 초안 정책이 차단했습니다.`, `The current draft policy blocked pasting into ${field}.`));
       return;
     }
     const characters = event.clipboardData.getData("text/plain").length;
@@ -927,7 +1081,7 @@ export function StudioEditor({
       draft.aiSummary
       && !isAiSummarySourceCurrent(draft.aiSummary, currentAiSummarySourceHash)
     ) {
-      setStatus("AI 요약을 만든 뒤 제목이나 본문이 바뀌었습니다. 요약을 다시 만들거나 제거해 주세요.");
+      setStatus(text("AI 요약을 만든 뒤 제목이나 본문이 바뀌었습니다. 요약을 다시 만들거나 제거해 주세요.", "The title or body changed after the AI summary was created. Regenerate or remove the summary."));
       return;
     }
     let embeds: EmbedReference[] = [];
@@ -939,13 +1093,13 @@ export function StudioEditor({
         embeds = value;
       }
     } catch {
-      setStatus("외부 콘텐츠 연결 정보는 JSON 배열 형식이어야 합니다.");
+      setStatus(text("외부 콘텐츠 연결 정보는 JSON 배열 형식이어야 합니다.", "External content references must be a JSON array."));
       return;
     }
     try {
       if (ontologyText.trim()) ontology = JSON.parse(ontologyText) as OntologySidecar;
     } catch {
-      setStatus("AI 지식 연결 정보의 JSON 형식을 확인해 주세요.");
+      setStatus(text("AI 지식 연결 정보의 JSON 형식을 확인해 주세요.", "Check the JSON format of the AI knowledge connection data."));
       return;
     }
     return normalizeSavePayload({
@@ -970,7 +1124,7 @@ export function StudioEditor({
       // Keep the writing preview responsive; save surfaces malformed JSON.
     }
     return {
-      title: normalizedEditorTitle(draft.title) || "제목 없는 글",
+      title: normalizedEditorTitle(draft.title) || text("제목 없는 글", "Untitled post"),
       slug: draft.slug || "untitled",
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
@@ -985,13 +1139,13 @@ export function StudioEditor({
 
   async function saveRevision() {
     if (!draft.title.trim() || !draft.slug.trim() || !draft.sourceMarkdown.trim()) {
-      setStatus("제목과 본문을 입력해 주세요. 글 주소는 제목에서 자동으로 만들어집니다.");
+      setStatus(text("제목과 본문을 입력해 주세요. 글 주소는 제목에서 자동으로 만들어집니다.", "Enter a title and body. The post address is generated automatically from the title."));
       return;
     }
     const payload = parsePayload();
     if (!payload) return;
     setSaving(true);
-    setStatus(editing ? "현재 내용을 새 버전으로 저장하는 중…" : "첫 초안을 서버에 저장하는 중…");
+    setStatus(editing ? text("현재 내용을 새 버전으로 저장하는 중…", "Saving current content as a new revision…") : text("첫 초안을 서버에 저장하는 중…", "Saving the first draft to the server…"));
     try {
       const document = editing
         ? await appendStudioRevision(
@@ -1005,8 +1159,8 @@ export function StudioEditor({
       setAcceptedFingerprint(acceptedState.fingerprint);
       setEditing({ documentId: document.id, baseRevisionId: document.currentRevisionId });
       setStatus(canPublish
-        ? `서버 저장 완료 · 버전 ${document.currentRevisionId.slice(0, 8)} · 아직 공개되지 않았습니다.`
-        : `서버 저장 완료 · 버전 ${document.currentRevisionId.slice(0, 8)} · 소유자만 공개할 수 있습니다.`);
+        ? text(`서버 저장 완료 · 버전 ${document.currentRevisionId.slice(0, 8)} · 아직 공개되지 않았습니다.`, `Saved to server · revision ${document.currentRevisionId.slice(0, 8)} · not yet public.`)
+        : text(`서버 저장 완료 · 버전 ${document.currentRevisionId.slice(0, 8)} · 소유자만 공개할 수 있습니다.`, `Saved to server · revision ${document.currentRevisionId.slice(0, 8)} · only the owner can publish.`));
       localStorage.removeItem(draftKey);
       sessionStorage.removeItem(draftKey);
       if (!documentId) navigate(`/studio/write/${document.id}`, true);
@@ -1019,15 +1173,15 @@ export function StudioEditor({
 
   async function publishAccepted() {
     if (!canPublish) {
-      setStatus("초안은 저장됐습니다. 공개 발행은 블로그 소유자만 할 수 있습니다.");
+      setStatus(text("초안은 저장됐습니다. 공개 발행은 블로그 소유자만 할 수 있습니다.", "The draft is saved. Only the blog owner can publish."));
       return;
     }
     if (!accepted) {
-      setStatus("먼저 현재 내용을 저장해 주세요.");
+      setStatus(text("먼저 현재 내용을 저장해 주세요.", "Save the current content first."));
       return;
     }
     setPublishing(true);
-    setStatus("저장된 글을 블로그에 공개하는 중…");
+    setStatus(text("저장된 글을 블로그에 공개하는 중…", "Publishing the saved post to the blog…"));
     try {
       const published = await client.publishStudioDocument(
         accepted.id,
@@ -1035,7 +1189,7 @@ export function StudioEditor({
       );
       setAccepted(published);
       setEditing({ documentId: published.id, baseRevisionId: published.currentRevisionId });
-      setStatus("글이 블로그에 공개되었습니다.");
+      setStatus(text("글이 블로그에 공개되었습니다.", "The post is now public."));
       setPublishOpen(false);
     } catch (reason) {
       setStatus(asMessage(reason));
@@ -1044,7 +1198,7 @@ export function StudioEditor({
     }
   }
 
-  function applyFormat(before: string, after = before, placeholder = "텍스트") {
+  function applyFormat(before: string, after = before, placeholder = text("텍스트", "text")) {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const start = textarea.selectionStart;
@@ -1058,7 +1212,7 @@ export function StudioEditor({
     });
   }
 
-  function prefixLines(prefix: string, placeholder = "내용") {
+  function prefixLines(prefix: string, placeholder = text("내용", "content")) {
     const textarea = textareaRef.current;
     if (!textarea) return;
     const start = textarea.selectionStart;
@@ -1072,7 +1226,7 @@ export function StudioEditor({
   async function uploadImage(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    setStatus(`${file.name} 업로드 중…`);
+    setStatus(text(`${file.name} 업로드 중…`, `Uploading ${file.name}…`));
     try {
       const uploaded = await client.uploadStudioAsset(file, file.name);
       const markdown = `![${uploaded.record.originalFilename}](${uploaded.url})`;
@@ -1083,7 +1237,7 @@ export function StudioEditor({
       } else {
         update("sourceMarkdown", `${draft.sourceMarkdown.replace(/\s*$/, "")}\n\n${markdown}\n`);
       }
-      setStatus("이미지를 저장하고 본문에 넣었습니다.");
+      setStatus(text("이미지를 저장하고 본문에 넣었습니다.", "Saved the image and inserted it into the body."));
     } catch (reason) {
       setStatus(asMessage(reason));
     } finally {
@@ -1110,21 +1264,21 @@ export function StudioEditor({
     revisionMatchesDraft && accepted?.publishedRevisionId === accepted?.currentRevisionId,
   );
   const localDraftLabel = localDraftState === "saving"
-    ? "브라우저에 자동 저장 중…"
+    ? text("브라우저에 자동 저장 중…", "Autosaving in browser…")
     : localDraftState === "saved"
-      ? `브라우저 자동 저장됨${localSavedAt ? ` · ${formatSavedTime(localSavedAt)}` : ""}`
+      ? text(`브라우저 자동 저장됨${localSavedAt ? ` · ${formatSavedTime(localSavedAt)}` : ""}`, `Autosaved in browser${localSavedAt ? ` · ${formatSavedTime(localSavedAt)}` : ""}`)
       : localDraftState === "off"
-        ? "브라우저 자동 저장 꺼짐"
-        : "브라우저 자동 저장을 사용할 수 없음";
+        ? text("브라우저 자동 저장 꺼짐", "Browser autosave off")
+        : text("브라우저 자동 저장을 사용할 수 없음", "Browser autosave unavailable");
   const settledSaveLabel = revisionMatchesDraft
     ? currentRevisionPublished
-      ? "공개된 내용과 일치함"
-      : canPublish ? "서버 저장 완료 · 공개 전" : "서버 저장 완료 · 소유자만 공개"
+      ? text("공개된 내용과 일치함", "Matches published content")
+      : canPublish ? text("서버 저장 완료 · 공개 전", "Saved to server · not public") : text("서버 저장 완료 · 소유자만 공개", "Saved to server · owner can publish")
     : localDraftLabel;
   const editorSaveLabel = saving
-    ? "서버에 저장 중…"
+    ? text("서버에 저장 중…", "Saving to server…")
     : publishing
-      ? "블로그에 공개 중…"
+      ? text("블로그에 공개 중…", "Publishing to blog…")
       : status ?? settledSaveLabel;
 
   useEffect(() => {
@@ -1145,50 +1299,50 @@ export function StudioEditor({
     return () => window.removeEventListener("keydown", handleEditorShortcut);
   });
 
-  if (!capabilities || !session) return <div className="editor-loading" role="status">Studio 접근 권한을 확인하는 중…</div>;
+  if (!capabilities || !session) return <div className="editor-loading" role="status">{text("Studio 접근 권한을 확인하는 중…", "Checking Studio access…")}</div>;
   if (studioAccess === "disabled") {
-    return <StudioAccessGate detail="이 인스턴스는 공개 읽기 전용으로 배포되어 편집 기능이 없습니다." />;
+    return <StudioAccessGate detail={text("이 인스턴스는 공개 읽기 전용으로 배포되어 편집 기능이 없습니다.", "Editing is unavailable because this instance is deployed public read-only.")} />;
   }
   if (session.state !== "authenticated") {
-    return <StudioAccessGate detail="글을 쓰려면 먼저 인증해 주세요." login />;
+    return <StudioAccessGate detail={text("글을 쓰려면 먼저 인증해 주세요.", "Authenticate before writing.")} login />;
   }
   if (session.state === "authenticated" && !session.blog) {
-    return <StudioAccessGate detail="글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요." onboarding />;
+    return <StudioAccessGate detail={text("글을 쓰기 전에 블로그 이름과 첫 테마를 선택해 주세요.", "Choose a blog name and first theme before writing.")} onboarding />;
   }
   if (!canEdit) {
-    return <StudioAccessGate detail="이 서버가 지원하는 글쓰기 프로필을 확인할 수 없습니다." />;
+    return <StudioAccessGate detail={text("이 서버가 지원하는 글쓰기 프로필을 확인할 수 없습니다.", "Could not determine the writing profile supported by this server.")} />;
   }
-  if (loadingDocument) return <div className="editor-loading" role="status">문서를 불러오는 중…</div>;
+  if (loadingDocument) return <div className="editor-loading" role="status">{text("문서를 불러오는 중…", "Loading document…")}</div>;
   if (loadError) {
     return (
       <section className="empty-state studio-access-gate" role="alert">
         <span className="empty-symbol" aria-hidden="true">!</span>
-        <h1>문서를 열지 못했습니다</h1>
+        <h1>{text("문서를 열지 못했습니다", "Could not open document")}</h1>
         <p>{loadError}</p>
-        <button className="button button-primary" onClick={() => setLoadAttempt((value) => value + 1)} type="button">다시 시도</button>
-        <AppLink className="button button-ghost" href="/studio">Studio로 돌아가기</AppLink>
+        <button className="button button-primary" onClick={() => setLoadAttempt((value) => value + 1)} type="button">{text("다시 시도", "Try again")}</button>
+        <AppLink className="button button-ghost" href="/studio">{text("Studio로 돌아가기", "Back to Studio")}</AppLink>
       </section>
     );
   }
   return (
     <div className="studio-editor-shell">
       <header className="editor-topbar">
-        <AppLink className="editor-exit" href="/studio" aria-label="Studio 대시보드로 돌아가기">← <span>Studio</span></AppLink>
+        <AppLink className="editor-exit" href="/studio" aria-label={text("Studio 대시보드로 돌아가기", "Back to Studio dashboard")}>← <span>Studio</span></AppLink>
         <div className="editor-save-state" role="status" title={status || localDraftLabel}>
           <span className={saving || publishing || localDraftState === "saving" ? "saving-dot active" : revisionMatchesDraft ? "saving-dot complete" : "saving-dot"} aria-hidden="true" />
           {editorSaveLabel}
         </div>
         <div className="editor-top-actions">
-          <span className="mode-pill">{editing ? `저장본 ${accepted?.revision.revisionNumber ?? "—"}` : "새 글"}</span>
+          <span className="mode-pill">{editing ? text(`저장본 ${accepted?.revision.revisionNumber ?? "—"}`, `Revision ${accepted?.revision.revisionNumber ?? "—"}`) : text("새 글", "New post")}</span>
           <button
             aria-keyshortcuts="Control+S Meta+S"
             className="button button-save-draft"
             disabled={saving || publishing || revisionMatchesDraft}
             onClick={() => void saveRevision()}
-            title="현재 내용 저장 (Ctrl/⌘ + S)"
+            title={text("현재 내용 저장 (Ctrl/⌘ + S)", "Save current content (Ctrl/⌘ + S)")}
             type="button"
           >
-            {saving ? "저장 중…" : revisionMatchesDraft ? "저장됨" : "저장"}
+            {saving ? text("저장 중…", "Saving…") : revisionMatchesDraft ? text("저장됨", "Saved") : text("저장", "Save")}
             <span className="shortcut-hint" aria-hidden="true">Ctrl/⌘ S</span>
           </button>
           <button
@@ -1196,30 +1350,30 @@ export function StudioEditor({
             className="button button-publish"
             disabled={publishing || !canPublish}
             onClick={() => setPublishOpen(true)}
-            title={canPublish ? "출간 화면 열기 (Ctrl/⌘ + Enter)" : "공개 발행은 블로그 소유자만 할 수 있습니다"}
+            title={canPublish ? text("출간 화면 열기 (Ctrl/⌘ + Enter)", "Open publish panel (Ctrl/⌘ + Enter)") : text("공개 발행은 블로그 소유자만 할 수 있습니다", "Only the blog owner can publish")}
             type="button"
           >
-            {canPublish ? "출간하기" : "소유자만 출간"}
+            {canPublish ? text("출간하기", "Publish") : text("소유자만 출간", "Owner publishes")}
           </button>
         </div>
       </header>
 
-      <div className="mobile-editor-tabs" role="group" aria-label="편집 화면">
-        <button aria-pressed={activeTab === "write"} onClick={() => setActiveTab("write")} type="button">쓰기</button>
-        <button aria-pressed={activeTab === "preview"} onClick={() => setActiveTab("preview")} type="button">미리보기</button>
+      <div className="mobile-editor-tabs" role="group" aria-label={text("편집 화면", "Editor view")}>
+        <button aria-pressed={activeTab === "write"} onClick={() => setActiveTab("write")} type="button">{text("쓰기", "Write")}</button>
+        <button aria-pressed={activeTab === "preview"} onClick={() => setActiveTab("preview")} type="button">{text("미리보기", "Preview")}</button>
       </div>
 
       <div className="editor-workspace">
-        <section className={`write-pane ${activeTab !== "write" ? "mobile-hidden" : ""}`} aria-label="Markdown 작성">
+        <section className={`write-pane ${activeTab !== "write" ? "mobile-hidden" : ""}`} aria-label={text("Markdown 작성", "Write Markdown")}>
           <div className="editor-scroll">
-            <label className="sr-only" htmlFor="post-title">글 제목</label>
+            <label className="sr-only" htmlFor="post-title">{text("글 제목", "Post title")}</label>
             <textarea
               className="title-editor"
               id="post-title"
               maxLength={300}
               onChange={(event) => updateTitle(event.target.value)}
               onPaste={(event) => handlePaste("title", event)}
-              placeholder="제목을 입력하세요"
+              placeholder={text("제목을 입력하세요", "Enter a title")}
               ref={titleInputRef}
               rows={1}
               value={draft.title}
@@ -1230,6 +1384,7 @@ export function StudioEditor({
               error={categoriesError}
               loading={categoriesLoading}
               onChange={(categoryId) => update("categoryId", categoryId)}
+              series={series}
               value={draft.categoryId}
             />
             {aiSummaryVisible ? (
@@ -1242,12 +1397,12 @@ export function StudioEditor({
             ) : null}
             <MarkdownToolbar
               onCommand={(command) => {
-                if (command === "heading") prefixLines("## ", "제목");
-                if (command === "bold") applyFormat("**", "**", "굵은 텍스트");
-                if (command === "italic") applyFormat("_", "_", "기울임 텍스트");
-                if (command === "strike") applyFormat("~~", "~~", "취소선 텍스트");
-                if (command === "quote") prefixLines("> ", "인용문");
-                if (command === "link") applyFormat("[", "](https://)", "링크 텍스트");
+                if (command === "heading") prefixLines("## ", text("제목", "Heading"));
+                if (command === "bold") applyFormat("**", "**", text("굵은 텍스트", "bold text"));
+                if (command === "italic") applyFormat("_", "_", text("기울임 텍스트", "italic text"));
+                if (command === "strike") applyFormat("~~", "~~", text("취소선 텍스트", "struck text"));
+                if (command === "quote") prefixLines("> ", text("인용문", "Quote"));
+                if (command === "link") applyFormat("[", "](https://)", text("링크 텍스트", "link text"));
                 if (command === "code") applyFormat("`", "`", "code");
                 if (command === "codeblock") applyFormat("```\n", "\n```", "code");
                 if (command === "image") fileInputRef.current?.click();
@@ -1262,27 +1417,27 @@ export function StudioEditor({
               />
             ) : null}
             <div className="editor-writing-meta">
-              <span className="writing-help">서식 버튼으로 본문을 쉽게 꾸밀 수 있어요.</span>
-              <span className="writing-stats">공백 포함 {bodyCharacterCount.toLocaleString()}자 · 예상 {readingMinutes ? `${readingMinutes}분` : "1분 미만"}</span>
+              <span className="writing-help">{text("서식 버튼으로 본문을 쉽게 꾸밀 수 있어요.", "Use the formatting buttons to style the body easily.")}</span>
+              <span className="writing-stats">{text(`공백 포함 ${bodyCharacterCount.toLocaleString("ko-KR")}자 · 예상 ${readingMinutes ? `${readingMinutes}분` : "1분 미만"}`, `${bodyCharacterCount.toLocaleString("en-US")} characters including spaces · about ${readingMinutes ? `${readingMinutes} min` : "under 1 min"}`)}</span>
               <span className={`revision-state ${revisionMatchesDraft ? "is-saved" : "is-dirty"}`}>
-                {saving ? "서버 저장 중" : revisionMatchesDraft ? currentRevisionPublished ? "현재 글 공개됨" : canPublish ? "출간 준비됨" : "소유자 검토 대기" : accepted ? "변경 내용 저장 필요" : "첫 저장 전"}
+                {saving ? text("서버 저장 중", "Saving to server") : revisionMatchesDraft ? currentRevisionPublished ? text("현재 글 공개됨", "Post is public") : canPublish ? text("출간 준비됨", "Ready to publish") : text("소유자 검토 대기", "Awaiting owner review") : accepted ? text("변경 내용 저장 필요", "Changes need saving") : text("첫 저장 전", "Not yet saved")}
               </span>
             </div>
             {status ? <p className="editor-notice" role="status">{status}</p> : null}
-            <label className="sr-only" htmlFor="markdown-source">Markdown 본문</label>
+            <label className="sr-only" htmlFor="markdown-source">{text("Markdown 본문", "Markdown body")}</label>
             <textarea
               className="markdown-editor"
               id="markdown-source"
               onChange={(event) => update("sourceMarkdown", event.target.value)}
               onPaste={(event) => handlePaste("markdown", event)}
-              placeholder={"이야기를 시작해 보세요.\n\nMarkdown을 몰라도 위의 서식 버튼을 누르면 됩니다."}
+              placeholder={text("이야기를 시작해 보세요.\n\nMarkdown을 몰라도 위의 서식 버튼을 누르면 됩니다.", "Start your story.\n\nYou can use the formatting buttons above even if you do not know Markdown.")}
               ref={textareaRef}
               spellCheck="true"
               value={draft.sourceMarkdown}
             />
             <input
               accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
-              aria-label="이미지 파일 선택"
+              aria-label={text("이미지 파일 선택", "Choose image file")}
               className="visually-hidden-input"
               onChange={(event) => void uploadImage(event)}
               ref={fileInputRef}
@@ -1316,12 +1471,12 @@ export function StudioEditor({
           </div>
         </section>
 
-        <section className={`preview-pane ${activeTab !== "preview" ? "mobile-hidden" : ""}`} aria-label="발행 미리보기">
+        <section className={`preview-pane ${activeTab !== "preview" ? "mobile-hidden" : ""}`} aria-label={text("발행 미리보기", "Publication preview")}>
           <div className="preview-scroll">
-            <div className="preview-label"><span>미리보기</span><span>{previewState === "loading" ? "최종 화면 확인 중…" : previewState === "ready" ? "실제 공개 화면 기준" : "간단 미리보기"}</span></div>
+            <div className="preview-label"><span>{text("미리보기", "Preview")}</span><span>{previewState === "loading" ? text("최종 화면 확인 중…", "Checking final view…") : previewState === "ready" ? text("실제 공개 화면 기준", "Matches public view") : text("간단 미리보기", "Basic preview")}</span></div>
             <article className="editor-preview-article">
-              <h1>{draft.title || "제목 없는 글"}</h1>
-              <div className="preview-byline"><span>{session?.state === "authenticated" ? session.user.displayName : "작성자"}</span><span>·</span><span>{formatDate(new Date().toISOString())}</span></div>
+              <h1>{draft.title || text("제목 없는 글", "Untitled post")}</h1>
+              <div className="preview-byline"><span>{session?.state === "authenticated" ? session.user.displayName : text("작성자", "Author")}</span><span>·</span><span>{formatDate(new Date().toISOString())}</span></div>
               {previewArtifact ? (
                 <div className="article-content" dangerouslySetInnerHTML={{ __html: sanitizedPreview }} />
               ) : (
@@ -1359,20 +1514,24 @@ function CategorySelector({
   error,
   loading,
   onChange,
+  series,
   value,
 }: {
   categories: CategorySummary[];
   error: string | undefined;
   loading: boolean;
   onChange: (value: string | null) => void;
+  series: SeriesSummary[];
   value: string | null | undefined;
 }) {
   const current = value ? categories.find((category) => category.id === value) : undefined;
+  const seriesCategoryIds = new Set(series.map((item) => item.categoryId));
+  const standaloneCategories = categories.filter((category) => !seriesCategoryIds.has(category.id));
   return (
     <section className="editor-category-selector" aria-labelledby="editor-category-title">
       <div>
-        <label id="editor-category-title" htmlFor="editor-category">카테고리</label>
-        <p>글을 `/카테고리/글주소` 아래에 정리합니다. 카테고리는 글쓰기와 별도로 관리됩니다.</p>
+        <label id="editor-category-title" htmlFor="editor-category">{text("글 위치", "Post location")}</label>
+        <p>{text("독립 포스트로 두거나 시리즈·카테고리에 넣습니다. 시리즈 글은 발행할 때 읽는 순서의 끝에 추가됩니다.", "Keep this as a standalone post or place it in a series or category. Series posts are appended to the reading order when published.")}</p>
       </div>
       <div className="editor-category-control">
         <select
@@ -1381,23 +1540,43 @@ function CategorySelector({
           onChange={(event) => onChange(event.target.value || null)}
           value={value ?? ""}
         >
-          <option value="">미분류 · 기존 블로그 주소</option>
-          {categories.map((category) => (
-            <option
-              disabled={category.status === "archived" && category.id !== value}
-              key={category.id}
-              value={category.id}
-            >
-              {category.title} · /{category.slug}{category.status === "archived" ? " · 보관됨" : ""}
-            </option>
-          ))}
+          <option value="">{text("독립 포스트 · 기존 블로그 주소", "Standalone post · regular blog address")}</option>
+          {series.length ? (
+            <optgroup label="Series">
+              {series.map((item) => (
+                <option
+                  disabled={item.status === "archived" && item.categoryId !== value}
+                  key={item.id}
+                  value={item.categoryId}
+                >
+                  {item.title} · /{item.slug}{item.status === "archived" ? text(" · 보관됨", " · archived") : ""}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
+          {standaloneCategories.length ? (
+            <optgroup label="Category">
+              {standaloneCategories.map((category) => (
+                <option
+                  disabled={category.status === "archived" && category.id !== value}
+                  key={category.id}
+                  value={category.id}
+                >
+                  {category.title} · /{category.slug}{category.status === "archived" ? text(" · 보관됨", " · archived") : ""}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
         </select>
-        <AppLink className="text-button" href="/studio/categories">카테고리 만들기·관리</AppLink>
+        <span className="editor-placement-links">
+          <AppLink className="text-button" href="/studio/series">{text("시리즈 관리", "Manage series")}</AppLink>
+          <AppLink className="text-button" href="/studio/categories">{text("카테고리 관리", "Manage categories")}</AppLink>
+        </span>
       </div>
-      {loading ? <p className="field-help" role="status">카테고리를 불러오는 중…</p> : null}
-      {error ? <p className="field-error" role="alert">카테고리를 불러오지 못했습니다: {error}</p> : null}
+      {loading ? <p className="field-help" role="status">{text("글 위치를 불러오는 중…", "Loading post locations…")}</p> : null}
+      {error ? <p className="field-error" role="alert">{text("글 위치를 불러오지 못했습니다:", "Could not load post locations:")} {error}</p> : null}
       {value && !current && !loading ? (
-        <p className="field-error" role="alert">선택했던 카테고리를 찾을 수 없습니다. 저장 전 다른 카테고리를 골라 주세요.</p>
+        <p className="field-error" role="alert">{text("선택했던 카테고리를 찾을 수 없습니다. 저장 전 다른 카테고리를 골라 주세요.", "The selected category could not be found. Choose another category before saving.")}</p>
       ) : null}
     </section>
   );
@@ -1455,7 +1634,7 @@ function AiSummaryEditor({
       .catch((reason: unknown) => {
         if (controller.signal.aborted) return;
         setCatalogState("error");
-        setNotice(`AI 제공자 목록을 불러오지 못했습니다: ${asMessage(reason)}`);
+        setNotice(text(`AI 제공자 목록을 불러오지 못했습니다: ${asMessage(reason)}`, `Could not load AI providers: ${asMessage(reason)}`));
       });
     return () => controller.abort();
     // A loaded document only supplies a preferred initial provider/model.
@@ -1488,7 +1667,7 @@ function AiSummaryEditor({
     generationController.current = controller;
     const apiKey = oneShotApiKey;
     setGenerating(true);
-    setNotice("AI 제공자에게 제목과 Markdown을 보내 요약 초안을 만드는 중…");
+    setNotice(text("AI 제공자에게 제목과 Markdown을 보내 요약 초안을 만드는 중…", "Sending the title and Markdown to the AI provider to draft a summary…"));
     try {
       const response = await client.generateAiSummary({
         provider: selectedProvider.id,
@@ -1499,7 +1678,7 @@ function AiSummaryEditor({
       }, apiKey, controller.signal);
       if (controller.signal.aborted) return;
       setCandidate(response.candidate);
-      setNotice("요약 초안이 도착했습니다. 내용을 직접 확인한 뒤 사용해 주세요.");
+      setNotice(text("요약 초안이 도착했습니다. 내용을 직접 확인한 뒤 사용해 주세요.", "The summary draft is ready. Review it yourself before using it."));
     } catch (reason) {
       if (!controller.signal.aborted) setNotice(asMessage(reason));
     } finally {
@@ -1516,7 +1695,7 @@ function AiSummaryEditor({
     if (!candidate || candidateFreshness !== "current" || !candidate.text.trim()) return;
     const reviewed = reviewAiSummaryCandidate({ ...candidate, text: candidate.text.trim() });
     setDraft((current) => ({ ...current, aiSummary: reviewed }));
-    setNotice("검토한 요약을 이 글에 적용했습니다. 저장 버튼을 눌러 새 리비전에 포함하세요.");
+    setNotice(text("검토한 요약을 이 글에 적용했습니다. 저장 버튼을 눌러 새 리비전에 포함하세요.", "Applied the reviewed summary to this post. Save to include it in a new revision."));
   }
 
   function removeAppliedSummary() {
@@ -1524,60 +1703,60 @@ function AiSummaryEditor({
       const { aiSummary: _removed, ...withoutSummary } = current;
       return withoutSummary;
     });
-    setNotice("이 글에서 AI 요약을 제거했습니다. 서버에 반영하려면 저장해 주세요.");
+    setNotice(text("이 글에서 AI 요약을 제거했습니다. 서버에 반영하려면 저장해 주세요.", "Removed the AI summary from this post. Save to apply the change on the server."));
   }
 
   return (
     <section className="ai-summary-editor" aria-labelledby="ai-summary-editor-title">
       <div className="ai-summary-editor-heading">
         <div>
-          <p className="eyebrow">선택 기능</p>
-          <h2 id="ai-summary-editor-title">글 위에 AI 요약 넣기</h2>
+          <p className="eyebrow">{text("선택 기능", "Optional feature")}</p>
+          <h2 id="ai-summary-editor-title">{text("글 위에 AI 요약 넣기", "Add an AI summary above the post")}</h2>
           <p>{generationEnabled
-            ? "생성할 때만 제목과 Markdown 본문을 선택한 AI 제공자에게 보냅니다. 요청이 끝나면 입력칸에서 키를 지우며, 글·브라우저 초안·OSB 데이터베이스에는 저장하지 않습니다."
-            : "이 서버에서는 새 AI 요약 생성을 사용하지 않습니다. 기존 글에 저장된 요약은 확인하거나 제거할 수 있습니다."}</p>
+            ? text("생성할 때만 제목과 Markdown 본문을 선택한 AI 제공자에게 보냅니다. 요청이 끝나면 입력칸에서 키를 지우며, 글·브라우저 초안·OSB 데이터베이스에는 저장하지 않습니다.", "Only when generating, the title and Markdown body are sent to the selected AI provider. The key is cleared from the input after the request and is never stored in the post, browser draft, or OSB database.")
+            : text("이 서버에서는 새 AI 요약 생성을 사용하지 않습니다. 기존 글에 저장된 요약은 확인하거나 제거할 수 있습니다.", "This server does not generate new AI summaries. You can still review or remove a summary stored on an existing post.")}</p>
         </div>
         {draft.aiSummary ? (
           <span className={`ai-summary-state is-${appliedFreshness}`}>
-            {appliedFreshness === "current" ? "요약 적용됨" : appliedFreshness === "checking" ? "내용 확인 중" : "다시 확인 필요"}
+            {appliedFreshness === "current" ? text("요약 적용됨", "Summary applied") : appliedFreshness === "checking" ? text("내용 확인 중", "Checking content") : text("다시 확인 필요", "Needs review")}
           </span>
-        ) : <span className="ai-summary-state">사용 안 함</span>}
+        ) : <span className="ai-summary-state">{text("사용 안 함", "Not in use")}</span>}
       </div>
 
       {draft.aiSummary ? (
         <div className={`ai-summary-applied is-${appliedFreshness}`}>
           <div>
-            <strong>현재 글에 적용된 요약</strong>
+            <strong>{text("현재 글에 적용된 요약", "Summary applied to this post")}</strong>
             <span>{aiSummaryProvenanceText(draft.aiSummary)}</span>
           </div>
           <p>{draft.aiSummary.text}</p>
-          {appliedFreshness === "stale" ? <p className="ai-summary-warning" role="alert">제목이나 본문이 달라졌습니다. 저장하기 전에 다시 생성하거나 요약을 제거해 주세요.</p> : null}
-          <button className="text-button" onClick={removeAppliedSummary} type="button">적용된 요약 제거</button>
+          {appliedFreshness === "stale" ? <p className="ai-summary-warning" role="alert">{text("제목이나 본문이 달라졌습니다. 저장하기 전에 다시 생성하거나 요약을 제거해 주세요.", "The title or body has changed. Regenerate or remove the summary before saving.")}</p> : null}
+          <button className="text-button" onClick={removeAppliedSummary} type="button">{text("적용된 요약 제거", "Remove applied summary")}</button>
         </div>
       ) : null}
 
-      {generationEnabled && catalogState === "loading" ? <p className="ai-summary-loading" role="status">사용 가능한 AI 제공자를 확인하는 중…</p> : null}
-      {generationEnabled && catalogState === "ready" && providers.length === 0 ? <p className="ai-summary-warning" role="status">현재 사용할 수 있는 AI 제공자가 없습니다.</p> : null}
+      {generationEnabled && catalogState === "loading" ? <p className="ai-summary-loading" role="status">{text("사용 가능한 AI 제공자를 확인하는 중…", "Checking available AI providers…")}</p> : null}
+      {generationEnabled && catalogState === "ready" && providers.length === 0 ? <p className="ai-summary-warning" role="status">{text("현재 사용할 수 있는 AI 제공자가 없습니다.", "No AI provider is currently available.")}</p> : null}
       {generationEnabled && catalogState === "ready" && selectedProvider ? (
         <div className="ai-summary-controls">
           <label>
-            AI 제공자
+            {text("AI 제공자", "AI provider")}
             <select onChange={(event) => selectProvider(event.target.value as AiSummaryProvider["id"])} value={providerId}>
               {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
             </select>
           </label>
           <label>
-            모델
+            {text("모델", "Model")}
             <select onChange={(event) => setModel(event.target.value)} value={model}>
               {selectedProvider.models.map((value) => <option key={value} value={value}>{value}</option>)}
             </select>
           </label>
           <label className="ai-summary-key-field">
-            이번 요청에만 쓸 API 키
+            {text("이번 요청에만 쓸 API 키", "API key for this request only")}
             <input
               autoComplete="off"
               onChange={(event) => setOneShotApiKey(event.target.value)}
-              placeholder={`${selectedProvider.label} API 키`}
+              placeholder={text(`${selectedProvider.label} API 키`, `${selectedProvider.label} API key`)}
               spellCheck="false"
               type="password"
               value={oneShotApiKey}
@@ -1595,11 +1774,11 @@ function AiSummaryEditor({
             onClick={() => void generateSummary()}
             type="button"
           >
-            {generating ? "요약 만드는 중…" : candidate || draft.aiSummary ? "다시 생성" : "요약 초안 생성"}
+            {generating ? text("요약 만드는 중…", "Generating summary…") : candidate || draft.aiSummary ? text("다시 생성", "Regenerate") : text("요약 초안 생성", "Generate summary draft")}
           </button>
           {maximumSourceBytes ? (
             <p className={sourceBytes > maximumSourceBytes ? "ai-summary-warning" : "ai-summary-limit"}>
-              제목 + 본문 {sourceBytes.toLocaleString()} / {maximumSourceBytes.toLocaleString()} bytes
+              {text("제목 + 본문", "Title + body")} {sourceBytes.toLocaleString(uiLanguage === "en" ? "en-US" : "ko-KR")} / {maximumSourceBytes.toLocaleString(uiLanguage === "en" ? "en-US" : "ko-KR")} bytes
             </p>
           ) : null}
         </div>
@@ -1607,7 +1786,7 @@ function AiSummaryEditor({
 
       {candidate ? (
         <div className={`ai-summary-candidate is-${candidateFreshness}`}>
-          <label htmlFor="ai-summary-candidate">요약 초안 확인·수정</label>
+          <label htmlFor="ai-summary-candidate">{text("요약 초안 확인·수정", "Review and edit summary draft")}</label>
           <textarea
             id="ai-summary-candidate"
             maxLength={2_000}
@@ -1622,9 +1801,9 @@ function AiSummaryEditor({
               disabled={candidateFreshness !== "current" || !candidate.text.trim()}
               onClick={useCandidate}
               type="button"
-            >이 요약 사용</button>
+            >{text("이 요약 사용", "Use this summary")}</button>
           </div>
-          {candidateFreshness === "stale" ? <p className="ai-summary-warning" role="alert">생성 뒤 제목이나 본문이 바뀌었습니다. 현재 글 기준으로 다시 생성해 주세요.</p> : null}
+          {candidateFreshness === "stale" ? <p className="ai-summary-warning" role="alert">{text("생성 뒤 제목이나 본문이 바뀌었습니다. 현재 글 기준으로 다시 생성해 주세요.", "The title or body changed after generation. Regenerate using the current post.")}</p> : null}
         </div>
       ) : null}
       {notice ? <p className="ai-summary-notice" role="status">{notice}</p> : null}
@@ -1654,8 +1833,8 @@ function aiSummaryProvenanceText(summary: AiSummary): string {
 
 function AiSummaryPreview({ summary }: { summary: AiSummary }) {
   return (
-    <aside className="osb-ai-summary" aria-label="AI 요약">
-      <p className="osb-ai-summary__label">AI 요약 · 사람이 검토함</p>
+    <aside className="osb-ai-summary" aria-label={text("AI 요약", "AI summary")}>
+      <p className="osb-ai-summary__label">{text("AI 요약 · 사람이 검토함", "AI summary · human reviewed")}</p>
       <p className="osb-ai-summary__text">{summary.text}</p>
     </aside>
   );
@@ -1673,11 +1852,11 @@ function SocialEmbedComposer({
   setStatus: (value: string | undefined) => void;
 }) {
   const [url, setUrl] = useState("");
-  const preview = useMemo(() => socialEmbedFromUrl(url), [url]);
+  const preview = useMemo(() => socialEmbedFromUrl(url, uiLanguage), [url]);
 
   function insert() {
     if (!preview) {
-      setStatus("지원하는 YouTube 또는 X 게시물의 https 주소를 확인해 주세요.");
+      setStatus(text("지원하는 YouTube 또는 X 게시물의 https 주소를 확인해 주세요.", "Enter a supported HTTPS URL for a YouTube video or X post."));
       return;
     }
     let current: EmbedReference[] = [];
@@ -1685,7 +1864,7 @@ function SocialEmbedComposer({
       current = embedText.trim() ? JSON.parse(embedText) as EmbedReference[] : [];
       if (!Array.isArray(current)) throw new Error("array");
     } catch {
-      setStatus("기존 외부 콘텐츠 연결 JSON을 먼저 확인해 주세요.");
+      setStatus(text("기존 외부 콘텐츠 연결 JSON을 먼저 확인해 주세요.", "Check the existing external-content JSON first."));
       return;
     }
     const next = [...current.filter((embed) => embed.id !== preview.id), preview];
@@ -1697,24 +1876,24 @@ function SocialEmbedComposer({
       return { ...draft, sourceMarkdown: `${draft.sourceMarkdown.trimEnd()}${separator}${directive}\n` };
     });
     setUrl("");
-    setStatus(`${preview.title} 연결과 본문 블록을 추가했습니다.`);
+    setStatus(text(`${preview.title} 연결과 본문 블록을 추가했습니다.`, `Added the ${preview.title} reference and body block.`));
   }
 
   return (
     <details className="social-embed-composer">
-      <summary>동영상·X 게시물 넣기 <small>URL만 붙여넣으세요</small></summary>
+      <summary>{text("동영상·X 게시물 넣기", "Insert video or X post")} <small>{text("URL만 붙여넣으세요", "Just paste a URL")}</small></summary>
       <div className="social-embed-input-row">
-        <label htmlFor="social-embed-url">YouTube 또는 X 주소</label>
+        <label htmlFor="social-embed-url">{text("YouTube 또는 X 주소", "YouTube or X URL")}</label>
         <div>
           <input
             id="social-embed-url"
             inputMode="url"
             onChange={(event) => setUrl(event.target.value)}
-            placeholder="https://youtu.be/… 또는 https://x.com/…/status/…"
+            placeholder={text("https://youtu.be/… 또는 https://x.com/…/status/…", "https://youtu.be/… or https://x.com/…/status/…")}
             type="url"
             value={url}
           />
-          <button className="button button-primary" disabled={!preview} onClick={insert} type="button">본문에 넣기</button>
+          <button className="button button-primary" disabled={!preview} onClick={insert} type="button">{text("본문에 넣기", "Insert into body")}</button>
         </div>
       </div>
       {url ? (
@@ -1724,7 +1903,7 @@ function SocialEmbedComposer({
             <div><strong>{preview.title}</strong><small>{preview.canonicalUrl}</small></div>
             <span aria-hidden="true">✓</span>
           </div>
-        ) : <p className="field-error" role="alert">지원하는 공개 게시물 주소가 아닙니다.</p>
+        ) : <p className="field-error" role="alert">{text("지원하는 공개 게시물 주소가 아닙니다.", "This is not a supported public-post URL.")}</p>
       ) : null}
     </details>
   );
@@ -1734,18 +1913,18 @@ type ToolbarCommand = "heading" | "bold" | "italic" | "strike" | "quote" | "link
 
 function MarkdownToolbar({ onCommand }: { onCommand: (command: ToolbarCommand) => void }) {
   const tools: Array<{ command: ToolbarCommand; label: string; glyph: ReactNode }> = [
-    { command: "heading", label: "제목 2", glyph: "H₂" },
-    { command: "bold", label: "굵게", glyph: <strong>B</strong> },
-    { command: "italic", label: "기울임", glyph: <em>I</em> },
-    { command: "strike", label: "취소선", glyph: <s>S</s> },
-    { command: "quote", label: "인용문", glyph: "❞" },
-    { command: "link", label: "링크", glyph: "↗" },
-    { command: "image", label: "이미지 업로드", glyph: "▧" },
-    { command: "code", label: "인라인 코드", glyph: "<>" },
-    { command: "codeblock", label: "코드 블록", glyph: "{ }" },
+    { command: "heading", label: text("제목 2", "Heading 2"), glyph: "H₂" },
+    { command: "bold", label: text("굵게", "Bold"), glyph: <strong>B</strong> },
+    { command: "italic", label: text("기울임", "Italic"), glyph: <em>I</em> },
+    { command: "strike", label: text("취소선", "Strikethrough"), glyph: <s>S</s> },
+    { command: "quote", label: text("인용문", "Quote"), glyph: "❞" },
+    { command: "link", label: text("링크", "Link"), glyph: "↗" },
+    { command: "image", label: text("이미지 업로드", "Upload image"), glyph: "▧" },
+    { command: "code", label: text("인라인 코드", "Inline code"), glyph: "<>" },
+    { command: "codeblock", label: text("코드 블록", "Code block"), glyph: "{ }" },
   ];
   return (
-    <div className="markdown-toolbar" role="toolbar" aria-label="Markdown 서식">
+    <div className="markdown-toolbar" role="toolbar" aria-label={text("Markdown 서식", "Markdown formatting")}>
       {tools.map((tool, index) => (
         <button className={index === 4 || index === 7 ? "toolbar-separator" : ""} key={tool.command} onClick={() => onCommand(tool.command)} title={tool.label} type="button"><span aria-hidden="true">{tool.glyph}</span><span className="sr-only">{tool.label}</span></button>
       ))}
@@ -1806,40 +1985,40 @@ function AdvancedEditorOptions({
   }
   return (
     <details className="advanced-editor-options">
-      <summary><span>AI·고급 연동</span><small>글 주소 · 초안 보관 · 외부/AI 연결</small></summary>
+      <summary><span>{text("AI·고급 연동", "AI and advanced integrations")}</span><small>{text("글 주소 · 초안 보관 · 외부/AI 연결", "Post address · draft storage · external/AI links")}</small></summary>
       <div className="advanced-options-body">
         <label>
-          공개 글 주소
-          <small>제목에서 자동으로 만들어집니다. 꼭 필요한 경우에만 바꾸세요.</small>
+          {text("공개 글 주소", "Public post address")}
+          <small>{text("제목에서 자동으로 만들어집니다. 꼭 필요한 경우에만 바꾸세요.", "Generated automatically from the title. Change it only when necessary.")}</small>
           <input maxLength={240} onChange={(event) => { setSlugTouched(true); update("slug", event.target.value); }} onPaste={(event) => handlePaste("slug", event)} required value={draft.slug} />
         </label>
-        <fieldset><legend>브라우저 초안 보관</legend>
-          <p>글을 쓰는 동안 서버 저장과 별개로 브라우저에 임시 보관합니다. 민감한 글이라면 범위를 줄이거나 끌 수 있습니다.</p>
+        <fieldset><legend>{text("브라우저 초안 보관", "Browser draft storage")}</legend>
+          <p>{text("글을 쓰는 동안 서버 저장과 별개로 브라우저에 임시 보관합니다. 민감한 글이라면 범위를 줄이거나 끌 수 있습니다.", "While writing, temporarily keep a copy in the browser separately from server saves. Reduce the scope or turn it off for sensitive writing.")}</p>
           <div className="advanced-grid">
-            <label>보관 위치<select onChange={(event) => setStorageMode(event.target.value as DraftStorageMode)} value={storageMode}><option value="session">현재 탭을 닫을 때까지</option><option value="device">이 기기에 일정 시간</option><option value="off">브라우저에 보관하지 않기</option></select></label>
-            {storageMode === "device" ? <label>자동 삭제<select onChange={(event) => setRetentionHours(Number(event.target.value))} value={retentionHours}><option value={1}>1시간 뒤</option><option value={24}>24시간 뒤</option><option value={168}>7일 뒤</option><option value={720}>30일 뒤</option></select></label> : null}
-            <label>붙여넣기<select onChange={(event) => setPastePolicy(event.target.value as PastePolicy)} value={pastePolicy}><option value="allow">허용</option><option value="block">고급 입력란에서는 막기</option></select></label>
+            <label>{text("보관 위치", "Storage location")}<select onChange={(event) => setStorageMode(event.target.value as DraftStorageMode)} value={storageMode}><option value="session">{text("현재 탭을 닫을 때까지", "Until this tab closes")}</option><option value="device">{text("이 기기에 일정 시간", "On this device for a set time")}</option><option value="off">{text("브라우저에 보관하지 않기", "Do not store in browser")}</option></select></label>
+            {storageMode === "device" ? <label>{text("자동 삭제", "Auto-delete")}<select onChange={(event) => setRetentionHours(Number(event.target.value))} value={retentionHours}><option value={1}>{text("1시간 뒤", "After 1 hour")}</option><option value={24}>{text("24시간 뒤", "After 24 hours")}</option><option value={168}>{text("7일 뒤", "After 7 days")}</option><option value={720}>{text("30일 뒤", "After 30 days")}</option></select></label> : null}
+            <label>{text("붙여넣기", "Pasting")}<select onChange={(event) => setPastePolicy(event.target.value as PastePolicy)} value={pastePolicy}><option value="allow">{text("허용", "Allow")}</option><option value="block">{text("고급 입력란에서는 막기", "Block in advanced fields")}</option></select></label>
           </div>
-          <p>브라우저에 보관할 항목</p>
+          <p>{text("브라우저에 보관할 항목", "Items to store in browser")}</p>
           <div className="memory-checks">
             {([
-              ["core", "기본 글(제목·주소·본문)"],
-              ["intent", "별도 HTML 화면"],
-              ["embeds", "외부 콘텐츠 연결 정보"],
-              ["ontology", "AI 지식 연결 정보"],
-              ["pasteReceipts", "붙여넣기 기록(내용 제외)"],
+              ["core", text("기본 글(제목·주소·본문)", "Basic post (title, address, body)")],
+              ["intent", text("별도 HTML 화면", "Separate HTML view")],
+              ["embeds", text("외부 콘텐츠 연결 정보", "External content references")],
+              ["ontology", text("AI 지식 연결 정보", "AI knowledge connections")],
+              ["pasteReceipts", text("붙여넣기 기록(내용 제외)", "Paste receipts (content excluded)")],
             ] as const).map(([key, label]) => <label key={key}><input checked={memoryScopes[key]} disabled={storageMode === "off"} onChange={(event) => setMemoryScopes((current) => ({ ...current, [key]: event.target.checked }))} type="checkbox" />{label}</label>)}
           </div>
-          {pasteReceipts.length ? <p>붙여넣기 시각·글자 수 기록 {pasteReceipts.length}개 · 붙여넣은 내용은 기록하지 않습니다.</p> : null}
-          <button className="text-button" onClick={() => { localStorage.removeItem(draftKey); sessionStorage.removeItem(draftKey); setPasteReceipts([]); setStorageMode("off"); setStatus("브라우저에 보관된 초안을 지웠습니다."); }} type="button">브라우저 초안 지우기</button>
+          {pasteReceipts.length ? <p>{text(`붙여넣기 시각·글자 수 기록 ${pasteReceipts.length}개 · 붙여넣은 내용은 기록하지 않습니다.`, `${pasteReceipts.length} paste time/character-count receipts · pasted content is not recorded.`)}</p> : null}
+          <button className="text-button" onClick={() => { localStorage.removeItem(draftKey); sessionStorage.removeItem(draftKey); setPasteReceipts([]); setStorageMode("off"); setStatus(text("브라우저에 보관된 초안을 지웠습니다.", "Cleared the draft stored in this browser.")); }} type="button">{text("브라우저 초안 지우기", "Clear browser draft")}</button>
         </fieldset>
-        <fieldset><legend>별도 HTML 화면 (선택)</legend>
-          <p>HTML을 직접 다루는 사용자만 켜세요. 안전 검사를 거친 뒤 기본 Markdown 화면과 함께 보관됩니다.</p>
-          <label className="checkbox-label"><input checked={intentEnabled} onChange={(event) => { const enabled = event.target.checked; setIntentEnabled(enabled); update("intent", enabled ? { format: "enhanced-html-v1", sourceHtml: draft.intent?.sourceHtml ?? "" } : undefined); }} type="checkbox" />직접 만든 HTML 화면도 사용하기</label>
-          {intentEnabled ? <label>HTML 코드<textarea onChange={(event) => update("intent", { format: "enhanced-html-v1", sourceHtml: event.target.value })} onPaste={(event) => handlePaste("intent", event)} value={draft.intent?.sourceHtml ?? ""} /></label> : null}
+        <fieldset><legend>{text("별도 HTML 화면 (선택)", "Separate HTML view (optional)")}</legend>
+          <p>{text("HTML을 직접 다루는 사용자만 켜세요. 안전 검사를 거친 뒤 기본 Markdown 화면과 함께 보관됩니다.", "Enable this only if you work directly with HTML. It is safety-checked and stored alongside the default Markdown view.")}</p>
+          <label className="checkbox-label"><input checked={intentEnabled} onChange={(event) => { const enabled = event.target.checked; setIntentEnabled(enabled); update("intent", enabled ? { format: "enhanced-html-v1", sourceHtml: draft.intent?.sourceHtml ?? "" } : undefined); }} type="checkbox" />{text("직접 만든 HTML 화면도 사용하기", "Also use a custom HTML view")}</label>
+          {intentEnabled ? <label>{text("HTML 코드", "HTML code")}<textarea onChange={(event) => update("intent", { format: "enhanced-html-v1", sourceHtml: event.target.value })} onPaste={(event) => handlePaste("intent", event)} value={draft.intent?.sourceHtml ?? ""} /></label> : null}
         </fieldset>
-        <details><summary>외부 콘텐츠 연결 (개발자용)</summary><p>동영상 같은 외부 콘텐츠를 안전한 참조 정보로 연결합니다. 본문에는 <code>::osb-embed id</code>를 한 줄로 넣으세요.</p><label>연결 정보(JSON 배열)<textarea onChange={(event) => { setStatus(undefined); setEmbedText(event.target.value); }} onPaste={(event) => handlePaste("embeds", event)} value={embedText} /></label></details>
-        <details><summary>AI 지식 연결 (AI2AI·개발자용)</summary><p>AI나 다른 도구가 글의 의미를 읽을 수 있도록 별도 구조화 정보를 붙입니다. 일반 글쓰기에는 필요하지 않습니다.</p><label>지식 연결 정보(JSON)<textarea onChange={(event) => { setStatus(undefined); setOntologyText(event.target.value); }} onPaste={(event) => handlePaste("ontology", event)} value={ontologyText} /></label></details>
+        <details><summary>{text("외부 콘텐츠 연결 (개발자용)", "External content references (developers)")}</summary><p>{text("동영상 같은 외부 콘텐츠를 안전한 참조 정보로 연결합니다. 본문에는", "Link external content such as video through safe reference data. Add")} <code>::osb-embed id</code>{text("를 한 줄로 넣으세요.", " on its own line in the body.")}</p><label>{text("연결 정보(JSON 배열)", "Reference data (JSON array)")}<textarea onChange={(event) => { setStatus(undefined); setEmbedText(event.target.value); }} onPaste={(event) => handlePaste("embeds", event)} value={embedText} /></label></details>
+        <details><summary>{text("AI 지식 연결 (AI2AI·개발자용)", "AI knowledge connections (AI2AI/developers)")}</summary><p>{text("AI나 다른 도구가 글의 의미를 읽을 수 있도록 별도 구조화 정보를 붙입니다. 일반 글쓰기에는 필요하지 않습니다.", "Attach separate structured data so AI and other tools can interpret the post. It is not needed for ordinary writing.")}</p><label>{text("지식 연결 정보(JSON)", "Knowledge connection data (JSON)")}<textarea onChange={(event) => { setStatus(undefined); setOntologyText(event.target.value); }} onPaste={(event) => handlePaste("ontology", event)} value={ontologyText} /></label></details>
       </div>
     </details>
   );
@@ -1877,12 +2056,12 @@ function PublishPanel({
   );
   return (
     <dialog aria-labelledby="publish-dialog-title" className="publish-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} ref={dialogRef}>
-      <div className="publish-panel-heading"><div><p className="eyebrow">공개 전 확인</p><h2 id="publish-dialog-title">글을 블로그에 공개할까요?</h2></div><button aria-label="출간 패널 닫기" className="dialog-close" onClick={onClose} type="button">×</button></div>
-      <div className="publish-summary"><span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span><div><strong>{draft.title || "제목 없는 글"}</strong><code>/{draft.slug || "untitled"}</code></div></div>
-      <div className="revision-flow" aria-label="출간 단계"><div className="flow-step"><span>1</span><div><strong>현재 글 저장</strong><p>지금 화면의 제목과 본문을 안전한 새 버전으로 보관합니다.</p></div>{exactRevisionReady ? <b aria-label="완료">✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>블로그에 공개</strong><p>저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.</p></div></div></div>
-      {accepted && exactRevisionReady ? <p className="revision-proof">현재 내용이 저장되어 출간할 준비가 됐습니다. <code>{accepted.currentRevisionId.slice(0, 8)}</code></p> : <p className="revision-proof warning">{accepted ? "저장 뒤 바뀐 내용이 있습니다. 현재 내용을 한 번 더 저장해 주세요." : "아직 서버에 저장되지 않았습니다. 먼저 현재 내용을 저장해 주세요."}</p>}
+      <div className="publish-panel-heading"><div><p className="eyebrow">{text("공개 전 확인", "Before publishing")}</p><h2 id="publish-dialog-title">{text("글을 블로그에 공개할까요?", "Publish this post to the blog?")}</h2></div><button aria-label={text("출간 패널 닫기", "Close publish panel")} className="dialog-close" onClick={onClose} type="button">×</button></div>
+      <div className="publish-summary"><span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span><div><strong>{draft.title || text("제목 없는 글", "Untitled post")}</strong><code>/{draft.slug || "untitled"}</code></div></div>
+      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목과 본문을 안전한 새 버전으로 보관합니다.", "Store the title and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
+      {accepted && exactRevisionReady ? <p className="revision-proof">{text("현재 내용이 저장되어 출간할 준비가 됐습니다.", "The current content is saved and ready to publish.")} <code>{accepted.currentRevisionId.slice(0, 8)}</code></p> : <p className="revision-proof warning">{accepted ? text("저장 뒤 바뀐 내용이 있습니다. 현재 내용을 한 번 더 저장해 주세요.", "Content changed after the last save. Save the current content once more.") : text("아직 서버에 저장되지 않았습니다. 먼저 현재 내용을 저장해 주세요.", "This content has not been saved to the server yet. Save it first.")}</p>}
       {status ? <p className="inline-status" role="status">{status}</p> : null}
-      <div className="publish-actions"><button className="button button-ghost" disabled={saving || publishing || exactRevisionReady} onClick={onSave} type="button">{saving ? "저장 중…" : exactRevisionReady ? "현재 내용 저장됨" : "현재 내용 저장"}</button><button className="button button-primary" disabled={!exactRevisionReady || saving || publishing || currentRevisionPublished} onClick={onPublish} type="button">{publishing ? "공개 중…" : currentRevisionPublished ? "이미 공개된 글" : "블로그에 공개"}</button></div>
+      <div className="publish-actions"><button className="button button-ghost" disabled={saving || publishing || exactRevisionReady} onClick={onSave} type="button">{saving ? text("저장 중…", "Saving…") : exactRevisionReady ? text("현재 내용 저장됨", "Current content saved") : text("현재 내용 저장", "Save current content")}</button><button className="button button-primary" disabled={!exactRevisionReady || saving || publishing || currentRevisionPublished} onClick={onPublish} type="button">{publishing ? text("공개 중…", "Publishing…") : currentRevisionPublished ? text("이미 공개된 글", "Already published") : text("블로그에 공개", "Publish to blog")}</button></div>
     </dialog>
   );
 }
@@ -1898,26 +2077,44 @@ function StudioAccessGate({
   onboarding?: boolean;
   onRetry?: () => void;
 }) {
+  const { capabilities, setSession } = useSession();
+  const accessKeyMethod = login && capabilities
+    ? adminAuthChoices(capabilities).accessKeyMethods[0]
+    : undefined;
+  const localAccountLogin = Boolean(
+    capabilities && studioAccessFor(capabilities) === "members",
+  );
   return (
     <section className="empty-state studio-access-gate">
       <span className="empty-symbol" aria-hidden="true">✦</span>
-      <h1>Studio를 열 수 없습니다</h1>
+      <h1>{text("Studio를 열 수 없습니다", "Cannot open Studio")}</h1>
       <p>{detail}</p>
-      {onRetry ? <button className="button button-primary" onClick={onRetry} type="button">다시 시도</button> : null}
-      {login ? <AppLink className="button button-primary" href="/login">로그인</AppLink> : null}
-      {onboarding ? <AppLink className="button button-primary" href="/onboarding">블로그 만들기</AppLink> : null}
-      {!login && !onboarding ? <AppLink className="button button-ghost" href="/">공개 피드로 돌아가기</AppLink> : null}
+      {onRetry ? <button className="button button-primary" onClick={onRetry} type="button">{text("다시 시도", "Try again")}</button> : null}
+      {accessKeyMethod ? (
+        <div className="studio-inline-admin-access">
+          <AdminAccessKeyForm
+            method={accessKeyMethod}
+            onAuthenticated={(next) => {
+              setSession(next);
+              if (next.state === "authenticated" && !next.blog) navigate("/onboarding");
+            }}
+          />
+          {localAccountLogin ? <AppLink className="button button-ghost" href="/login">{text("계정 로그인", "Account login")}</AppLink> : null}
+        </div>
+      ) : login ? <AppLink className="button button-primary" href="/login">{text("로그인", "Log in")}</AppLink> : null}
+      {onboarding ? <AppLink className="button button-primary" href="/onboarding">{text("블로그 만들기", "Create blog")}</AppLink> : null}
+      {!login && !onboarding ? <AppLink className="button button-ghost" href="/">{text("공개 피드로 돌아가기", "Back to public feed")}</AppLink> : null}
     </section>
   );
 }
 
 function collaboratorRoleLabel(role: CollaboratorRole): string {
-  return `${role === "editor" ? "Editor" : "Writer"} · 초안 작성·편집`;
+  return text(`${role === "editor" ? "Editor" : "Writer"} · 초안 작성·편집`, `${role === "editor" ? "Editor" : "Writer"} · create and edit drafts`);
 }
 
 function customCssProblem(value: string): string | undefined {
   if (new TextEncoder().encode(value).length > 65_536) {
-    return "CSS는 65,536 bytes 이하로 줄여 주세요.";
+    return text("CSS는 65,536 bytes 이하로 줄여 주세요.", "Reduce CSS to 65,536 bytes or less.");
   }
   const lower = value.toLocaleLowerCase("en-US");
   if (
@@ -1935,13 +2132,13 @@ function customCssProblem(value: string): string | undefined {
     || lower.includes("behavior:")
     || lower.includes("-moz-binding")
   ) {
-    return "외부 요청이나 페이지 탈출로 이어질 수 있는 CSS가 있습니다. @규칙, url()/image-set()/src(), URL, HTML, 역슬래시를 제거해 주세요.";
+    return text("외부 요청이나 페이지 탈출로 이어질 수 있는 CSS가 있습니다. @규칙, url()/image-set()/src(), URL, HTML, 역슬래시를 제거해 주세요.", "The CSS may make external requests or escape the page. Remove @-rules, url()/image-set()/src(), URLs, HTML, and backslashes.");
   }
   return undefined;
 }
 
 function LocalMarkdownPreview({ markdown }: { markdown: string }) {
-  if (!markdown.trim()) return <p className="preview-placeholder">왼쪽에 본문을 입력하면 이곳에서 읽기 흐름을 확인할 수 있습니다.</p>;
+  if (!markdown.trim()) return <p className="preview-placeholder">{text("왼쪽에 본문을 입력하면 이곳에서 읽기 흐름을 확인할 수 있습니다.", "Enter a body on the left to preview the reading flow here.")}</p>;
   const lines = markdown.split("\n");
   const nodes: ReactNode[] = [];
   let inCode = false;
@@ -1988,9 +2185,9 @@ async function appendStudioRevision(
 
 function capabilityModeLabel(capabilities: Capabilities): string {
   const access = studioAccessFor(capabilities);
-  if (access === "disabled") return "읽기 전용";
-  if (access === "admin_only") return "관리자 전용";
-  return "계정별 블로그";
+  if (access === "disabled") return text("읽기 전용", "Read only");
+  if (access === "admin_only") return text("관리자 전용", "Administrator only");
+  return text("계정별 블로그", "Per-account blogs");
 }
 
 function estimateReadingMinutes(markdown: string): number {
@@ -2010,7 +2207,10 @@ function estimateReadingMinutes(markdown: string): number {
 function formatSavedTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleTimeString(uiLanguage === "en" ? "en-US" : "ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function loadDraft(draftKey: string): { value: StoredStudioDraft; mode: DraftStorageMode; restored: boolean } {

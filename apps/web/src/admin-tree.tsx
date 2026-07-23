@@ -7,8 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import type { AdminTreeNode } from "@opensoverignblog/sdk";
+import { AdminAccessKeyForm } from "./admin-access";
 import { useSession } from "./app";
-import { AppLink, asMessage, client, usePageTitle } from "./lib";
+import { adminAuthChoices } from "./auth-policy";
+import { AppLink, asMessage, client, text, uiLanguage, usePageTitle } from "./lib";
 
 const ROOT_NODE_ID = "root";
 const PAGE_SIZE = 100;
@@ -42,7 +44,7 @@ export function AdminTreePage() {
   const canInspect = session?.state === "authenticated" && session.instanceAdministrator;
   const canInspectRef = useRef(canInspect);
   canInspectRef.current = canInspect;
-  usePageTitle("프로그램 트리");
+  usePageTitle(text("프로그램 트리", "Program tree"));
 
   function abortRequests() {
     for (const controller of controllersRef.current) controller.abort();
@@ -65,7 +67,9 @@ export function AdminTreePage() {
         [parentId]: loadingBranch,
       };
     });
-    setAnnouncement(cursor ? "다음 트리 항목을 불러오는 중입니다." : "트리 항목을 불러오는 중입니다.");
+    setAnnouncement(cursor
+      ? text("다음 트리 항목을 불러오는 중입니다.", "Loading more tree items.")
+      : text("트리 항목을 불러오는 중입니다.", "Loading tree items."));
 
     try {
       const page = await client.adminTree(
@@ -95,8 +99,8 @@ export function AdminTreePage() {
       setActiveKey((current) => current ?? (firstNewNode ? nodeFocusKey(firstNewNode.id) : undefined));
       setAnnouncement(
         page.items.length
-          ? `${page.items.length}개의 트리 항목을 불러왔습니다.`
-          : "이 위치에는 하위 항목이 없습니다.",
+          ? text(`${page.items.length}개의 트리 항목을 불러왔습니다.`, `Loaded ${page.items.length} tree items.`)
+          : text("이 위치에는 하위 항목이 없습니다.", "This location has no child items."),
       );
       if (cursor) {
         focusTreeKey(firstNewNode ? nodeFocusKey(firstNewNode.id) : nodeFocusKey(parentId));
@@ -116,7 +120,7 @@ export function AdminTreePage() {
           },
         };
       });
-      setAnnouncement(`트리 항목을 불러오지 못했습니다: ${message}`);
+      setAnnouncement(text(`트리 항목을 불러오지 못했습니다: ${message}`, `Could not load tree items: ${message}`));
     } finally {
       controllersRef.current.delete(controller);
       if (loadingParentsRef.current.get(parentId) === controller) {
@@ -313,7 +317,7 @@ export function AdminTreePage() {
           {isExpanded ? (
             <ul
               aria-busy={branch?.loading ?? true}
-              aria-label={`${node.label} 하위 항목`}
+              aria-label={text(`${node.label} 하위 항목`, `Children of ${node.label}`)}
               className="admin-tree-group"
               role="group"
             >
@@ -321,7 +325,7 @@ export function AdminTreePage() {
               {branch?.loaded && !branch.loading && !branch.error && branch.items.length === 0 ? (
                 <li role="none">
                   <span aria-disabled="true" aria-level={level + 1} className="admin-tree-empty" role="treeitem">
-                    하위 항목 없음
+                    {text("하위 항목 없음", "No child items")}
                   </span>
                 </li>
               ) : null}
@@ -329,7 +333,7 @@ export function AdminTreePage() {
                 <TreeActionItem
                   activeKey={activeKey}
                   focusKey={`retry:${node.id}`}
-                  label="불러오기 다시 시도"
+                  label={text("불러오기 다시 시도", "Retry loading")}
                   level={level + 1}
                   onActivate={() => void loadBranch(node.id, retryCursor)}
                   onFocus={setActiveKey}
@@ -345,7 +349,7 @@ export function AdminTreePage() {
                   activeKey={activeKey}
                   ariaDisabled={branch.loading}
                   focusKey={`more:${node.id}`}
-                  label={branch.loading ? "다음 항목 불러오는 중…" : "다음 항목 불러오기"}
+                  label={branch.loading ? text("다음 항목 불러오는 중…", "Loading more items…") : text("다음 항목 불러오기", "Load more items")}
                   level={level + 1}
                   onActivate={() => {
                     if (!branch.loading) void loadBranch(node.id, branch.nextCursor);
@@ -380,20 +384,20 @@ export function AdminTreePage() {
   }
 
   if (!session) {
-    return <div className="dashboard-loading" role="status">관리 권한을 확인하는 중…</div>;
+    return <div className="dashboard-loading" role="status">{text("관리 권한을 확인하는 중…", "Checking administrator access…")}</div>;
   }
   if (session.state !== "authenticated") {
     return (
       <AdminTreeAccessGate
         detail={sessionError
-          ? `관리 세션을 확인하지 못했습니다: ${sessionError}`
-          : "프로그램 트리는 인증된 인스턴스 관리자만 볼 수 있습니다."}
+          ? text(`관리 세션을 확인하지 못했습니다: ${sessionError}`, `Could not verify the administrator session: ${sessionError}`)
+          : text("프로그램 트리는 인증된 인스턴스 관리자만 볼 수 있습니다.", "Only authenticated instance administrators can view the program tree.")}
         login
       />
     );
   }
   if (!session.instanceAdministrator) {
-    return <AdminTreeAccessGate detail="블로그 멤버 권한으로는 서버 전체 프로그램 트리를 볼 수 없습니다." />;
+    return <AdminTreeAccessGate detail={text("블로그 멤버 권한으로는 서버 전체 프로그램 트리를 볼 수 없습니다.", "Blog membership does not grant access to the server-wide program tree.")} />;
   }
 
   const root = branches[ROOT_NODE_ID];
@@ -402,23 +406,23 @@ export function AdminTreePage() {
       <header className="settings-heading">
         <div>
           <p className="eyebrow">Instance inspector</p>
-          <h1>프로그램 트리</h1>
-          <p>콘텐츠 구조와 활성 모듈, 공개 가능한 운영 상태만 계층별로 확인합니다.</p>
+          <h1>{text("프로그램 트리", "Program tree")}</h1>
+          <p>{text("콘텐츠 구조와 활성 모듈, 공개 가능한 운영 상태만 계층별로 확인합니다.", "Inspect content structure, active modules, and safe operational status as a hierarchy.")}</p>
         </div>
         <button className="button button-ghost" disabled={root?.loading} onClick={refreshTree} type="button">
-          새로고침
+          {text("새로고침", "Refresh")}
         </button>
       </header>
 
       {root?.loading && !root.loaded ? (
-        <div className="dashboard-loading" role="status">프로그램 트리를 불러오는 중…</div>
+        <div className="dashboard-loading" role="status">{text("프로그램 트리를 불러오는 중…", "Loading program tree…")}</div>
       ) : null}
       {root?.error && !root.loaded ? (
         <section className="settings-panel" role="alert">
-          <h2>트리를 불러오지 못했습니다</h2>
+          <h2>{text("트리를 불러오지 못했습니다", "Could not load the tree")}</h2>
           <p>{root.error}</p>
           <button className="button button-ghost" onClick={() => void loadBranch(ROOT_NODE_ID)} type="button">
-            다시 시도
+            {text("다시 시도", "Try again")}
           </button>
         </section>
       ) : null}
@@ -428,14 +432,14 @@ export function AdminTreePage() {
             <div className="section-heading">
               <div>
                 <p className="eyebrow">Safe projection</p>
-                <h2 id="admin-tree-title">설치 구조</h2>
+                <h2 id="admin-tree-title">{text("설치 구조", "Installation structure")}</h2>
               </div>
-              {generatedAt ? <time dateTime={generatedAt}>{formatTimestamp(generatedAt)} 기준</time> : null}
+              {generatedAt ? <time dateTime={generatedAt}>{text(`${formatTimestamp(generatedAt)} 기준`, `As of ${formatTimestamp(generatedAt)}`)}</time> : null}
             </div>
             {root.items.length ? (
               <ul
                 aria-busy={root.loading}
-                aria-label="OpenSoverignBlog 프로그램 구조"
+                aria-label={text("OpenSoverignBlog 프로그램 구조", "OpenSoverignBlog program structure")}
                 className="admin-program-tree"
                 ref={treeRef}
                 role="tree"
@@ -445,7 +449,7 @@ export function AdminTreePage() {
                   <TreeActionItem
                     activeKey={activeKey}
                     focusKey="retry:root"
-                    label="다음 루트 항목 다시 불러오기"
+                    label={text("다음 루트 항목 다시 불러오기", "Retry loading more root items")}
                     level={1}
                     onActivate={() => void loadBranch(ROOT_NODE_ID, root.failedCursor)}
                     onFocus={setActiveKey}
@@ -461,7 +465,7 @@ export function AdminTreePage() {
                     activeKey={activeKey}
                     ariaDisabled={root.loading}
                     focusKey="more:root"
-                    label={root.loading ? "다음 루트 항목 불러오는 중…" : "다음 루트 항목 불러오기"}
+                    label={root.loading ? text("다음 루트 항목 불러오는 중…", "Loading more root items…") : text("다음 루트 항목 불러오기", "Load more root items")}
                     level={1}
                     onActivate={() => {
                       if (!root.loading) void loadBranch(ROOT_NODE_ID, root.nextCursor);
@@ -478,7 +482,7 @@ export function AdminTreePage() {
                   />
                 ) : null}
               </ul>
-            ) : <p>표시할 안전한 운영 메타데이터가 없습니다.</p>}
+            ) : <p>{text("표시할 안전한 운영 메타데이터가 없습니다.", "No safe operational metadata is available to display.")}</p>}
           </section>
           <NodeInspector node={selectedNode} />
         </div>
@@ -536,31 +540,31 @@ function NodeInspector({ node }: { node: AdminTreeNode | undefined }) {
   if (!node) {
     return (
       <aside className="settings-panel admin-tree-inspector" aria-labelledby="admin-tree-inspector-title">
-        <h2 id="admin-tree-inspector-title">항목 정보</h2>
-        <p>트리에서 항목을 선택하면 허용된 메타데이터만 여기에 표시됩니다.</p>
+        <h2 id="admin-tree-inspector-title">{text("항목 정보", "Item details")}</h2>
+        <p>{text("트리에서 항목을 선택하면 허용된 메타데이터만 여기에 표시됩니다.", "Select an item in the tree to display only its permitted metadata here.")}</p>
       </aside>
     );
   }
   const details: Array<[string, string]> = [
-    ["종류", nodeKindLabel(node.kind)],
-    ["노드 ID", node.id],
-    ["상위 노드", node.parentId],
-    ...(node.entityId ? [["엔티티 ID", node.entityId] as [string, string]] : []),
-    ...(node.handle ? [["핸들", node.handle] as [string, string]] : []),
-    ...(node.slug ? [["슬러그", node.slug] as [string, string]] : []),
-    ...(node.state ? [["상태", node.state] as [string, string]] : []),
+    [text("종류", "Kind"), nodeKindLabel(node.kind)],
+    [text("노드 ID", "Node ID"), node.id],
+    [text("상위 노드", "Parent node"), node.parentId],
+    ...(node.entityId ? [[text("엔티티 ID", "Entity ID"), node.entityId] as [string, string]] : []),
+    ...(node.handle ? [[text("핸들", "Handle"), node.handle] as [string, string]] : []),
+    ...(node.slug ? [[text("슬러그", "Slug"), node.slug] as [string, string]] : []),
+    ...(node.state ? [[text("상태", "State"), node.state] as [string, string]] : []),
     ...(node.revisionNumber !== undefined
-      ? [["리비전", String(node.revisionNumber)] as [string, string]]
+      ? [[text("리비전", "Revision"), String(node.revisionNumber)] as [string, string]]
       : []),
     ...(node.requested !== undefined
-      ? [["요청됨", node.requested ? "예" : "아니요"] as [string, string]]
+      ? [[text("요청됨", "Requested"), node.requested ? text("예", "Yes") : text("아니요", "No")] as [string, string]]
       : []),
     ...(node.operational !== undefined
-      ? [["동작 중", node.operational ? "예" : "아니요"] as [string, string]]
+      ? [[text("동작 중", "Operational"), node.operational ? text("예", "Yes") : text("아니요", "No")] as [string, string]]
       : []),
-    ...(node.summary ? [["설명", node.summary] as [string, string]] : []),
-    ...(node.createdAt ? [["생성", formatTimestamp(node.createdAt)] as [string, string]] : []),
-    ...(node.updatedAt ? [["수정", formatTimestamp(node.updatedAt)] as [string, string]] : []),
+    ...(node.summary ? [[text("설명", "Summary"), node.summary] as [string, string]] : []),
+    ...(node.createdAt ? [[text("생성", "Created"), formatTimestamp(node.createdAt)] as [string, string]] : []),
+    ...(node.updatedAt ? [[text("수정", "Updated"), formatTimestamp(node.updatedAt)] as [string, string]] : []),
   ];
   return (
     <aside className="settings-panel admin-tree-inspector" aria-labelledby="admin-tree-inspector-title">
@@ -579,12 +583,20 @@ function NodeInspector({ node }: { node: AdminTreeNode | undefined }) {
 }
 
 function AdminTreeAccessGate({ detail, login = false }: { detail: string; login?: boolean }) {
+  const { capabilities, setSession } = useSession();
+  const accessKeyMethod = login && capabilities
+    ? adminAuthChoices(capabilities).accessKeyMethods[0]
+    : undefined;
   return (
     <section className="studio-access-gate" aria-labelledby="admin-tree-access-title">
       <p className="eyebrow">Instance administrator only</p>
-      <h1 id="admin-tree-access-title">프로그램 트리를 열 수 없습니다</h1>
+      <h1 id="admin-tree-access-title">{text("프로그램 트리를 열 수 없습니다", "Cannot open the program tree")}</h1>
       <p>{detail}</p>
-      {login ? <AppLink className="button button-primary" href="/login">관리자로 인증하기</AppLink> : null}
+      {accessKeyMethod ? (
+        <div className="studio-inline-admin-access">
+          <AdminAccessKeyForm method={accessKeyMethod} onAuthenticated={setSession} />
+        </div>
+      ) : login ? <AppLink className="button button-primary" href="/login">{text("관리자로 인증하기", "Authenticate as administrator")}</AppLink> : null}
     </section>
   );
 }
@@ -596,28 +608,28 @@ function nodeFocusKey(id: string): string {
 function nodeKindLabel(kind: AdminTreeNode["kind"]): string {
   switch (kind) {
     case "group":
-      return "그룹";
+      return text("그룹", "Group");
     case "site":
-      return "사이트";
+      return text("사이트", "Site");
     case "category":
-      return "카테고리";
+      return text("카테고리", "Category");
     case "document":
-      return "문서";
+      return text("문서", "Document");
     case "revision":
-      return "리비전";
+      return text("리비전", "Revision");
     case "setting":
-      return "설정";
+      return text("설정", "Setting");
     case "module":
-      return "모듈";
+      return text("모듈", "Module");
     case "runtime":
-      return "런타임";
+      return text("런타임", "Runtime");
   }
 }
 
 function formatTimestamp(value: string): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return new Intl.DateTimeFormat("ko-KR", {
+  return new Intl.DateTimeFormat(uiLanguage === "en" ? "en-US" : "ko-KR", {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(parsed);

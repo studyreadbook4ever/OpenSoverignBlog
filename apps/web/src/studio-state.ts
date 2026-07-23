@@ -1,6 +1,7 @@
 import type {
   AiSummary,
   CreatePostInput,
+  DocumentSnapshot,
   FeedPostSummary,
   HomeResponse,
 } from "@opensoverignblog/sdk";
@@ -213,9 +214,43 @@ export function reviewAiSummaryCandidate(candidate: AiSummary): AiSummary {
   };
 }
 
-export function homeCurationCandidates(home: HomeResponse): FeedPostSummary[] {
+export interface HomeCurationCandidate {
+  id: string;
+  title: string;
+  slug: string;
+  locationLabel: string;
+}
+
+export function homeCurationCandidates(
+  home: HomeResponse,
+  studioDocuments: DocumentSnapshot[] = [],
+  language: "ko" | "en" = "ko",
+): HomeCurationCandidate[] {
   const seen = new Set<string>();
-  return [...home.pinnedItems, ...home.recentItems].filter((post) => {
+  const publicCandidates: FeedPostSummary[] = [
+    ...home.pinnedItems,
+    ...(home.seriesSections ?? []).flatMap((section) => section.items),
+    ...(home.categorySections ?? []).flatMap((section) => section.items),
+    ...home.recentItems,
+  ];
+  const candidates = publicCandidates.map((post) => ({
+    id: post.id,
+    title: post.title,
+    slug: post.slug,
+    locationLabel: `@${post.blog.handle} · /${post.slug}`,
+  }));
+  for (const document of studioDocuments) {
+    if (!document.publishedRevisionId || document.status === "archived") continue;
+    candidates.push({
+      id: document.id,
+      title: document.revision.title || (language === "en" ? "Untitled post" : "제목 없는 글"),
+      slug: document.revision.slug,
+      locationLabel: language === "en"
+        ? `My published post · /${document.revision.slug}`
+        : `내 발행 문서 · /${document.revision.slug}`,
+    });
+  }
+  return candidates.filter((post) => {
     if (seen.has(post.id)) return false;
     seen.add(post.id);
     return true;

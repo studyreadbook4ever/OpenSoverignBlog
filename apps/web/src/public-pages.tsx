@@ -7,7 +7,6 @@ import {
 } from "react";
 import DOMPurify from "dompurify";
 import type {
-  AdminAccessKeyMethod,
   AiSummary,
   BlogPostView,
   BlogSummary,
@@ -23,6 +22,7 @@ import type {
   ThemePresetId,
   ViewMode,
 } from "@opensoverignblog/sdk";
+import { AdminAccessKeyForm } from "./admin-access";
 import { useSession } from "./app";
 import {
   articleHref,
@@ -50,6 +50,8 @@ import {
   isNotFound,
   navigate,
   publicPath,
+  text,
+  uiLanguage,
   usePageTitle,
 } from "./lib";
 
@@ -71,11 +73,12 @@ const LEGACY_BLOG: BlogSummary = {
 
 export function FeedPage() {
   const { session, capabilities } = useSession();
-  usePageTitle("홈");
+  usePageTitle(text("홈", "Home"));
   const [home, setHome] = useState<HomeResponse>({
     pinnedItems: [],
     recentItems: [],
     categorySections: [],
+    seriesSections: [],
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -96,36 +99,44 @@ export function FeedPage() {
   const presentation = useMemo(() => presentHome(home), [home]);
   const total = presentation.total;
   const writeHref = session?.state === "authenticated"
-    ? (session.blog ? "/studio/write" : "/onboarding")
+    ? (session.blog ? "/studio/new" : "/onboarding")
     : "/login";
+  const accessKeyLogin = Boolean(
+    capabilities && adminAuthChoices(capabilities).accessKeyMethods.length,
+  );
 
   return (
     <div className="wiki-home">
-      <aside className="wiki-sidebar" aria-label="홈 안내">
+      <aside className="wiki-sidebar" aria-label={text("홈 안내", "Home guide")}>
         <section>
           <h2>OpenSoverignBlog</h2>
-          <p>Markdown 원문과 서버를 작성자가 직접 소유하는 온프레미스 블로그 엔진입니다.</p>
+          <p>{text("Markdown 원문과 서버를 작성자가 직접 소유하는 온프레미스 블로그 엔진입니다.", "A self-hosted blog engine where authors own both their Markdown source and server.")}</p>
         </section>
-        <nav aria-label="빠른 이동">
-          <strong>빠른 이동</strong>
-          {home.pinnedItems.length ? <a href="#home-pinned">주요 글</a> : null}
+        <nav aria-label={text("빠른 이동", "Quick navigation")}>
+          <strong>{text("빠른 이동", "Quick navigation")}</strong>
+          {home.pinnedItems.length ? <a href="#home-pinned">{text("주요 글", "Featured posts")}</a> : null}
+          {presentation.seriesSections.map((section) => (
+            <a href={`#${section.anchorId}`} key={section.series.id}>{section.series.title}</a>
+          ))}
           {presentation.categorySections.map((section) => (
             <a href={`#${section.anchorId}`} key={section.category.id}>{section.category.title}</a>
           ))}
-          {presentation.recentItems.length ? <a href="#home-recent">최근 글</a> : null}
+          {presentation.recentItems.length ? <a href="#home-recent">{text("최근 글", "Recent posts")}</a> : null}
           {capabilities?.references ? (
             <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
           ) : null}
           <a href={publicPath("/openapi/openapi.yaml")}>OpenAPI</a>
-          <a href={publicPath("/AI2AI.md")}>AI 접근 안내</a>
+          <a href={publicPath("/AI2AI.md")}>{text("AI 접근 안내", "AI access guide")}</a>
         </nav>
         <dl>
-          <div><dt>공개 글</dt><dd>{total}</dd></div>
-          <div><dt>운영 모드</dt><dd>{capabilities && studioAccessFor(capabilities) === "disabled" ? "읽기 전용" : "발행 가능"}</dd></div>
+          <div><dt>{text("공개 글", "Public posts")}</dt><dd>{total.toLocaleString(uiLanguage === "en" ? "en-US" : "ko-KR")}</dd></div>
+          <div><dt>{text("운영 모드", "Mode")}</dt><dd>{capabilities && studioAccessFor(capabilities) === "disabled" ? text("읽기 전용", "Read only") : text("발행 가능", "Publishing enabled")}</dd></div>
         </dl>
         {capabilities && studioAccessFor(capabilities) !== "disabled" ? (
           <AppLink className="button button-primary wiki-write" href={writeHref}>
-            {session?.state === "authenticated" && session.blog ? "글 쓰기" : "관리 시작"}
+            {session?.state === "authenticated" && session.blog
+              ? text("글 쓰기", "Write")
+              : accessKeyLogin ? text("관리자 키 입력", "Enter administrator key") : text("관리 시작", "Start managing")}
           </AppLink>
         ) : null}
       </aside>
@@ -133,28 +144,47 @@ export function FeedPage() {
       <div className="wiki-main">
         <header className="wiki-welcome">
           <p className="eyebrow">Self-hosted publishing</p>
-          <h1>읽는 화면은 가볍게, 기록의 소유권은 분명하게.</h1>
-          <p>이 홈은 발행된 불변 리비전만 보여 줍니다. 초안과 관리자 기능은 공개 캐시에서 분리됩니다.</p>
+          <h1>{text("읽는 화면은 가볍게, 기록의 소유권은 분명하게.", "A lightweight reading experience, with ownership kept clear.")}</h1>
+          <p>{text("이 홈은 발행된 불변 리비전만 보여 줍니다. 초안과 관리자 기능은 공개 캐시에서 분리됩니다.", "This home page shows only published immutable revisions. Drafts and administrator features stay outside the public cache.")}</p>
         </header>
 
         {loading ? <FeedSkeleton /> : null}
-        {error ? <StatusMessage title="홈을 불러오지 못했습니다" detail={error} /> : null}
+        {error ? <StatusMessage title={text("홈을 불러오지 못했습니다", "Could not load home")} detail={error} /> : null}
         {!loading && !error && total === 0 ? (
           <EmptyState
             {...(!capabilities || studioAccessFor(capabilities) === "disabled" ? {} : {
               actionHref: writeHref,
               actionLabel: session?.state === "authenticated"
-                ? (session.blog ? "첫 글 쓰기" : "블로그 만들기")
-                : studioAccessFor(capabilities) === "admin_only" ? "관리자로 시작하기" : "로그인하고 시작하기",
+                ? (session.blog ? text("첫 글 쓰기", "Write your first post") : text("블로그 만들기", "Create a blog"))
+                : accessKeyLogin
+                  ? text("관리자 키 입력", "Enter administrator key")
+                  : studioAccessFor(capabilities) === "admin_only" ? text("관리자로 시작하기", "Start as administrator") : text("로그인하고 시작하기", "Log in to get started"),
             })}
-            description="아직 발행된 글이 없습니다. 작은 메모부터 시작해 보세요."
-            title="첫 이야기를 기다리고 있어요"
+            description={text("아직 발행된 글이 없습니다. 작은 메모부터 시작해 보세요.", "There are no published posts yet. Start with a small note.")}
+            title={text("첫 이야기를 기다리고 있어요", "Waiting for the first story")}
           />
         ) : null}
 
         {home.pinnedItems.length ? (
-          <HomePostSection id="home-pinned" items={home.pinnedItems} title="주요 글" tone="pinned" />
+          <HomePostSection id="home-pinned" items={home.pinnedItems} title={text("주요 글", "Featured posts")} tone="pinned" />
         ) : null}
+        {presentation.seriesSections.map((section) => (
+          <HomePostSection
+            {...(section.series.description
+              ? { description: section.series.description }
+              : {})}
+            href={publicCategoryPath({
+              categorySlug: section.series.slug,
+              handle: "",
+              primary: true,
+            })}
+            id={section.anchorId}
+            items={section.items}
+            key={section.series.id}
+            title={section.series.title}
+            tone="series"
+          />
+        ))}
         {presentation.categorySections.map((section) => (
           <HomePostSection
             {...(section.category.description
@@ -173,7 +203,7 @@ export function FeedPage() {
           />
         ))}
         {presentation.recentItems.length ? (
-          <HomePostSection id="home-recent" items={presentation.recentItems} title="최근 변경" tone="recent" />
+          <HomePostSection id="home-recent" items={presentation.recentItems} title={text("최근 변경", "Recent changes")} tone="recent" />
         ) : null}
       </div>
     </div>
@@ -181,7 +211,7 @@ export function FeedPage() {
 }
 
 export function ReferencesPage({ capabilities }: { capabilities: Capabilities | undefined }) {
-  const advertisedLabel = capabilities?.references?.label ?? "레퍼런스";
+  const advertisedLabel = capabilities?.references?.label ?? text("레퍼런스", "References");
   const [page, setPage] = useState<ReferencesPageView>();
   const [error, setError] = useState<string>();
   usePageTitle(page?.label ?? advertisedLabel);
@@ -198,8 +228,8 @@ export function ReferencesPage({ capabilities }: { capabilities: Capabilities | 
     return () => controller.abort();
   }, []);
 
-  if (error) return <StatusMessage title={`${advertisedLabel}를 불러오지 못했습니다`} detail={error} />;
-  if (!page) return <PageLoading label={`${advertisedLabel}를 불러오는 중`} />;
+  if (error) return <StatusMessage title={text(`${advertisedLabel}를 불러오지 못했습니다`, `Could not load ${advertisedLabel}`)} detail={error} />;
+  if (!page) return <PageLoading label={text(`${advertisedLabel}를 불러오는 중`, `Loading ${advertisedLabel}`)} />;
 
   return (
     <div className="osb-site-frame references-page">
@@ -207,11 +237,11 @@ export function ReferencesPage({ capabilities }: { capabilities: Capabilities | 
         <header className="article-header references-header">
           <p className="eyebrow">Global references</p>
           <h1>{page.label}</h1>
-          <p className="article-deck">출처, 라이선스, 개인정보와 운영 정책을 한곳에서 확인합니다.</p>
+          <p className="article-deck">{text("출처, 라이선스, 개인정보와 운영 정책을 한곳에서 확인합니다.", "Review sources, licenses, privacy, and operational policies in one place.")}</p>
         </header>
         <ArticleBody capabilities={capabilities} html={page.artifactHtml} />
         <details className="artifact-proof">
-          <summary>문서 무결성 정보</summary>
+          <summary>{text("문서 무결성 정보", "Document integrity")}</summary>
           <div><span>{page.rendererVersion}</span><code>{page.sourceHash}</code></div>
         </details>
       </article>
@@ -232,8 +262,22 @@ function HomePostSection({
   id: string;
   items: FeedPostSummary[];
   title: string;
-  tone: "pinned" | "category" | "recent";
+  tone: "pinned" | "series" | "category" | "recent";
 }) {
+  const collapsible = tone === "series" || tone === "category";
+  const [expanded, setExpanded] = useState(true);
+  const contentId = `${id}-content`;
+
+  useEffect(() => {
+    if (!collapsible) return;
+    const revealFragmentTarget = () => {
+      if (window.location.hash === `#${id}`) setExpanded(true);
+    };
+    revealFragmentTarget();
+    window.addEventListener("hashchange", revealFragmentTarget);
+    return () => window.removeEventListener("hashchange", revealFragmentTarget);
+  }, [collapsible, id]);
+
   return (
     <section className={`wiki-panel wiki-panel-${tone}`} id={id} aria-labelledby={`${id}-title`}>
       <div className="wiki-panel-heading">
@@ -243,9 +287,23 @@ function HomePostSection({
           </h2>
           {description ? <p className="wiki-panel-description">{description}</p> : null}
         </div>
-        <span>{items.length}개</span>
+        <div className="wiki-panel-controls">
+          <span>{text(`${items.length}개`, `${items.length} posts`)}</span>
+          {collapsible ? (
+            <button
+              aria-controls={contentId}
+              aria-expanded={expanded}
+              className="wiki-panel-toggle"
+              onClick={() => setExpanded((value) => !value)}
+              type="button"
+            >
+              <span aria-hidden="true">{expanded ? "−" : "+"}</span>
+              <span>{expanded ? text("접기", "Collapse") : text("펼치기", "Expand")}</span>
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className="wiki-post-list">
+      <div className="wiki-post-list" hidden={collapsible && !expanded} id={contentId}>
         {items.map((post) => <DensePostRow key={post.id} post={post} />)}
       </div>
     </section>
@@ -263,7 +321,7 @@ function DensePostRow({ post }: { post: FeedPostSummary }) {
           <AppLink href={`/@${encodeURIComponent(post.blog.handle)}`}>@{post.blog.handle}</AppLink>
           <span>{post.author.displayName}</span>
           <time dateTime={post.publishedAt}>{formatDate(post.publishedAt)}</time>
-          {post.commentCount ? <span>댓글 {post.commentCount}</span> : null}
+          {post.commentCount ? <span>{text(`댓글 ${post.commentCount}`, `${post.commentCount} comments`)}</span> : null}
           <AuthorshipBadge value={post.authorship} />
         </div>
       </div>
@@ -286,7 +344,12 @@ async function loadHome(signal?: AbortSignal): Promise<HomeResponse> {
     return await client.home(signal);
   } catch (reason) {
     if (!isNotFound(reason)) throw reason;
-    return { pinnedItems: [], recentItems: await loadFeed(signal), categorySections: [] };
+    return {
+      pinnedItems: [],
+      recentItems: await loadFeed(signal),
+      categorySections: [],
+      seriesSections: [],
+    };
   }
 }
 
@@ -296,8 +359,8 @@ function legacyFeedPost(post: PostSummary): FeedPostSummary {
     title: post.title,
     slug: post.slug,
     excerpt: post.hasIntentView
-      ? "작성자의 의도와 portable Markdown을 함께 보존한 글입니다."
-      : "언제든 내보낼 수 있는 portable Markdown 글입니다.",
+      ? text("작성자의 의도와 portable Markdown을 함께 보존한 글입니다.", "This post preserves the author's intent alongside portable Markdown.")
+      : text("언제든 내보낼 수 있는 portable Markdown 글입니다.", "This portable Markdown post can be exported at any time."),
     publishedAt: post.updatedAt,
     updatedAt: post.updatedAt,
     author: LEGACY_USER,
@@ -312,8 +375,8 @@ function legacyFeedPost(post: PostSummary): FeedPostSummary {
 function AuthorshipBadge({ value }: { value: FeedPostSummary["authorship"] | undefined }) {
   const authorship = normalizedAuthorship(value);
   return (
-    <span className={`authorship-badge authorship-${authorship.kind}`} title="휴대 가능한 공개 작성 출처">
-      {authorshipLabel(authorship)}
+    <span className={`authorship-badge authorship-${authorship.kind}`} title={text("휴대 가능한 공개 작성 출처", "Portable public authorship provenance")}>
+      {authorshipLabel(authorship, uiLanguage)}
     </span>
   );
 }
@@ -341,8 +404,8 @@ export function BlogPage({ handle }: { handle: string }) {
     return () => controller.abort();
   }, [handle]);
 
-  if (error) return <StatusMessage title="블로그를 찾을 수 없습니다" detail={error} />;
-  if (!blog) return <PageLoading label="블로그를 불러오는 중" />;
+  if (error) return <StatusMessage title={text("블로그를 찾을 수 없습니다", "Could not find blog")} detail={error} />;
+  if (!blog) return <PageLoading label={text("블로그를 불러오는 중", "Loading blog")} />;
   return (
     <>
       <BlogCustomStylesheet handle={blog.handle} href={blog.theme.customCssUrl} />
@@ -353,17 +416,17 @@ export function BlogPage({ handle }: { handle: string }) {
         <div>
           <p className="blog-handle">@{blog.handle}</p>
           <h1>{blog.title}</h1>
-          <p>{blog.description || "아직 블로그 소개가 없습니다."}</p>
+          <p>{blog.description || text("아직 블로그 소개가 없습니다.", "This blog does not have a description yet.")}</p>
           <div className="blog-owner">
             <span className="avatar" aria-hidden="true">{initials(blog.owner.displayName)}</span>
-            <span><strong>{blog.owner.displayName}</strong><small>이 블로그의 작성자</small></span>
+            <span><strong>{blog.owner.displayName}</strong><small>{text("이 블로그의 작성자", "Author of this blog")}</small></span>
           </div>
         </div>
           </section>
           <section className="blog-posts" aria-labelledby="blog-posts-title">
         <div className="section-heading">
-          <div><p className="eyebrow">Archive</p><h2 id="blog-posts-title">모든 글</h2></div>
-          <span className="result-count">{posts.length}개</span>
+          <div><p className="eyebrow">Archive</p><h2 id="blog-posts-title">{text("모든 글", "All posts")}</h2></div>
+          <span className="result-count">{text(`${posts.length}개`, `${posts.length} posts`)}</span>
         </div>
         {posts.length ? (
           <div className="blog-list">
@@ -383,7 +446,7 @@ export function BlogPage({ handle }: { handle: string }) {
             ))}
           </div>
         ) : (
-          <EmptyState description="아직 발행된 글이 없습니다." title="빈 서가입니다" />
+          <EmptyState description={text("아직 발행된 글이 없습니다.", "No posts have been published yet.")} title={text("빈 서가입니다", "This shelf is empty")} />
         )}
           </section>
         </div>
@@ -411,7 +474,7 @@ export function ArticlePage({
   const [post, setPost] = useState<BlogPostView>();
   const [error, setError] = useState<string>();
   const legacyArticle = legacy;
-  usePageTitle(post?.title ?? "글 읽기");
+  usePageTitle(post?.title ?? text("글 읽기", "Read post"));
 
   useEffect(() => {
     const updateViewFromLocation = () => setView(articleViewFromSearch(window.location.search));
@@ -458,8 +521,8 @@ export function ArticlePage({
     return () => controller.abort();
   }, [handle, slug, view, legacyArticle, categorySlug, primary]);
 
-  if (error) return <StatusMessage title="글을 불러오지 못했습니다" detail={error} />;
-  if (!post) return <PageLoading label="글을 불러오는 중" />;
+  if (error) return <StatusMessage title={text("글을 불러오지 못했습니다", "Could not load post")} detail={error} />;
+  if (!post) return <PageLoading label={text("글을 불러오는 중", "Loading post")} />;
   const storedAiSummary = post.aiSummary;
   // Public JSON is projected through the same source-bound validation as the
   // renderer, so an omitted value must never be reconstructed in the browser.
@@ -506,28 +569,28 @@ export function ArticlePage({
           {post.excerpt ? <p className="article-deck">{post.excerpt}</p> : null}
           <div className="article-author-row">
             <span className="avatar" aria-hidden="true">{initials(post.author.displayName)}</span>
-            <div><strong>{post.author.displayName}</strong><span>글쓴이</span></div>
+            <div><strong>{post.author.displayName}</strong><span>{text("글쓴이", "Author")}</span></div>
             {post.tags.length ? (
-              <ul className="tag-list" aria-label="태그">
+              <ul className="tag-list" aria-label={text("태그", "Tags")}>
                 {post.tags.map((tag) => <li key={tag}>#{tag}</li>)}
               </ul>
             ) : null}
           </div>
-          <div className="projection-switcher" role="group" aria-label="콘텐츠 보기 방식">
-            <button aria-pressed={view === "intent"} onClick={() => selectView("intent")} type="button">작성자 보기</button>
-            <button aria-pressed={view === "markdown_source"} onClick={() => selectView("markdown_source")} type="button">.md 원문</button>
+          <div className="projection-switcher" role="group" aria-label={text("콘텐츠 보기 방식", "Content view")}>
+            <button aria-pressed={view === "intent"} onClick={() => selectView("intent")} type="button">{text("작성자 보기", "Author view")}</button>
+            <button aria-pressed={view === "markdown_source"} onClick={() => selectView("markdown_source")} type="button">{text(".md 원문", ".md source")}</button>
           </div>
         </header>
         {reviewedAiSummary ? (
-          <section className="public-ai-summary" aria-label="AI 요약 정보">
+          <section className="public-ai-summary" aria-label={text("AI 요약 정보", "AI summary information")}>
             <p className="public-ai-summary-provenance">
-              AI가 만든 요약 초안을 사람이 검토함 · {publicAiProviderLabel(reviewedAiSummary.provenance.provider)} · {reviewedAiSummary.provenance.model} · {formatDate(reviewedAiSummary.provenance.generatedAt)} 생성
+              {text("AI가 만든 요약 초안을 사람이 검토함", "Human-reviewed AI summary draft")} · {publicAiProviderLabel(reviewedAiSummary.provenance.provider)} · {reviewedAiSummary.provenance.model} · {text(`${formatDate(reviewedAiSummary.provenance.generatedAt)} 생성`, `generated ${formatDate(reviewedAiSummary.provenance.generatedAt)}`)}
             </p>
           </section>
         ) : null}
         <ArticleBody capabilities={capabilities} html={post.artifact.html} />
         <details className="artifact-proof">
-          <summary>문서 무결성 정보</summary>
+          <summary>{text("문서 무결성 정보", "Document integrity")}</summary>
           <div><span>{post.artifact.rendererVersion}</span><code>{post.artifact.artifactHash}</code></div>
         </details>
           </article>
@@ -626,7 +689,7 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
   useEffect(() => {
     const body = bodyRef.current;
     return body && socialEmbedsEnabled
-      ? installSocialEmbedHydration(body)
+      ? installSocialEmbedHydration(body, uiLanguage)
       : undefined;
   }, [sanitizedHtml, socialEmbedsEnabled]);
 
@@ -674,7 +737,7 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
       const button = document.createElement("button");
       button.type = "button";
       button.className = "run-code";
-      button.textContent = `${profile.id}로 실행`;
+      button.textContent = text(`${profile.id}로 실행`, `Run with ${profile.id}`);
       const output = document.createElement("pre");
       output.className = "run-code-output";
       output.setAttribute("aria-live", "polite");
@@ -682,12 +745,12 @@ function ArticleBody({ html, capabilities }: { html: string; capabilities: Capab
       button.addEventListener("click", async () => {
         button.disabled = true;
         output.hidden = false;
-        output.textContent = "격리 실행기에 제출하는 중…";
+        output.textContent = text("격리 실행기에 제출하는 중…", "Submitting to isolated runner…");
         try {
           let result = await client.submitCodeRun(profile.id, code.textContent ?? "", controller.signal);
           let polls = 0;
           while (result.state === "queued" && polls < 120) {
-            output.textContent = `대기열 ${result.jobId.slice(0, 8)}…`;
+            output.textContent = text(`대기열 ${result.jobId.slice(0, 8)}…`, `Queued ${result.jobId.slice(0, 8)}…`);
             await abortableDelay(Math.min(Math.max(result.pollAfterMs, 250), 5_000), controller.signal);
             result = await client.pollCodeRun(result.jobId, controller.signal);
             polls += 1;
@@ -738,12 +801,12 @@ function CommentSection({ postId }: { postId: string }) {
     event.preventDefault();
     if (!body.trim()) return;
     setSubmitting(true);
-    setStatus("댓글을 등록하는 중…");
+    setStatus(text("댓글을 등록하는 중…", "Posting comment…"));
     try {
       const created = await client.createComment(postId, { sourceMarkdown: body.trim() });
       setComments((current) => [...current, created]);
       setBody("");
-      setStatus("댓글이 등록되었습니다.");
+      setStatus(text("댓글이 등록되었습니다.", "Comment posted."));
     } catch (reason) {
       setStatus(asMessage(reason));
     } finally {
@@ -755,29 +818,29 @@ function CommentSection({ postId }: { postId: string }) {
   return (
     <section className="comments-section" aria-labelledby="comments-title">
       <div className="section-heading">
-        <div><p className="eyebrow">Conversation</p><h2 id="comments-title">댓글 {comments.length}</h2></div>
+        <div><p className="eyebrow">Conversation</p><h2 id="comments-title">{text(`댓글 ${comments.length}`, `Comments ${comments.length}`)}</h2></div>
       </div>
       {session?.state === "authenticated" && commentsWritable ? (
         <form className="comment-form" onSubmit={(event) => void submit(event)}>
-          <label htmlFor="comment-body">댓글 남기기</label>
+          <label htmlFor="comment-body">{text("댓글 남기기", "Leave a comment")}</label>
           <textarea
             id="comment-body"
             maxLength={20_000}
             onChange={(event) => setBody(event.target.value)}
-            placeholder="Markdown으로 생각을 나눠주세요."
+            placeholder={text("Markdown으로 생각을 나눠주세요.", "Share your thoughts in Markdown.")}
             required
             value={body}
           />
-          <div><span className="field-hint">{body.length.toLocaleString()} / 20,000</span><button className="button button-primary" disabled={submitting} type="submit">댓글 등록</button></div>
+          <div><span className="field-hint">{body.length.toLocaleString(uiLanguage === "en" ? "en-US" : "ko-KR")} / 20,000</span><button className="button button-primary" disabled={submitting} type="submit">{text("댓글 등록", "Post comment")}</button></div>
         </form>
       ) : !capabilities ? (
-        <div className="comment-signin"><p>댓글 기능을 확인하는 중입니다.</p></div>
+        <div className="comment-signin"><p>{text("댓글 기능을 확인하는 중입니다.", "Checking comment availability.")}</p></div>
       ) : studioAccessFor(capabilities) === "disabled" ? (
-        <div className="comment-signin"><p>이 배포본은 공개 읽기 전용이라 새 댓글을 받지 않습니다.</p></div>
+        <div className="comment-signin"><p>{text("이 배포본은 공개 읽기 전용이라 새 댓글을 받지 않습니다.", "This deployment is public read-only and does not accept new comments.")}</p></div>
       ) : studioAccessFor(capabilities) === "admin_only" ? (
-        <div className="comment-signin"><p>단일 소유자 프로필에서는 커뮤니티 댓글을 사용하지 않습니다.</p></div>
+        <div className="comment-signin"><p>{text("단일 소유자 프로필에서는 커뮤니티 댓글을 사용하지 않습니다.", "Community comments are unavailable in the single-owner profile.")}</p></div>
       ) : (
-        <div className="comment-signin"><p>로그인하면 이 글에 의견을 남길 수 있습니다.</p><AppLink className="button button-ghost" href="/login">로그인</AppLink></div>
+        <div className="comment-signin"><p>{text("로그인하면 이 글에 의견을 남길 수 있습니다.", "Log in to share your thoughts on this post.")}</p><AppLink className="button button-ghost" href="/login">{text("로그인", "Log in")}</AppLink></div>
       )}
       {status ? <p className="inline-status" role="status">{status}</p> : null}
       {comments.length ? (
@@ -794,7 +857,7 @@ function CommentSection({ postId }: { postId: string }) {
             </li>
           ))}
         </ol>
-      ) : <p className="empty-comments">첫 댓글을 남겨 대화를 시작해 보세요.</p>}
+      ) : <p className="empty-comments">{text("첫 댓글을 남겨 대화를 시작해 보세요.", "Start the conversation with the first comment.")}</p>}
     </section>
   );
 }
@@ -804,13 +867,12 @@ export function LoginPage() {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  const [accessKey, setAccessKey] = useState("");
-  usePageTitle(mode === "login" ? "로그인" : "가입");
+  usePageTitle(mode === "login" ? text("로그인", "Log in") : text("가입", "Sign up"));
 
   if (!capabilities) {
     return capabilitiesError
       ? <CapabilityRetry detail={capabilitiesError} onRetry={() => void refreshCapabilities()} />
-      : <PageLoading label="로그인 기능을 확인하는 중" />;
+      : <PageLoading label={text("로그인 기능을 확인하는 중", "Checking login options")} />;
   }
 
   const studioAccess = studioAccessFor(capabilities);
@@ -823,9 +885,9 @@ export function LoginPage() {
     return (
       <EmptyState
         actionHref="/"
-        actionLabel="공개 글 읽기"
-        description="이 인스턴스는 캐시 가능한 공개 읽기 전용으로 배포되어 로그인과 글쓰기를 제공하지 않습니다."
-        title="읽기 전용 배포본입니다"
+        actionLabel={text("공개 글 읽기", "Read public posts")}
+        description={text("이 인스턴스는 캐시 가능한 공개 읽기 전용으로 배포되어 로그인과 글쓰기를 제공하지 않습니다.", "This instance is deployed as cacheable public read-only and does not provide login or writing.")}
+        title={text("읽기 전용 배포본입니다", "This deployment is read-only")}
       />
     );
   }
@@ -834,11 +896,11 @@ export function LoginPage() {
     return (
       <EmptyState
         actionHref="/"
-        actionLabel="공개 글 읽기"
+        actionLabel={text("공개 글 읽기", "Read public posts")}
         description={authChoices.status === "misconfigured"
-          ? "관리자 인증 모듈의 설정이 완료되지 않았습니다. 공개 글은 계속 읽을 수 있습니다."
-          : "이 서버에는 사용할 수 있는 관리자 인증 방식이 없습니다."}
-        title="관리자 Studio를 열 수 없습니다"
+          ? text("관리자 인증 모듈의 설정이 완료되지 않았습니다. 공개 글은 계속 읽을 수 있습니다.", "The administrator authentication module is not fully configured. Public posts remain available.")
+          : text("이 서버에는 사용할 수 있는 관리자 인증 방식이 없습니다.", "This server does not offer an available administrator authentication method.")}
+        title={text("관리자 Studio를 열 수 없습니다", "Cannot open administrator Studio")}
       />
     );
   }
@@ -847,9 +909,9 @@ export function LoginPage() {
     return (
       <EmptyState
         actionHref="/"
-        actionLabel="공개 글 읽기"
-        description="서버가 안전하게 사용할 수 있는 관리자 인증 방법을 제공하지 않았습니다."
-        title="관리자 인증을 사용할 수 없습니다"
+        actionLabel={text("공개 글 읽기", "Read public posts")}
+        description={text("서버가 안전하게 사용할 수 있는 관리자 인증 방법을 제공하지 않았습니다.", "The server did not advertise a safe administrator authentication method.")}
+        title={text("관리자 인증을 사용할 수 없습니다", "Administrator authentication is unavailable")}
       />
     );
   }
@@ -858,9 +920,9 @@ export function LoginPage() {
     return (
       <EmptyState
         actionHref={session.blog ? "/studio" : "/onboarding"}
-        actionLabel={session.blog ? "Studio 열기" : "블로그 만들기"}
-        description={`${session.user.displayName}님으로 로그인되어 있습니다.`}
-        title="이미 로그인되어 있어요"
+        actionLabel={session.blog ? text("Studio 열기", "Open Studio") : text("블로그 만들기", "Create blog")}
+        description={text(`${session.user.displayName}님으로 로그인되어 있습니다.`, `Logged in as ${session.user.displayName}.`)}
+        title={text("이미 로그인되어 있어요", "You are already logged in")}
       />
     );
   }
@@ -868,7 +930,7 @@ export function LoginPage() {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
-    setStatus(mode === "login" ? "로그인하는 중…" : "계정을 만드는 중…");
+    setStatus(mode === "login" ? text("로그인하는 중…", "Logging in…") : text("계정을 만드는 중…", "Creating account…"));
     const data = new FormData(event.currentTarget);
     try {
       const next = mode === "login"
@@ -888,29 +950,6 @@ export function LoginPage() {
     }
   }
 
-  async function submitAccessKey(
-    event: FormEvent<HTMLFormElement>,
-    method: AdminAccessKeyMethod,
-  ) {
-    event.preventDefault();
-    if (!accessKey || busy) return;
-    setBusy(true);
-    setStatus("관리자 권한을 확인하는 중…");
-    try {
-      const next = await client.loginWithAdminAccessKey(
-        { accessKey },
-        method.actionHref,
-      );
-      setSession(next);
-      if (next.state === "authenticated") navigate(next.blog ? "/studio" : "/onboarding");
-    } catch (reason) {
-      setStatus(asMessage(reason));
-    } finally {
-      setAccessKey("");
-      setBusy(false);
-    }
-  }
-
   const registrationOpen = session?.state === "anonymous" ? session.registrationOpen : true;
   const adminOnly = studioAccess === "admin_only";
   const hasAdminMethods = Boolean(accessKeyMethod || authChoices.externalMethods.length);
@@ -918,20 +957,22 @@ export function LoginPage() {
     <div className="auth-page">
       <section className="auth-story">
         <p className="eyebrow">{adminOnly ? "Private control, public reading" : "One account, your own space"}</p>
-        <h1>{adminOnly ? <>어디서든<br />내 글을 씁니다.</> : <>쓰는 사람의<br />자리를 만듭니다.</>}</h1>
+        <h1>{adminOnly
+          ? (uiLanguage === "en" ? <>Write your words<br />from anywhere.</> : <>어디서든<br />내 글을 씁니다.</>)
+          : (uiLanguage === "en" ? <>Make a place<br />for the writer.</> : <>쓰는 사람의<br />자리를 만듭니다.</>)}</h1>
         <p>{adminOnly
-          ? "공개 글은 누구나 읽고, 검증된 관리자 세션만 Studio에서 쓰고 고칠 수 있습니다."
-          : "광장에서 글을 발견하고, 나만의 테마로 블로그를 만들고, Markdown 원문을 온전히 소유하세요."}</p>
-        <div className="auth-quote" aria-hidden="true"><span>“</span><p>좋은 도구는 글보다 앞에 나서지 않는다.</p></div>
+          ? text("공개 글은 누구나 읽고, 검증된 관리자 세션만 Studio에서 쓰고 고칠 수 있습니다.", "Anyone can read public posts, while only verified administrator sessions can write and edit in Studio.")
+          : text("광장에서 글을 발견하고, 나만의 테마로 블로그를 만들고, Markdown 원문을 온전히 소유하세요.", "Discover writing, create a blog in your own theme, and fully own the Markdown source.")}</p>
+        <div className="auth-quote" aria-hidden="true"><span>“</span><p>{text("좋은 도구는 글보다 앞에 나서지 않는다.", "A good tool never steps ahead of the writing.")}</p></div>
       </section>
       <section className="auth-panel" aria-labelledby="auth-title">
-        <h2 id="auth-title">{adminOnly ? "관리자 Studio 열기" : mode === "login" ? "다시 만나 반가워요" : "새로운 공간을 시작하세요"}</h2>
+        <h2 id="auth-title">{adminOnly ? text("관리자 Studio 열기", "Open administrator Studio") : mode === "login" ? text("다시 만나 반가워요", "Welcome back") : text("새로운 공간을 시작하세요", "Start a new space")}</h2>
         <p>{adminOnly
-          ? "서버 운영자가 켜 둔 방법 중 하나로 관리자 세션을 시작합니다."
-          : mode === "login" ? "사용할 인증 방법을 선택하세요." : "로컬 계정을 만듭니다."}</p>
+          ? text("서버 운영자가 켜 둔 방법 중 하나로 관리자 세션을 시작합니다.", "Start an administrator session with one of the methods enabled by the server operator.")
+          : mode === "login" ? text("사용할 인증 방법을 선택하세요.", "Choose an authentication method.") : text("로컬 계정을 만듭니다.", "Create a local account.")}</p>
 
         {authChoices.externalMethods.length ? (
-          <div className="external-auth-methods" aria-label="외부 관리자 인증">
+          <div className="external-auth-methods" aria-label={text("외부 관리자 인증", "External administrator authentication")}>
             {authChoices.externalMethods.map((method) => {
               const href = safeAuthActionHref(method);
               return href ? <a className="button button-ghost button-wide" href={publicPath(href)} key={method.id}>{method.label}</a> : null;
@@ -940,45 +981,33 @@ export function LoginPage() {
         ) : null}
 
         {accessKeyMethod ? (
-          <form className="auth-form admin-access-form" onSubmit={(event) => void submitAccessKey(event, accessKeyMethod)}>
-            {authChoices.externalMethods.length ? <div className="auth-divider"><span>또는</span></div> : null}
-            <label htmlFor="admin-access-key">
-              {accessKeyMethod.label}
-              <input
-                autoCapitalize="none"
-                autoComplete="off"
-                id="admin-access-key"
-                maxLength={512}
-                minLength={32}
-                onChange={(event) => setAccessKey(event.target.value)}
-                required
-                spellCheck={false}
-                type="password"
-                value={accessKey}
-              />
-            </label>
-            <p className="field-hint">접근 키는 세션을 만드는 이 요청에만 사용되며 브라우저 저장소에 보관하지 않습니다.</p>
-            <button className="button button-primary button-wide" disabled={busy || !accessKey} type="submit">관리자로 계속</button>
-          </form>
+          <AdminAccessKeyForm
+            method={accessKeyMethod}
+            onAuthenticated={(next) => {
+              setSession(next);
+              if (next.state === "authenticated") navigate(next.blog ? "/studio" : "/onboarding");
+            }}
+            showDivider={Boolean(authChoices.externalMethods.length)}
+          />
         ) : null}
 
         {localAccounts ? (
           <div className={hasAdminMethods ? "local-auth-section has-admin-methods" : "local-auth-section"}>
-            {hasAdminMethods ? <div className="auth-divider"><span>로컬 계정</span></div> : null}
-            <div className="auth-tabs" role="group" aria-label="로컬 계정 인증 방식">
-              <button aria-pressed={mode === "login"} onClick={() => setMode("login")} type="button">로그인</button>
-              <button aria-pressed={mode === "register"} disabled={!registrationOpen} onClick={() => setMode("register")} type="button">가입</button>
+            {hasAdminMethods ? <div className="auth-divider"><span>{text("로컬 계정", "Local account")}</span></div> : null}
+            <div className="auth-tabs" role="group" aria-label={text("로컬 계정 인증 방식", "Local account authentication")}>
+              <button aria-pressed={mode === "login"} onClick={() => setMode("login")} type="button">{text("로그인", "Log in")}</button>
+              <button aria-pressed={mode === "register"} disabled={!registrationOpen} onClick={() => setMode("register")} type="button">{text("가입", "Sign up")}</button>
             </div>
             <form className="auth-form" onSubmit={(event) => void submit(event)}>
               {mode === "register" ? (
                 <>
-                  <label>표시 이름<input autoComplete="name" maxLength={80} name="displayName" required /></label>
-                  <label>사용자 핸들<span className="input-prefix"><span>@</span><input autoComplete="username" maxLength={40} name="handle" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></span></label>
+                  <label>{text("표시 이름", "Display name")}<input autoComplete="name" maxLength={80} name="displayName" required /></label>
+                  <label>{text("사용자 핸들", "User handle")}<span className="input-prefix"><span>@</span><input autoComplete="username" maxLength={40} name="handle" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></span></label>
                 </>
               ) : null}
-              <label>이메일<input autoComplete="email" name="email" required type="email" /></label>
-              <label>비밀번호<input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} name="password" required type="password" /></label>
-              <button className="button button-primary button-wide" disabled={busy} type="submit">{mode === "login" ? "로그인" : "계정 만들기"}</button>
+              <label>{text("이메일", "Email")}<input autoComplete="email" name="email" required type="email" /></label>
+              <label>{text("비밀번호", "Password")}<input autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={8} name="password" required type="password" /></label>
+              <button className="button button-primary button-wide" disabled={busy} type="submit">{mode === "login" ? text("로그인", "Log in") : text("계정 만들기", "Create account")}</button>
             </form>
           </div>
         ) : null}
@@ -993,31 +1022,31 @@ export function OnboardingPage() {
   const [theme, setTheme] = useState<ThemePresetId>("paper");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string>();
-  usePageTitle("블로그 만들기");
+  usePageTitle(text("블로그 만들기", "Create blog"));
 
   if (!capabilities) {
     return capabilitiesError
       ? <CapabilityRetry detail={capabilitiesError} onRetry={() => void refreshCapabilities()} />
-      : <PageLoading label="블로그 기능을 확인하는 중" />;
+      : <PageLoading label={text("블로그 기능을 확인하는 중", "Checking blog capabilities")} />;
   }
 
   if (studioAccessFor(capabilities) === "disabled") {
-    return <EmptyState actionHref="/" actionLabel="공개 글 읽기" description="이 인스턴스는 공개 읽기 전용으로 배포되어 블로그를 만들 수 없습니다." title="읽기 전용 배포본입니다" />;
+    return <EmptyState actionHref="/" actionLabel={text("공개 글 읽기", "Read public posts")} description={text("이 인스턴스는 공개 읽기 전용으로 배포되어 블로그를 만들 수 없습니다.", "This instance is deployed public read-only, so blogs cannot be created.")} title={text("읽기 전용 배포본입니다", "This deployment is read-only")} />;
   }
 
-  if (!session) return <PageLoading label="계정을 확인하는 중" />;
+  if (!session) return <PageLoading label={text("계정을 확인하는 중", "Checking account")} />;
   if (session.state === "anonymous") {
-    return <EmptyState actionHref="/login" actionLabel="관리자 인증" description="블로그를 만들려면 먼저 서버가 제공하는 방법으로 인증해야 합니다." title="당신의 공간을 준비할까요?" />;
+    return <EmptyState actionHref="/login" actionLabel={text("관리자 인증", "Administrator authentication")} description={text("블로그를 만들려면 먼저 서버가 제공하는 방법으로 인증해야 합니다.", "Authenticate using a method provided by the server before creating a blog.")} title={text("당신의 공간을 준비할까요?", "Ready to prepare your space?")} />;
   }
   if (session.blog) {
-    return <EmptyState actionHref={`/@${session.blog.handle}`} actionLabel="내 블로그 보기" description="선택한 테마와 공개 글을 내 블로그에서 확인할 수 있습니다." title="블로그가 이미 준비되어 있어요" />;
+    return <EmptyState actionHref={`/@${session.blog.handle}`} actionLabel={text("내 블로그 보기", "View my blog")} description={text("선택한 테마와 공개 글을 내 블로그에서 확인할 수 있습니다.", "View your selected theme and public posts on your blog.")} title={text("블로그가 이미 준비되어 있어요", "Your blog is already ready")} />;
   }
   const authenticatedSession = session;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
-    setStatus("블로그를 만드는 중…");
+    setStatus(text("블로그를 만드는 중…", "Creating blog…"));
     const data = new FormData(event.currentTarget);
     try {
       const description = String(data.get("description") ?? "");
@@ -1038,19 +1067,23 @@ export function OnboardingPage() {
 
   return (
     <div className="onboarding-page">
-      <header className="onboarding-heading"><p className="step-label">블로그 만들기 · 1분이면 충분해요</p><h1>어떤 공간을<br />만들고 싶나요?</h1><p>정보와 첫 테마를 고르세요. 콘텐츠는 테마와 독립적으로 언제나 Markdown으로 남습니다.</p></header>
+      <header className="onboarding-heading">
+        <p className="step-label">{text("블로그 만들기 · 1분이면 충분해요", "Create a blog · it only takes a minute")}</p>
+        <h1>{uiLanguage === "en" ? <>What kind of space<br />do you want to make?</> : <>어떤 공간을<br />만들고 싶나요?</>}</h1>
+        <p>{text("정보와 첫 테마를 고르세요. 콘텐츠는 테마와 독립적으로 언제나 Markdown으로 남습니다.", "Choose your details and first theme. Your content always remains theme-independent Markdown.")}</p>
+      </header>
       <form className="onboarding-form" onSubmit={(event) => void submit(event)}>
         <section className="onboarding-section" aria-labelledby="blog-info-title">
-          <div className="numbered-heading"><span>01</span><div><h2 id="blog-info-title">블로그 정보</h2><p>독자가 기억할 이름과 주소를 정합니다.</p></div></div>
+          <div className="numbered-heading"><span>01</span><div><h2 id="blog-info-title">{text("블로그 정보", "Blog information")}</h2><p>{text("독자가 기억할 이름과 주소를 정합니다.", "Choose a memorable name and address for readers.")}</p></div></div>
           <div className="field-grid">
-            <label>블로그 이름<input defaultValue={`${session.user.displayName}의 기록`} maxLength={100} name="title" required /></label>
-            <label>주소<span className="input-prefix"><span>/@</span><input defaultValue={session.user.handle} maxLength={40} name="handle" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></span></label>
+            <label>{text("블로그 이름", "Blog name")}<input defaultValue={text(`${session.user.displayName}의 기록`, `${session.user.displayName}'s notes`)} maxLength={100} name="title" required /></label>
+            <label>{text("주소", "Address")}<span className="input-prefix"><span>/@</span><input defaultValue={session.user.handle} maxLength={40} name="handle" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" required /></span></label>
           </div>
-          <label>한 줄 소개<textarea maxLength={240} name="description" placeholder="무엇을 기록하는 공간인지 알려주세요." rows={3} /></label>
+          <label>{text("한 줄 소개", "Short description")}<textarea maxLength={240} name="description" placeholder={text("무엇을 기록하는 공간인지 알려주세요.", "Tell readers what you record here.")} rows={3} /></label>
         </section>
         <section className="onboarding-section" aria-labelledby="theme-title">
-          <div className="numbered-heading"><span>02</span><div><h2 id="theme-title">첫 테마</h2><p>모든 프리셋은 읽기와 대비 기준을 통과한 로컬 CSS입니다.</p></div></div>
-          <fieldset className="theme-grid"><legend className="sr-only">블로그 테마 선택</legend>
+          <div className="numbered-heading"><span>02</span><div><h2 id="theme-title">{text("첫 테마", "First theme")}</h2><p>{text("모든 프리셋은 읽기와 대비 기준을 통과한 로컬 CSS입니다.", "Every preset is local CSS that meets readability and contrast standards.")}</p></div></div>
+          <fieldset className="theme-grid"><legend className="sr-only">{text("블로그 테마 선택", "Choose blog theme")}</legend>
             {THEME_PRESETS.map((preset) => (
               <label className="theme-option" data-theme={preset.id} key={preset.id}>
                 <input checked={theme === preset.id} name="theme" onChange={() => setTheme(preset.id)} type="radio" value={preset.id} />
@@ -1061,7 +1094,7 @@ export function OnboardingPage() {
             ))}
           </fieldset>
         </section>
-        <div className="onboarding-actions"><p>선택한 테마: <strong>{THEME_PRESETS.find((item) => item.id === theme)?.name}</strong></p><button className="button button-primary" disabled={busy} type="submit">내 블로그 만들기 <span aria-hidden="true">→</span></button></div>
+        <div className="onboarding-actions"><p>{text("선택한 테마:", "Selected theme:")} <strong>{THEME_PRESETS.find((item) => item.id === theme)?.name}</strong></p><button className="button button-primary" disabled={busy} type="submit">{text("내 블로그 만들기", "Create my blog")} <span aria-hidden="true">→</span></button></div>
         {status ? <p className="inline-status" role="status">{status}</p> : null}
       </form>
     </div>
@@ -1069,8 +1102,8 @@ export function OnboardingPage() {
 }
 
 export function NotFoundPage() {
-  usePageTitle("페이지 없음");
-  return <EmptyState actionHref="/" actionLabel="피드로 돌아가기" description="주소가 바뀌었거나 존재하지 않는 페이지입니다." title="길을 잃은 것 같아요" />;
+  usePageTitle(text("페이지 없음", "Page not found"));
+  return <EmptyState actionHref="/" actionLabel={text("피드로 돌아가기", "Back to feed")} description={text("주소가 바뀌었거나 존재하지 않는 페이지입니다.", "The address may have changed, or this page does not exist.")} title={text("길을 잃은 것 같아요", "This page seems to be lost")} />;
 }
 
 function EmptyState({ title, description, actionHref, actionLabel }: { title: string; description: string; actionHref?: string; actionLabel?: string }) {
@@ -1085,9 +1118,9 @@ function CapabilityRetry({ detail, onRetry }: { detail: string; onRetry: () => v
   return (
     <section className="empty-state" role="alert">
       <span className="empty-symbol" aria-hidden="true">!</span>
-      <h1>서버 기능을 확인하지 못했습니다</h1>
+      <h1>{text("서버 기능을 확인하지 못했습니다", "Could not check server capabilities")}</h1>
       <p>{detail}</p>
-      <button className="button button-primary" onClick={onRetry} type="button">다시 시도</button>
+      <button className="button button-primary" onClick={onRetry} type="button">{text("다시 시도", "Try again")}</button>
     </section>
   );
 }
@@ -1097,16 +1130,16 @@ function PageLoading({ label }: { label: string }) {
 }
 
 function FeedSkeleton() {
-  return <div aria-label="피드를 불러오는 중" className="post-grid" role="status">{[0, 1, 2].map((value) => <div className="post-card skeleton-card" key={value}><span /><span /><span /></div>)}</div>;
+  return <div aria-label={text("피드를 불러오는 중", "Loading feed")} className="post-grid" role="status">{[0, 1, 2].map((value) => <div className="post-card skeleton-card" key={value}><span /><span /><span /></div>)}</div>;
 }
 
 function formatCodeRun(response: CodeRunResponse): string {
-  if (response.state === "queued") return "실행기가 제한 시간 안에 완료되지 않았습니다.";
+  if (response.state === "queued") return text("실행기가 제한 시간 안에 완료되지 않았습니다.", "The runner did not finish within the time limit.");
   const { result } = response;
   const sections = [`${result.outcome}${result.exitCode === null ? "" : ` (exit ${result.exitCode})`}`];
   if (result.stdout) sections.push(`stdout:\n${result.stdout}`);
   if (result.stderr) sections.push(`stderr:\n${result.stderr}`);
-  if (result.truncated) sections.push("정책에 따라 출력 일부가 잘렸습니다.");
+  if (result.truncated) sections.push(text("정책에 따라 출력 일부가 잘렸습니다.", "Part of the output was truncated by policy."));
   return sections.join("\n\n");
 }
 

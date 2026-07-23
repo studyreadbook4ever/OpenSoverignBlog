@@ -180,6 +180,43 @@ export interface UpdateCategoryInput {
   themePreset?: ThemePresetId;
 }
 
+/** An ordered collection backed by a category-compatible public route. */
+export interface SeriesSummary {
+  id: string;
+  categoryId: string;
+  slug: string;
+  title: string;
+  description?: string;
+  themePreset?: ThemePresetId;
+  status: CategoryStatus;
+  homePosition: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SeriesListResponse {
+  items: SeriesSummary[];
+}
+
+export interface BlogSeriesResponse {
+  series: SeriesSummary;
+  blog: BlogSummary;
+  postCount: number;
+}
+
+export interface CreateSeriesInput {
+  slug: string;
+  title: string;
+  description?: string | null;
+  themePreset?: ThemePresetId | null;
+}
+
+export interface UpdateSeriesInput {
+  title: string;
+  description?: string | null;
+  themePreset?: ThemePresetId | null;
+}
+
 export const ADMIN_TREE_SCHEMA_VERSION = "open-soverign-blog-admin-tree/1" as const;
 
 export type AdminTreeNodeKind =
@@ -327,11 +364,18 @@ export interface HomeCategorySection {
   items: FeedPostSummary[];
 }
 
+export interface HomeSeriesSection {
+  series: SeriesSummary;
+  items: FeedPostSummary[];
+}
+
 export interface HomeResponse {
   pinnedItems: FeedPostSummary[];
   recentItems: FeedPostSummary[];
   /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
   categorySections?: HomeCategorySection[];
+  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  seriesSections?: HomeSeriesSection[];
 }
 
 export interface HomePinsResponse {
@@ -386,6 +430,11 @@ export interface CreateCommentInput {
 
 export interface Capabilities {
   version: string;
+  /**
+   * Installation-wide interface language. Optional while clients may still
+   * encounter servers released before language selection was introduced.
+   */
+  language?: "ko" | "en";
   views: ViewMode[];
   features: string[];
   modules: ModuleDescriptor[];
@@ -929,6 +978,38 @@ export class OpenSoverignBlogClient {
     );
   }
 
+  async listBlogSeries(
+    handle: string,
+    signal?: AbortSignal,
+  ): Promise<SeriesListResponse> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/series`,
+      withSignal(signal),
+    );
+  }
+
+  async getBlogSeries(
+    handle: string,
+    seriesSlug: string,
+    signal?: AbortSignal,
+  ): Promise<BlogSeriesResponse> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/series/${encodeURIComponent(seriesSlug)}`,
+      withSignal(signal),
+    );
+  }
+
+  async getBlogSeriesPosts(
+    handle: string,
+    seriesSlug: string,
+    signal?: AbortSignal,
+  ): Promise<FeedResponse> {
+    return this.#request(
+      `/api/v1/blogs/${encodeURIComponent(handle)}/series/${encodeURIComponent(seriesSlug)}/posts`,
+      withSignal(signal),
+    );
+  }
+
   /** Categories owned by the configured on-premises primary site. */
   async listPrimaryCategories(signal?: AbortSignal): Promise<CategoryListResponse> {
     return this.#request("/api/v1/primary/categories", withSignal(signal));
@@ -962,6 +1043,30 @@ export class OpenSoverignBlogClient {
   ): Promise<BlogPostView> {
     return this.#request(
       `/api/v1/primary/categories/${encodeURIComponent(categorySlug)}/posts/${encodeURIComponent(postSlug)}?view=${view}`,
+      withSignal(signal),
+    );
+  }
+
+  async listPrimarySeries(signal?: AbortSignal): Promise<SeriesListResponse> {
+    return this.#request("/api/v1/primary/series", withSignal(signal));
+  }
+
+  async getPrimarySeries(
+    seriesSlug: string,
+    signal?: AbortSignal,
+  ): Promise<BlogSeriesResponse> {
+    return this.#request(
+      `/api/v1/primary/series/${encodeURIComponent(seriesSlug)}`,
+      withSignal(signal),
+    );
+  }
+
+  async getPrimarySeriesPosts(
+    seriesSlug: string,
+    signal?: AbortSignal,
+  ): Promise<FeedResponse> {
+    return this.#request(
+      `/api/v1/primary/series/${encodeURIComponent(seriesSlug)}/posts`,
       withSignal(signal),
     );
   }
@@ -1030,6 +1135,85 @@ export class OpenSoverignBlogClient {
       `/api/v1/studio/categories/${encodeURIComponent(categoryId)}/archive`,
       {
         method: "POST",
+        ...withSignal(signal),
+      },
+    );
+  }
+
+  async listStudioSeries(signal?: AbortSignal): Promise<SeriesListResponse> {
+    return this.#request("/api/v1/studio/series", withSignal(signal));
+  }
+
+  async createStudioSeries(
+    input: CreateSeriesInput,
+    signal?: AbortSignal,
+  ): Promise<SeriesSummary> {
+    return this.#request("/api/v1/studio/series", {
+      method: "POST",
+      body: JSON.stringify(input),
+      ...withSignal(signal),
+    });
+  }
+
+  async promoteStudioCategoryToSeries(
+    categoryId: string,
+    signal?: AbortSignal,
+  ): Promise<SeriesSummary> {
+    return this.#request("/api/v1/studio/series/promote", {
+      method: "POST",
+      body: JSON.stringify({ categoryId }),
+      ...withSignal(signal),
+    });
+  }
+
+  async updateStudioSeries(
+    seriesId: string,
+    input: UpdateSeriesInput,
+    signal?: AbortSignal,
+  ): Promise<SeriesSummary> {
+    return this.#request(
+      `/api/v1/studio/series/${encodeURIComponent(seriesId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify(input),
+        ...withSignal(signal),
+      },
+    );
+  }
+
+  async archiveStudioSeries(
+    seriesId: string,
+    signal?: AbortSignal,
+  ): Promise<SeriesSummary> {
+    return this.#request(
+      `/api/v1/studio/series/${encodeURIComponent(seriesId)}/archive`,
+      {
+        method: "POST",
+        ...withSignal(signal),
+      },
+    );
+  }
+
+  async listStudioSeriesItems(
+    seriesId: string,
+    signal?: AbortSignal,
+  ): Promise<DocumentSnapshot[]> {
+    return this.#request(
+      `/api/v1/studio/series/${encodeURIComponent(seriesId)}/items`,
+      withSignal(signal),
+    );
+  }
+
+  async replaceStudioSeriesOrder(
+    seriesId: string,
+    documentIds: string[],
+    signal?: AbortSignal,
+  ): Promise<DocumentSnapshot[]> {
+    return this.#request(
+      `/api/v1/studio/series/${encodeURIComponent(seriesId)}/items`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ documentIds }),
         ...withSignal(signal),
       },
     );
