@@ -269,7 +269,7 @@ function HomePostSection({
   tone: "pinned" | "series" | "category" | "recent";
 }) {
   const collapsible = tone === "series" || tone === "category";
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(tone !== "series");
   const contentId = `${id}-content`;
 
   useEffect(() => {

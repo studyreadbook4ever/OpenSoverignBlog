@@ -117,6 +117,7 @@ test("home series and category sections expose an accessible independent collaps
   ]);
 
   assert.match(component, /const collapsible = tone === "series" \|\| tone === "category"/);
+  assert.match(component, /useState\(tone !== "series"\)/);
   assert.match(component, /aria-controls=\{contentId\}/);
   assert.match(component, /aria-expanded=\{expanded\}/);
   assert.match(component, /hidden=\{collapsible && !expanded\}/);
