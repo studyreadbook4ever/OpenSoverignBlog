@@ -2085,19 +2085,34 @@ function StudioAccessGate({
     capabilities && studioAccessFor(capabilities) === "members",
   );
   return (
-    <section className="empty-state studio-access-gate">
+    <section
+      aria-labelledby="studio-access-title"
+      className="empty-state studio-access-gate"
+    >
       <span className="empty-symbol" aria-hidden="true">✦</span>
-      <h1>{text("Studio를 열 수 없습니다", "Cannot open Studio")}</h1>
+      <h1 id="studio-access-title">
+        {accessKeyMethod
+          ? text(
+            "관리자 Access Key로 Studio 열기",
+            "Open Studio with an administrator access key",
+          )
+          : text("Studio를 열 수 없습니다", "Cannot open Studio")}
+      </h1>
       <p>{detail}</p>
       {onRetry ? <button className="button button-primary" onClick={onRetry} type="button">{text("다시 시도", "Try again")}</button> : null}
       {accessKeyMethod ? (
         <div className="studio-inline-admin-access">
           <AdminAccessKeyForm
+            autoFocus
             method={accessKeyMethod}
             onAuthenticated={(next) => {
               setSession(next);
               if (next.state === "authenticated" && !next.blog) navigate("/onboarding");
             }}
+            submitLabel={text(
+              "관리자 키로 Studio 열기",
+              "Open Studio with administrator key",
+            )}
           />
           {localAccountLogin ? <AppLink className="button button-ghost" href="/login">{text("계정 로그인", "Account login")}</AppLink> : null}
         </div>

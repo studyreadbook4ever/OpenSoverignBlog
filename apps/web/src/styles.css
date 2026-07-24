@@ -323,6 +323,9 @@ img { display: block; max-width: 100%; }
 .external-auth-methods { display: grid; gap: .75rem; }
 .external-auth-methods .button { justify-content: center; text-align: center; text-decoration: none; }
 .admin-access-form { margin-top: 1rem; }
+.admin-access-intro { display: grid; gap: .35rem; margin: 0; color: var(--muted); line-height: 1.55; }
+.admin-access-intro strong { color: var(--ink); font-size: 1rem; }
+.admin-access-intro span { font-size: .86rem; }
 .admin-access-form .field-hint { margin: -.35rem 0 0; line-height: 1.55; }
 .studio-inline-admin-access { display: grid; width: min(100%, 440px); margin-top: 1rem; text-align: left; }
 .studio-inline-admin-access .admin-access-form { width: 100%; margin-top: 0; padding: 1rem; background: var(--surface); border: 1px solid var(--line); border-radius: .55rem; }

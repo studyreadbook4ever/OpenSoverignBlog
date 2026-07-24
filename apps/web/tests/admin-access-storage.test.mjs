@@ -31,8 +31,29 @@ test("the reusable administrator key form clears its local credential and is vis
   assert.match(form, /finally \{\s*setAccessKey\(""\)/);
   assert.match(form, /autoComplete="off"/);
   assert.match(form, /type="password"/);
+  assert.match(
+    form,
+    /text\("관리자 Access Key 입력", "Enter administrator access key"\)/,
+  );
+  assert.match(
+    form,
+    /placeholder=\{text\([\s\S]*설치 시 설정한 관리자 Access Key를 붙여넣으세요[\s\S]*Paste the administrator access key configured during setup/,
+  );
+  assert.match(
+    form,
+    /text\("관리자 키로 계속", "Continue with administrator key"\)/,
+  );
   assert.match(app, /accessKeyLogin[\s\S]{0,120}text\("관리자 키 입력", "Enter administrator key"\)/);
   assert.match(login, /accessKeyLogin[\s\S]{0,120}text\("관리자 키 입력", "Enter administrator key"\)/);
+  assert.match(
+    studio,
+    /text\([\s\S]*관리자 Access Key로 Studio 열기[\s\S]*Open Studio with an administrator access key/,
+  );
+  assert.match(studio, /<AdminAccessKeyForm\s+autoFocus/);
+  assert.match(
+    studio,
+    /submitLabel=\{text\([\s\S]*관리자 키로 Studio 열기[\s\S]*Open Studio with administrator key/,
+  );
   for (const source of [login, studio, categories, tree]) {
     assert.match(source, /<AdminAccessKeyForm/);
   }
