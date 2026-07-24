@@ -21,14 +21,19 @@ use osb_kernel::{
     RevisionSnapshot, content_hash_with_ai_summary,
 };
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
 use uuid::Uuid;
 
 /// Latest schema version required by both mutable and delivery-only runtimes.
-pub const DATABASE_SCHEMA_VERSION: u64 = 9;
+pub const DATABASE_SCHEMA_VERSION: u64 = 10;
+
+/// Public home projections cap each independent document pool at this size.
+/// The Series/category pool reserves one item for every active, non-empty
+/// Series before assigning remaining capacity in Series order.
+const HOME_FEED_MAX_SECTION_ITEMS: usize = 500;
 
 pub struct SqliteRepository {
     connection: Mutex<Connection>,
@@ -206,13 +211,24 @@ pub struct PrimaryOwnerSession {
     pub site: SiteRecord,
 }
 
-/// One globally curated home-page position. Pins reference documents rather
-/// than revisions so a deliberate republish updates the visible pinned item.
+/// One typed target in the installation-wide home curation order.
+///
+/// Post targets reference documents rather than revisions so a deliberate
+/// republish updates the visible card. Series targets keep the collection as
+/// the home unit and resolve its exact currently-published members at read
+/// time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum HomePinTarget {
+    Post { id: Uuid },
+    Series { id: Uuid },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomePinRecord {
     pub slot: u8,
-    pub document_id: Uuid,
+    pub target: HomePinTarget,
     pub pinned_at: DateTime<Utc>,
 }
 
@@ -231,11 +247,24 @@ pub struct HomeSeriesSectionRecords {
     pub items: Vec<DocumentSnapshot>,
 }
 
+/// One first-class public home unit. Presentation may collapse series while a
+/// standalone post remains a single, directly-readable card.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HomeUnitRecords {
+    Post(DocumentSnapshot),
+    Series(HomeSeriesSectionRecords),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HomeFeedRecords {
+    pub units: Vec<HomeUnitRecords>,
+    /// Compatibility projection for clients predating typed home units.
     pub pinned: Vec<DocumentSnapshot>,
+    /// Compatibility projection for clients predating typed home units.
     pub recent: Vec<DocumentSnapshot>,
+    /// Compatibility projection for clients predating typed home units.
     pub category_sections: Vec<HomeCategorySectionRecords>,
+    /// Compatibility projection for clients predating typed home units.
     pub series_sections: Vec<HomeSeriesSectionRecords>,
 }
 
@@ -852,6 +881,20 @@ impl SqliteRepository {
         if !has_migration_9 {
             transaction
                 .execute_batch(MIGRATION_9)
+                .map_err(storage_error)?;
+        }
+        let has_migration_10 = transaction
+            .query_row(
+                "SELECT 1 FROM schema_migrations WHERE version = 10",
+                [],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(storage_error)?
+            .is_some();
+        if !has_migration_10 {
+            transaction
+                .execute_batch(MIGRATION_10)
                 .map_err(storage_error)?;
         }
         transaction.commit().map_err(storage_error)
@@ -2412,6 +2455,7 @@ impl SqliteRepository {
                 )
                 .map_err(storage_error)?;
         }
+        canonicalize_home_pins_for_changed_site_in_transaction(&transaction, site_id)?;
         transaction.commit().map_err(storage_error)?;
         load_category_by_id(&connection, site_id, category_id)
     }
@@ -2479,6 +2523,7 @@ impl SqliteRepository {
             )?,
             Err(error) => return Err(error),
         };
+        canonicalize_home_pins_for_changed_site_in_transaction(&transaction, site_id)?;
         transaction.commit().map_err(storage_error)?;
         Ok(series)
     }
@@ -2599,6 +2644,7 @@ impl SqliteRepository {
                 )
                 .map_err(storage_error)?;
         }
+        canonicalize_home_pins_for_changed_site_in_transaction(&transaction, site_id)?;
         transaction.commit().map_err(storage_error)?;
         load_series_by_id(&connection, site_id, series_id)
     }
@@ -3296,17 +3342,11 @@ impl SqliteRepository {
     pub fn replace_home_pins(
         &self,
         administrator_user_id: Uuid,
-        document_ids: &[Uuid],
+        targets: &[HomePinTarget],
     ) -> Result<Vec<HomePinRecord>, RepositoryError> {
-        if document_ids.len() > 3
-            || document_ids
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len()
-                != document_ids.len()
-        {
+        if targets.len() > 3 || targets.iter().collect::<BTreeSet<_>>().len() != targets.len() {
             return Err(RepositoryError::Validation(
-                "home pins must contain at most three unique document ids".into(),
+                "home pins must contain at most three unique targets".into(),
             ));
         }
 
@@ -3318,60 +3358,96 @@ impl SqliteRepository {
         if control.owner_user_id != administrator_user_id {
             return Err(RepositoryError::NotFound);
         }
+        validate_home_pin_targets(&transaction, control.primary_site_id, targets)?;
+        let pins =
+            replace_home_pin_targets_in_transaction(&transaction, administrator_user_id, targets)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(pins)
+    }
+
+    /// Compatibility adapter for the document-only v1 pin request. A document
+    /// whose published revision belongs to an active primary-site series is
+    /// normalized to that series target. Multiple legacy documents from the
+    /// same series collapse to the first requested slot.
+    pub fn replace_legacy_home_document_pins(
+        &self,
+        administrator_user_id: Uuid,
+        document_ids: &[Uuid],
+    ) -> Result<Vec<HomePinRecord>, RepositoryError> {
+        if document_ids.len() > 3
+            || document_ids.iter().collect::<BTreeSet<_>>().len() != document_ids.len()
+        {
+            return Err(RepositoryError::Validation(
+                "legacy home pins must contain at most three unique document ids".into(),
+            ));
+        }
+
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let control = load_admin_control_plane(&transaction)?;
+        if control.owner_user_id != administrator_user_id {
+            return Err(RepositoryError::NotFound);
+        }
+        let mut seen = BTreeSet::new();
+        let mut targets = Vec::with_capacity(document_ids.len());
         for document_id in document_ids {
-            let published = transaction
-                .query_row(
-                    "SELECT 1 FROM documents
-                     WHERE id = ?1
-                       AND published_revision_id IS NOT NULL
-                       AND status != 'archived'",
-                    params![document_id.to_string()],
-                    |_| Ok(()),
-                )
-                .optional()
-                .map_err(storage_error)?
-                .is_some();
-            if !published {
+            let document = load_document(&transaction, *document_id, RevisionSelector::Published)
+                .map_err(|error| match error {
+                RepositoryError::NotFound => RepositoryError::Validation(
+                    "only currently published documents can be pinned".into(),
+                ),
+                other => other,
+            })?;
+            if document.status == DocumentStatus::Archived {
                 return Err(RepositoryError::Validation(
                     "only currently published documents can be pinned".into(),
                 ));
             }
+            let target = match active_home_series_for_published_document(
+                &transaction,
+                control.primary_site_id,
+                *document_id,
+            )? {
+                Some(series) => HomePinTarget::Series { id: series.id },
+                None => HomePinTarget::Post { id: *document_id },
+            };
+            if seen.insert(target) {
+                targets.push(target);
+            }
         }
-
-        transaction
-            .execute("DELETE FROM home_pins", [])
-            .map_err(storage_error)?;
-        let now = Utc::now();
-        for (index, document_id) in document_ids.iter().enumerate() {
-            transaction
-                .execute(
-                    "INSERT INTO home_pins (
-                        slot, document_id, pinned_by_user_id, pinned_at
-                     ) VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        (index + 1) as i64,
-                        document_id.to_string(),
-                        administrator_user_id.to_string(),
-                        now.to_rfc3339(),
-                    ],
-                )
-                .map_err(map_constraint_error)?;
-        }
-        let pins = load_home_pins(&transaction)?;
+        validate_home_pin_targets(&transaction, control.primary_site_id, &targets)?;
+        let pins =
+            replace_home_pin_targets_in_transaction(&transaction, administrator_user_id, &targets)?;
         transaction.commit().map_err(storage_error)?;
         Ok(pins)
     }
 
     pub fn list_home_pins(&self) -> Result<Vec<HomePinRecord>, RepositoryError> {
-        let connection = self.lock()?;
-        load_home_pins(&connection)
+        let mut connection = self.lock()?;
+        if connection.is_readonly(MAIN_DB).map_err(storage_error)? {
+            let primary_site_id = load_admin_control_plane(&connection)?.primary_site_id;
+            return canonical_home_pin_records(&connection, primary_site_id);
+        }
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage_error)?;
+        let primary_site_id = load_admin_control_plane(&transaction)?.primary_site_id;
+        let pins = canonicalize_home_pins_in_transaction(&transaction, primary_site_id)?;
+        transaction.commit().map_err(storage_error)?;
+        Ok(pins)
     }
 
-    /// Returns a coherent public home snapshot: curated documents in slot
-    /// order, newest published documents with every pin removed, and bounded
-    /// primary-site series/category trees in explicit series order or category
-    /// document-creation order. A series backing category is emitted only as a
-    /// series section so one collection cannot appear twice.
+    /// Returns a coherent public home snapshot of peer Series and standalone
+    /// post units, with the canonical pins moved to the front.
+    ///
+    /// Series/category document payloads share a hard 500-item bound. Every
+    /// active, non-empty Series first receives one reserved item, even when the
+    /// caller's requested limit is smaller than the Series count. Remaining
+    /// capacity is assigned in explicit Series order, followed by legacy
+    /// category sections. This keeps every Series discoverable without letting
+    /// an early large Series consume the entire bounded projection.
     pub fn home_feed(
         &self,
         primary_site_id: Uuid,
@@ -3379,54 +3455,100 @@ impl SqliteRepository {
     ) -> Result<HomeFeedRecords, RepositoryError> {
         let connection = self.lock()?;
         load_site_by_id(&connection, primary_site_id, None)?;
-        let pins = load_home_pins(&connection)?;
-        let mut pinned = Vec::with_capacity(pins.len());
-        let mut pinned_ids = std::collections::BTreeSet::new();
-        for pin in pins {
-            match load_document(&connection, pin.document_id, RevisionSelector::Published) {
-                Ok(document) if document.status != DocumentStatus::Archived => {
-                    pinned_ids.insert(document.id);
-                    pinned.push(document);
-                }
-                Ok(_) | Err(RepositoryError::NotFound) => {}
-                Err(error) => return Err(error),
+        let control = load_admin_control_plane(&connection)?;
+        if control.primary_site_id != primary_site_id {
+            return Err(RepositoryError::NotFound);
+        }
+        // Public home is a true read: it projects canonical targets in memory
+        // and never acquires a SQLite write lock. Durable cleanup happens in
+        // publish/promote/archive transactions and authenticated pin reads.
+        let pins = canonical_home_pin_records(&connection, primary_site_id)?;
+
+        let all_series = list_series_with_connection(&connection, primary_site_id, false, 500)?;
+        let mut nonempty_series = Vec::with_capacity(all_series.len());
+        for series in all_series {
+            if !list_published_in_series_with_connection(
+                &connection,
+                primary_site_id,
+                series.id,
+                1,
+            )?
+            .is_empty()
+            {
+                nonempty_series.push(series);
             }
         }
-        let recent = list_documents_with_selector(
-            &connection,
-            None,
-            recent_limit.saturating_add(pinned_ids.len()).min(500),
-            RevisionSelector::Published,
-        )?
-        .into_iter()
-        .filter(|document| !pinned_ids.contains(&document.id))
-        .take(recent_limit.min(500))
-        .collect();
-
-        let series = list_series_with_connection(&connection, primary_site_id, false, 500)?;
-        let mut series_sections = Vec::new();
-        let mut remaining = recent_limit.min(500);
-        for series in series {
-            if remaining == 0 {
-                break;
-            }
-            let fetch_limit = remaining.saturating_add(pinned_ids.len()).min(500);
+        let section_budget = recent_limit
+            .min(HOME_FEED_MAX_SECTION_ITEMS)
+            .max(nonempty_series.len());
+        let series_count = nonempty_series.len();
+        let mut remaining = section_budget;
+        let mut series_sections = Vec::with_capacity(series_count);
+        for (index, series) in nonempty_series.into_iter().enumerate() {
+            let later_series = series_count.saturating_sub(index + 1);
+            let item_limit = remaining
+                .saturating_sub(later_series)
+                .max(1)
+                .min(HOME_FEED_MAX_SECTION_ITEMS);
             let items = list_published_in_series_with_connection(
                 &connection,
                 primary_site_id,
                 series.id,
-                fetch_limit,
-            )?
-            .into_iter()
-            .filter(|document| !pinned_ids.contains(&document.id))
-            .take(remaining)
-            .collect::<Vec<_>>();
-            if items.is_empty() {
-                continue;
-            }
+                item_limit,
+            )?;
+            debug_assert!(!items.is_empty());
             remaining = remaining.saturating_sub(items.len());
             series_sections.push(HomeSeriesSectionRecords { series, items });
         }
+
+        let mut units = Vec::new();
+        let mut pinned = Vec::with_capacity(pins.len());
+        let mut pinned_ids = BTreeSet::new();
+        let mut pinned_series_ids = BTreeSet::new();
+        for pin in pins {
+            match pin.target {
+                HomePinTarget::Post { id } => {
+                    match load_document(&connection, id, RevisionSelector::Published) {
+                        Ok(document) if document.status != DocumentStatus::Archived => {
+                            pinned_ids.insert(document.id);
+                            pinned.push(document.clone());
+                            units.push(HomeUnitRecords::Post(document));
+                        }
+                        Ok(_) | Err(RepositoryError::NotFound) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                HomePinTarget::Series { id } => {
+                    if !pinned_series_ids.insert(id) {
+                        continue;
+                    }
+                    let Some(section) = series_sections
+                        .iter()
+                        .find(|section| section.series.id == id)
+                        .cloned()
+                    else {
+                        continue;
+                    };
+                    if let Some(representative) = section.items.first() {
+                        pinned_ids.insert(representative.id);
+                        pinned.push(representative.clone());
+                    }
+                    units.push(HomeUnitRecords::Series(section));
+                }
+            }
+        }
+        for section in &series_sections {
+            if !pinned_series_ids.contains(&section.series.id) {
+                units.push(HomeUnitRecords::Series(section.clone()));
+            }
+        }
+
+        let recent = list_home_standalone_published_with_connection(
+            &connection,
+            primary_site_id,
+            &pinned_ids,
+            recent_limit.min(HOME_FEED_MAX_SECTION_ITEMS),
+        )?;
 
         let categories = {
             let mut statement = connection
@@ -3455,7 +3577,9 @@ impl SqliteRepository {
             if remaining == 0 {
                 break;
             }
-            let fetch_limit = remaining.saturating_add(pinned_ids.len()).min(500);
+            let fetch_limit = remaining
+                .saturating_add(pinned_ids.len())
+                .min(HOME_FEED_MAX_SECTION_ITEMS);
             let items = list_published_in_category_with_connection(
                 &connection,
                 primary_site_id,
@@ -3473,7 +3597,15 @@ impl SqliteRepository {
             remaining = remaining.saturating_sub(items.len());
             category_sections.push(HomeCategorySectionRecords { category, items });
         }
+        for document in &recent {
+            if active_home_series_for_published_document(&connection, primary_site_id, document.id)?
+                .is_none()
+            {
+                units.push(HomeUnitRecords::Post(document.clone()));
+            }
+        }
         Ok(HomeFeedRecords {
+            units,
             pinned,
             recent,
             category_sections,
@@ -3482,10 +3614,34 @@ impl SqliteRepository {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StoredHomePin {
+    slot: u8,
+    target: HomePinTarget,
+    pinned_by_user_id: Uuid,
+    pinned_at: DateTime<Utc>,
+}
+
+impl StoredHomePin {
+    fn public_record(&self) -> HomePinRecord {
+        HomePinRecord {
+            slot: self.slot,
+            target: self.target,
+            pinned_at: self.pinned_at,
+        }
+    }
+}
+
 fn load_home_pins(connection: &Connection) -> Result<Vec<HomePinRecord>, RepositoryError> {
+    load_stored_home_pins(connection)
+        .map(|pins| pins.into_iter().map(|pin| pin.public_record()).collect())
+}
+
+fn load_stored_home_pins(connection: &Connection) -> Result<Vec<StoredHomePin>, RepositoryError> {
     let mut statement = connection
         .prepare(
-            "SELECT slot, document_id, pinned_at
+            "SELECT slot, target_kind, document_id, series_id,
+                    pinned_by_user_id, pinned_at
              FROM home_pins ORDER BY slot ASC",
         )
         .map_err(storage_error)?;
@@ -3494,19 +3650,311 @@ fn load_home_pins(connection: &Connection) -> Result<Vec<HomePinRecord>, Reposit
             Ok((
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })
         .map_err(storage_error)?
         .map(|row| {
-            let (slot, document_id, pinned_at) = row.map_err(storage_error)?;
-            Ok(HomePinRecord {
+            let (slot, target_kind, document_id, series_id, pinned_by_user_id, pinned_at) =
+                row.map_err(storage_error)?;
+            let target = match (
+                target_kind.as_str(),
+                document_id.as_deref(),
+                series_id.as_deref(),
+            ) {
+                ("post", Some(document_id), None) => HomePinTarget::Post {
+                    id: parse_uuid(document_id)?,
+                },
+                ("series", None, Some(series_id)) => HomePinTarget::Series {
+                    id: parse_uuid(series_id)?,
+                },
+                _ => {
+                    return Err(RepositoryError::Storage(
+                        "home pin target violates its typed storage invariant".into(),
+                    ));
+                }
+            };
+            Ok(StoredHomePin {
                 slot: u8::try_from(slot).map_err(storage_error)?,
-                document_id: parse_uuid(&document_id)?,
+                target,
+                pinned_by_user_id: parse_uuid(&pinned_by_user_id)?,
                 pinned_at: parse_datetime(&pinned_at)?,
             })
         })
         .collect()
+}
+
+/// Canonicalizes stored pin targets against current published placement.
+///
+/// A post that has entered an active primary-site Series becomes that Series
+/// target. Targets that now resolve to the same Series retain the earliest
+/// slot's audit metadata, and all survivors are compacted back to slots 1..=3.
+/// Archived/unpublished targets are removed so admin reads and public home
+/// reads observe the same durable set.
+fn canonicalize_home_pins_in_transaction(
+    transaction: &Transaction<'_>,
+    primary_site_id: Uuid,
+) -> Result<Vec<HomePinRecord>, RepositoryError> {
+    let stored = load_stored_home_pins(transaction)?;
+    let canonical = canonical_home_pins_from_stored(transaction, primary_site_id, &stored)?;
+    let changed = stored.len() != canonical.len()
+        || stored
+            .iter()
+            .zip(&canonical)
+            .any(|(old, new)| old.slot != new.slot || old.target != new.target);
+    if changed {
+        transaction
+            .execute("DELETE FROM home_pins", [])
+            .map_err(storage_error)?;
+        for pin in &canonical {
+            let (target_kind, document_id, series_id) = match pin.target {
+                HomePinTarget::Post { id } => ("post", Some(id.to_string()), None),
+                HomePinTarget::Series { id } => ("series", None, Some(id.to_string())),
+            };
+            transaction
+                .execute(
+                    "INSERT INTO home_pins (
+                        slot, target_kind, document_id, series_id,
+                        pinned_by_user_id, pinned_at
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![
+                        i64::from(pin.slot),
+                        target_kind,
+                        document_id,
+                        series_id,
+                        pin.pinned_by_user_id.to_string(),
+                        pin.pinned_at.to_rfc3339(),
+                    ],
+                )
+                .map_err(map_constraint_error)?;
+        }
+    }
+    Ok(canonical
+        .into_iter()
+        .map(|pin| pin.public_record())
+        .collect())
+}
+
+fn canonical_home_pin_records(
+    connection: &Connection,
+    primary_site_id: Uuid,
+) -> Result<Vec<HomePinRecord>, RepositoryError> {
+    let stored = load_stored_home_pins(connection)?;
+    canonical_home_pins_from_stored(connection, primary_site_id, &stored)
+        .map(|pins| pins.into_iter().map(|pin| pin.public_record()).collect())
+}
+
+fn canonical_home_pins_from_stored(
+    connection: &Connection,
+    primary_site_id: Uuid,
+    stored: &[StoredHomePin],
+) -> Result<Vec<StoredHomePin>, RepositoryError> {
+    let mut seen = BTreeSet::new();
+    let mut canonical = Vec::with_capacity(stored.len());
+    for pin in stored {
+        let Some(target) = canonical_home_pin_target(connection, primary_site_id, pin.target)?
+        else {
+            continue;
+        };
+        if seen.insert(target) {
+            canonical.push(StoredHomePin {
+                slot: u8::try_from(canonical.len() + 1).map_err(storage_error)?,
+                target,
+                pinned_by_user_id: pin.pinned_by_user_id,
+                pinned_at: pin.pinned_at,
+            });
+        }
+    }
+    Ok(canonical)
+}
+
+fn canonical_home_pin_target(
+    connection: &Connection,
+    primary_site_id: Uuid,
+    target: HomePinTarget,
+) -> Result<Option<HomePinTarget>, RepositoryError> {
+    match target {
+        HomePinTarget::Post { id } => {
+            let document = match load_document(connection, id, RevisionSelector::Published) {
+                Ok(document) if document.status != DocumentStatus::Archived => document,
+                Ok(_) | Err(RepositoryError::NotFound) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            Ok(
+                active_home_series_for_published_document(
+                    connection,
+                    primary_site_id,
+                    document.id,
+                )?
+                .map_or(Some(HomePinTarget::Post { id }), |series| {
+                    Some(HomePinTarget::Series { id: series.id })
+                }),
+            )
+        }
+        HomePinTarget::Series { id } => {
+            let series = match load_series_by_id(connection, primary_site_id, id) {
+                Ok(series) if series.status == CategoryStatus::Active => series,
+                Ok(_) | Err(RepositoryError::NotFound) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            Ok((!list_published_in_series_with_connection(
+                connection,
+                primary_site_id,
+                series.id,
+                1,
+            )?
+            .is_empty())
+            .then_some(HomePinTarget::Series { id: series.id }))
+        }
+    }
+}
+
+fn canonicalize_home_pins_for_changed_site_in_transaction(
+    transaction: &Transaction<'_>,
+    changed_site_id: Uuid,
+) -> Result<(), RepositoryError> {
+    let primary_site_id = transaction
+        .query_row(
+            "SELECT primary_site_id FROM admin_control_plane WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(storage_error)?
+        .map(|id| parse_uuid(&id))
+        .transpose()?;
+    if primary_site_id == Some(changed_site_id) {
+        canonicalize_home_pins_in_transaction(transaction, changed_site_id)?;
+    }
+    Ok(())
+}
+
+fn validate_home_pin_targets(
+    connection: &Connection,
+    primary_site_id: Uuid,
+    targets: &[HomePinTarget],
+) -> Result<(), RepositoryError> {
+    for target in targets {
+        match target {
+            HomePinTarget::Post { id } => {
+                let document = load_document(connection, *id, RevisionSelector::Published)
+                    .map_err(|error| match error {
+                        RepositoryError::NotFound => RepositoryError::Validation(
+                            "only currently published standalone posts can be pinned".into(),
+                        ),
+                        other => other,
+                    })?;
+                if document.status == DocumentStatus::Archived {
+                    return Err(RepositoryError::Validation(
+                        "only currently published standalone posts can be pinned".into(),
+                    ));
+                }
+                if active_home_series_for_published_document(connection, primary_site_id, *id)?
+                    .is_some()
+                {
+                    return Err(RepositoryError::Validation(
+                        "a post in an active series must be pinned through its series target"
+                            .into(),
+                    ));
+                }
+            }
+            HomePinTarget::Series { id } => {
+                let series = load_series_by_id(connection, primary_site_id, *id).map_err(
+                    |error| match error {
+                        RepositoryError::NotFound => RepositoryError::Validation(
+                            "only active primary-site series can be pinned".into(),
+                        ),
+                        other => other,
+                    },
+                )?;
+                if series.status != CategoryStatus::Active
+                    || list_published_in_series_with_connection(
+                        connection,
+                        primary_site_id,
+                        series.id,
+                        1,
+                    )?
+                    .is_empty()
+                {
+                    return Err(RepositoryError::Validation(
+                        "only active primary-site series with published posts can be pinned".into(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn replace_home_pin_targets_in_transaction(
+    transaction: &Transaction<'_>,
+    administrator_user_id: Uuid,
+    targets: &[HomePinTarget],
+) -> Result<Vec<HomePinRecord>, RepositoryError> {
+    transaction
+        .execute("DELETE FROM home_pins", [])
+        .map_err(storage_error)?;
+    let now = Utc::now();
+    for (index, target) in targets.iter().enumerate() {
+        let (target_kind, document_id, series_id) = match target {
+            HomePinTarget::Post { id } => ("post", Some(id.to_string()), None),
+            HomePinTarget::Series { id } => ("series", None, Some(id.to_string())),
+        };
+        transaction
+            .execute(
+                "INSERT INTO home_pins (
+                    slot, target_kind, document_id, series_id,
+                    pinned_by_user_id, pinned_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    (index + 1) as i64,
+                    target_kind,
+                    document_id,
+                    series_id,
+                    administrator_user_id.to_string(),
+                    now.to_rfc3339(),
+                ],
+            )
+            .map_err(map_constraint_error)?;
+    }
+    load_home_pins(transaction)
+}
+
+fn active_home_series_for_published_document(
+    connection: &Connection,
+    primary_site_id: Uuid,
+    document_id: Uuid,
+) -> Result<Option<SeriesRecord>, RepositoryError> {
+    let series_id = connection
+        .query_row(
+            "SELECT series.id
+             FROM documents document
+             JOIN revision_categories placement
+               ON placement.revision_id = document.published_revision_id
+              AND placement.document_id = document.id
+              AND placement.site_id = document.site_id
+             JOIN series
+               ON series.category_id = placement.category_id
+              AND series.site_id = placement.site_id
+             JOIN categories category
+               ON category.id = series.category_id
+              AND category.site_id = series.site_id
+             WHERE document.id = ?1
+               AND document.site_id = ?2
+               AND document.published_revision_id IS NOT NULL
+               AND document.status != 'archived'
+               AND category.status = 'active'",
+            params![document_id.to_string(), primary_site_id.to_string()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(storage_error)?;
+    series_id
+        .map(|series_id| load_series_by_id(connection, primary_site_id, parse_uuid(&series_id)?))
+        .transpose()
 }
 
 impl ContentRepository for SqliteRepository {
@@ -4005,6 +4453,7 @@ fn publish_in_transaction_at(
             ],
         )
         .map_err(storage_error)?;
+    canonicalize_home_pins_for_changed_site_in_transaction(transaction, site_uuid)?;
     Ok(())
 }
 
@@ -4393,6 +4842,65 @@ fn list_documents_with_selector(
         .map_err(storage_error)?;
     ids.into_iter()
         .map(|id| load_document(connection, parse_uuid(&id)?, selector))
+        .collect()
+}
+
+/// Lists newest installation-wide community posts without first consuming the
+/// bound with primary-site Series members. Secondary-site posts intentionally
+/// remain peer standalone units because only the primary site owns the ordered
+/// home Series projection. At most three pinned representatives are
+/// over-fetched and removed so the returned standalone pool can still fill its
+/// independent public-home limit.
+fn list_home_standalone_published_with_connection(
+    connection: &Connection,
+    primary_site_id: Uuid,
+    excluded_ids: &BTreeSet<Uuid>,
+    limit: usize,
+) -> Result<Vec<DocumentSnapshot>, RepositoryError> {
+    let limit = limit.min(HOME_FEED_MAX_SECTION_ITEMS);
+    let fetch_limit = limit.saturating_add(excluded_ids.len());
+    let mut statement = connection
+        .prepare(
+            "SELECT document.id
+             FROM documents document
+             JOIN sites community_site ON community_site.id = document.site_id
+             JOIN revisions published ON published.id = document.published_revision_id
+             WHERE document.published_revision_id IS NOT NULL
+               AND document.status != 'archived'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM revision_categories placement
+                 JOIN series
+                   ON series.category_id = placement.category_id
+                  AND series.site_id = placement.site_id
+                 JOIN categories category
+                   ON category.id = series.category_id
+                  AND category.site_id = series.site_id
+                 WHERE placement.revision_id = document.published_revision_id
+                   AND placement.document_id = document.id
+                   AND placement.site_id = document.site_id
+                   AND series.site_id = ?1
+                   AND category.status = 'active'
+               )
+             ORDER BY published.created_at DESC, document.id DESC
+             LIMIT ?2",
+        )
+        .map_err(storage_error)?;
+    let ids = statement
+        .query_map(
+            params![primary_site_id.to_string(), page_parameter(fetch_limit)?],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(storage_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage_error)?;
+    ids.into_iter()
+        .map(|id| parse_uuid(&id))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|id| !excluded_ids.contains(id))
+        .take(limit)
+        .map(|id| load_document(connection, id, RevisionSelector::Published))
         .collect()
 }
 
@@ -7235,6 +7743,90 @@ INSERT INTO schema_migrations(version, applied_at)
 VALUES (9, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 "#;
 
+const MIGRATION_10: &str = r#"
+ALTER TABLE home_pins RENAME TO home_pins_v7;
+
+CREATE TABLE home_pins (
+  slot INTEGER PRIMARY KEY CHECK (slot BETWEEN 1 AND 3),
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('post', 'series')),
+  document_id TEXT UNIQUE,
+  series_id TEXT UNIQUE,
+  pinned_by_user_id TEXT NOT NULL,
+  pinned_at TEXT NOT NULL,
+  CHECK (
+    (target_kind = 'post' AND document_id IS NOT NULL AND series_id IS NULL)
+    OR
+    (target_kind = 'series' AND document_id IS NULL AND series_id IS NOT NULL)
+  ),
+  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+  FOREIGN KEY (series_id) REFERENCES series(id) ON DELETE CASCADE,
+  FOREIGN KEY (pinned_by_user_id) REFERENCES users(id) ON DELETE RESTRICT
+);
+
+-- A legacy document pin becomes a series pin only when the exact published
+-- revision belongs to an active series in the configured primary site.
+-- Multiple documents from that series retain the first old slot, then all
+-- surviving targets are compacted back to the 1..3 slot invariant.
+WITH normalized AS (
+  SELECT
+    legacy.slot AS old_slot,
+    CASE WHEN home_series.id IS NULL THEN 'post' ELSE 'series' END AS target_kind,
+    CASE WHEN home_series.id IS NULL THEN legacy.document_id ELSE NULL END AS document_id,
+    home_series.id AS series_id,
+    legacy.pinned_by_user_id,
+    legacy.pinned_at
+  FROM home_pins_v7 legacy
+  JOIN documents document ON document.id = legacy.document_id
+  LEFT JOIN revision_categories placement
+    ON placement.revision_id = document.published_revision_id
+   AND placement.document_id = document.id
+   AND placement.site_id = document.site_id
+  LEFT JOIN admin_control_plane control
+    ON control.singleton = 1 AND control.primary_site_id = document.site_id
+  LEFT JOIN series home_series
+    ON home_series.site_id = control.primary_site_id
+   AND home_series.category_id = placement.category_id
+   AND EXISTS (
+     SELECT 1 FROM categories category
+     WHERE category.id = home_series.category_id
+       AND category.site_id = home_series.site_id
+       AND category.status = 'active'
+   )
+),
+ranked AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY target_kind, COALESCE(document_id, series_id)
+      ORDER BY old_slot
+    ) AS target_rank
+  FROM normalized
+),
+compacted AS (
+  SELECT
+    ROW_NUMBER() OVER (ORDER BY old_slot) AS slot,
+    target_kind,
+    document_id,
+    series_id,
+    pinned_by_user_id,
+    pinned_at
+  FROM ranked
+  WHERE target_rank = 1
+)
+INSERT INTO home_pins (
+  slot, target_kind, document_id, series_id, pinned_by_user_id, pinned_at
+)
+SELECT
+  slot, target_kind, document_id, series_id, pinned_by_user_id, pinned_at
+FROM compacted
+ORDER BY slot;
+
+DROP TABLE home_pins_v7;
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (10, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+"#;
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -7762,6 +8354,116 @@ mod tests {
 
         let delivery = SqliteRepository::open_read_only(&database).unwrap();
         assert!(delivery.list_series(site_id, true, 500).unwrap().is_empty());
+    }
+
+    #[test]
+    fn migration_ten_normalizes_legacy_document_pins_and_compacts_series_duplicates() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("schema-v9-home-pins.db");
+        let repository = SqliteRepository::open(&database).unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[23; 32],
+            )
+            .unwrap();
+        let series = repository
+            .create_series(
+                control.owner_user_id,
+                site_id,
+                CreateSeriesInput {
+                    slug: "migration-series".into(),
+                    title: "Migration series".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let publish = |title: &str, slug: &str, category_id: Option<Uuid>| {
+            let document = repository
+                .create_document_in_writable_site_with_category(
+                    control.owner_user_id,
+                    new_document(site_id, title, slug),
+                    category_id,
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap();
+            document.id
+        };
+        let first_series_post = publish(
+            "First migration entry",
+            "first-migration-entry",
+            Some(series.category_id),
+        );
+        let second_series_post = publish(
+            "Second migration entry",
+            "second-migration-entry",
+            Some(series.category_id),
+        );
+        let standalone = publish("Migration standalone", "migration-standalone", None);
+        let now = Utc::now().to_rfc3339();
+        {
+            let connection = repository.lock().unwrap();
+            connection
+                .execute_batch(
+                    "DROP TABLE home_pins;
+                     CREATE TABLE home_pins (
+                       slot INTEGER PRIMARY KEY CHECK (slot BETWEEN 1 AND 3),
+                       document_id TEXT NOT NULL UNIQUE,
+                       pinned_by_user_id TEXT NOT NULL,
+                       pinned_at TEXT NOT NULL,
+                       FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+                       FOREIGN KEY (pinned_by_user_id) REFERENCES users(id) ON DELETE RESTRICT
+                     );
+                     DELETE FROM schema_migrations WHERE version = 10;",
+                )
+                .unwrap();
+            for (slot, document_id) in [
+                (1_i64, first_series_post),
+                (2_i64, second_series_post),
+                (3_i64, standalone),
+            ] {
+                connection
+                    .execute(
+                        "INSERT INTO home_pins (
+                           slot, document_id, pinned_by_user_id, pinned_at
+                         ) VALUES (?1, ?2, ?3, ?4)",
+                        params![
+                            slot,
+                            document_id.to_string(),
+                            control.owner_user_id.to_string(),
+                            now,
+                        ],
+                    )
+                    .unwrap();
+            }
+        }
+        drop(repository);
+
+        assert!(SqliteRepository::open_read_only(&database).is_err());
+        let repository = SqliteRepository::open(&database).unwrap();
+        let pins = repository.list_home_pins().unwrap();
+        assert_eq!(
+            pins.iter()
+                .map(|pin| (pin.slot, pin.target))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, HomePinTarget::Series { id: series.id }),
+                (2, HomePinTarget::Post { id: standalone }),
+            ]
+        );
+        drop(repository);
+        let delivery = SqliteRepository::open_read_only(&database).unwrap();
+        assert_eq!(delivery.list_home_pins().unwrap().len(), 2);
     }
 
     #[test]
@@ -10483,25 +11185,35 @@ mod tests {
             published.push(document.id);
         }
 
-        let ordered = [published[1], published[0], published[2]];
+        let ordered = [
+            HomePinTarget::Post { id: published[1] },
+            HomePinTarget::Post { id: published[0] },
+            HomePinTarget::Post { id: published[2] },
+        ];
         let pins = repository
             .replace_home_pins(control.owner_user_id, &ordered)
             .unwrap();
         assert_eq!(
-            pins.iter().map(|pin| pin.document_id).collect::<Vec<_>>(),
+            pins.iter().map(|pin| pin.target).collect::<Vec<_>>(),
             ordered
         );
         let home = repository.home_feed(site_id, 100).unwrap();
         assert_eq!(
             home.pinned.iter().map(|item| item.id).collect::<Vec<_>>(),
-            ordered
+            vec![published[1], published[0], published[2]]
         );
         assert_eq!(home.recent.len(), 1);
         assert_eq!(home.recent[0].id, published[3]);
         assert!(home.category_sections.is_empty());
 
         assert!(matches!(
-            repository.replace_home_pins(control.owner_user_id, &[published[0], published[0]]),
+            repository.replace_home_pins(
+                control.owner_user_id,
+                &[
+                    HomePinTarget::Post { id: published[0] },
+                    HomePinTarget::Post { id: published[0] },
+                ],
+            ),
             Err(RepositoryError::Validation(_))
         ));
         assert_eq!(repository.list_home_pins().unwrap(), pins);
@@ -10513,10 +11225,396 @@ mod tests {
             )
             .unwrap();
         assert!(matches!(
-            repository.replace_home_pins(control.owner_user_id, &[draft.id]),
+            repository.replace_home_pins(
+                control.owner_user_id,
+                &[HomePinTarget::Post { id: draft.id }],
+            ),
             Err(RepositoryError::Validation(_))
         ));
         assert_eq!(repository.list_home_pins().unwrap(), pins);
+    }
+
+    #[test]
+    fn typed_home_pins_share_three_slots_and_legacy_series_members_normalize() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[17; 32],
+            )
+            .unwrap();
+        let series = repository
+            .create_series(
+                control.owner_user_id,
+                site_id,
+                CreateSeriesInput {
+                    slug: "ordered-notes".into(),
+                    title: "Ordered notes".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let series_post = repository
+            .create_document_in_writable_site_with_category(
+                control.owner_user_id,
+                new_document(site_id, "Series entry", "series-entry"),
+                Some(series.category_id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                site_id,
+                series_post.id,
+                series_post.current_revision_id,
+            )
+            .unwrap();
+        let mut standalone = Vec::new();
+        for index in 0..3 {
+            let document = repository
+                .create_document_in_owned_site(
+                    control.owner_user_id,
+                    new_document(
+                        site_id,
+                        &format!("Standalone {index}"),
+                        &format!("standalone-{index}"),
+                    ),
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap();
+            standalone.push(document.id);
+        }
+
+        assert!(matches!(
+            repository.replace_home_pins(
+                control.owner_user_id,
+                &[HomePinTarget::Post { id: series_post.id }],
+            ),
+            Err(RepositoryError::Validation(message))
+                if message.contains("must be pinned through its series")
+        ));
+        let normalized = repository
+            .replace_legacy_home_document_pins(
+                control.owner_user_id,
+                &[series_post.id, standalone[0], standalone[1]],
+            )
+            .unwrap();
+        assert_eq!(
+            normalized.iter().map(|pin| pin.target).collect::<Vec<_>>(),
+            vec![
+                HomePinTarget::Series { id: series.id },
+                HomePinTarget::Post { id: standalone[0] },
+                HomePinTarget::Post { id: standalone[1] },
+            ]
+        );
+        assert!(matches!(
+            repository.replace_home_pins(
+                control.owner_user_id,
+                &[
+                    HomePinTarget::Series { id: series.id },
+                    HomePinTarget::Post { id: standalone[0] },
+                    HomePinTarget::Post { id: standalone[1] },
+                    HomePinTarget::Post { id: standalone[2] },
+                ],
+            ),
+            Err(RepositoryError::Validation(_))
+        ));
+
+        let home = repository.home_feed(site_id, 100).unwrap();
+        assert!(matches!(
+            home.units.first(),
+            Some(HomeUnitRecords::Series(section)) if section.series.id == series.id
+        ));
+        assert!(matches!(
+            home.units.get(1),
+            Some(HomeUnitRecords::Post(document)) if document.id == standalone[0]
+        ));
+        assert!(matches!(
+            home.units.get(2),
+            Some(HomeUnitRecords::Post(document)) if document.id == standalone[1]
+        ));
+    }
+
+    #[test]
+    fn home_pins_canonicalize_and_compact_when_posts_enter_a_series() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[18; 32],
+            )
+            .unwrap();
+        let category = repository
+            .create_category(
+                control.owner_user_id,
+                site_id,
+                CreateCategoryInput {
+                    slug: "research-notes".into(),
+                    title: "Research notes".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let publish = |title: &str, slug: &str, category_id: Option<Uuid>| {
+            let document = repository
+                .create_document_in_writable_site_with_category(
+                    control.owner_user_id,
+                    new_document(site_id, title, slug),
+                    category_id,
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap()
+        };
+        let category_first = publish("Research one", "research-one", Some(category.id));
+        let category_second = publish("Research two", "research-two", Some(category.id));
+        let keep = publish("Standalone keeper", "standalone-keeper", None);
+        repository
+            .replace_home_pins(
+                control.owner_user_id,
+                &[
+                    HomePinTarget::Post {
+                        id: category_first.id,
+                    },
+                    HomePinTarget::Post { id: keep.id },
+                    HomePinTarget::Post {
+                        id: category_second.id,
+                    },
+                ],
+            )
+            .unwrap();
+
+        let series = repository
+            .promote_category_to_series(control.owner_user_id, site_id, category.id)
+            .unwrap();
+        {
+            let connection = repository.lock().unwrap();
+            let raw = load_home_pins(&connection).unwrap();
+            assert_eq!(
+                raw.iter()
+                    .map(|pin| (pin.slot, pin.target))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (1, HomePinTarget::Series { id: series.id }),
+                    (2, HomePinTarget::Post { id: keep.id }),
+                ],
+                "promotion must durably canonicalize both category posts to one Series slot"
+            );
+        }
+
+        let moving = publish("Moving note", "moving-note", None);
+        repository
+            .replace_home_pins(
+                control.owner_user_id,
+                &[
+                    HomePinTarget::Post { id: moving.id },
+                    HomePinTarget::Series { id: series.id },
+                    HomePinTarget::Post { id: keep.id },
+                ],
+            )
+            .unwrap();
+        let moved_revision = repository
+            .revise_document_in_writable_site_with_category(
+                control.owner_user_id,
+                site_id,
+                ProposedRevision {
+                    document_id: moving.id,
+                    base_revision_id: moving.current_revision_id,
+                    title: moving.revision.title.clone(),
+                    slug: moving.revision.slug.clone(),
+                    source_markdown: "Now part of the ordered research Series.".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    ai_summary: None,
+                    authorship: Default::default(),
+                    actor: actor(),
+                    idempotency_key: None,
+                },
+                Some(Some(category.id)),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                site_id,
+                moving.id,
+                moved_revision.id,
+            )
+            .unwrap();
+
+        let canonical = repository.list_home_pins().unwrap();
+        assert_eq!(
+            canonical
+                .iter()
+                .map(|pin| (pin.slot, pin.target))
+                .collect::<Vec<_>>(),
+            vec![
+                (1, HomePinTarget::Series { id: series.id }),
+                (2, HomePinTarget::Post { id: keep.id }),
+            ],
+            "republishing a pinned post into an already-pinned Series keeps the first slot and compacts survivors"
+        );
+        let changes_before_home = repository.lock().unwrap().total_changes();
+        let home = repository.home_feed(site_id, 100).unwrap();
+        assert_eq!(
+            repository.lock().unwrap().total_changes(),
+            changes_before_home,
+            "anonymous home projection must not start or commit a write transaction"
+        );
+        assert!(matches!(
+            home.units.first(),
+            Some(HomeUnitRecords::Series(section)) if section.series.id == series.id
+        ));
+        assert!(matches!(
+            home.units.get(1),
+            Some(HomeUnitRecords::Post(document)) if document.id == keep.id
+        ));
+    }
+
+    #[test]
+    fn every_nonempty_series_gets_a_bounded_home_unit_after_a_large_first_series() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let site_id = Uuid::now_v7();
+        let control = repository
+            .provision_primary_owner_site(
+                &primary_owner_bootstrap(site_id),
+                AdminAuthMode::AccessKey,
+                &[19; 32],
+            )
+            .unwrap();
+        let create_series = |slug: &str, title: &str| {
+            repository
+                .create_series(
+                    control.owner_user_id,
+                    site_id,
+                    CreateSeriesInput {
+                        slug: slug.into(),
+                        title: title.into(),
+                        description: None,
+                        theme_profile: None,
+                    },
+                )
+                .unwrap()
+        };
+        let first = create_series("first-series", "First series");
+        let second = create_series("second-series", "Second series");
+        let third = create_series("third-series", "Third series");
+        let publish = |title: &str, slug: &str, category_id: Uuid| {
+            let document = repository
+                .create_document_in_writable_site_with_category(
+                    control.owner_user_id,
+                    new_document(site_id, title, slug),
+                    Some(category_id),
+                )
+                .unwrap();
+            repository
+                .publish_document_in_owned_site(
+                    control.owner_user_id,
+                    site_id,
+                    document.id,
+                    document.current_revision_id,
+                )
+                .unwrap()
+        };
+        let standalone = repository
+            .create_document_in_owned_site(
+                control.owner_user_id,
+                new_document(site_id, "Older standalone", "older-standalone"),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                site_id,
+                standalone.id,
+                standalone.current_revision_id,
+            )
+            .unwrap();
+        let mut first_order = Vec::new();
+        for index in 0..100 {
+            first_order.push(
+                publish(
+                    &format!("First entry {index}"),
+                    &format!("first-entry-{index}"),
+                    first.category_id,
+                )
+                .id,
+            );
+        }
+        let second_post = publish("Second entry", "second-entry", second.category_id);
+        let third_post = publish("Third entry", "third-entry", third.category_id);
+
+        let home = repository.home_feed(site_id, 100).unwrap();
+        assert_eq!(
+            home.series_sections
+                .iter()
+                .map(|section| section.series.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id, third.id]
+        );
+        assert_eq!(
+            home.series_sections
+                .iter()
+                .map(|section| section.items.len())
+                .collect::<Vec<_>>(),
+            vec![98, 1, 1]
+        );
+        assert_eq!(
+            home.series_sections[0]
+                .items
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            first_order[..98]
+        );
+        assert_eq!(home.series_sections[1].items[0].id, second_post.id);
+        assert_eq!(home.series_sections[2].items[0].id, third_post.id);
+        assert_eq!(
+            home.series_sections
+                .iter()
+                .map(|section| section.items.len())
+                .sum::<usize>(),
+            HOME_FEED_MAX_SECTION_ITEMS.min(100)
+        );
+        assert_eq!(
+            home.units
+                .iter()
+                .filter(|unit| matches!(unit, HomeUnitRecords::Series(_)))
+                .count(),
+            3
+        );
+        assert_eq!(
+            home.recent
+                .iter()
+                .map(|document| document.id)
+                .collect::<Vec<_>>(),
+            vec![standalone.id],
+            "newer Series members must not consume the standalone-post bound"
+        );
+        assert!(matches!(
+            home.units.last(),
+            Some(HomeUnitRecords::Post(document)) if document.id == standalone.id
+        ));
     }
 
     #[test]
@@ -10703,7 +11801,10 @@ mod tests {
         );
 
         repository
-            .replace_home_pins(control.owner_user_id, &[pinned.id])
+            .replace_home_pins(
+                control.owner_user_id,
+                &[HomePinTarget::Post { id: pinned.id }],
+            )
             .unwrap();
         let home = repository.home_feed(site_id, 100).unwrap();
         assert_eq!(
@@ -10752,6 +11853,12 @@ mod tests {
                 .map(|document| document.id)
                 .collect::<Vec<_>>(),
             expected_recent
+        );
+        assert!(
+            home.recent
+                .iter()
+                .any(|document| document.id == foreign_document.id),
+            "the primary home keeps installation-wide community posts as standalone peer units"
         );
 
         let bounded = repository.home_feed(site_id, 2).unwrap();

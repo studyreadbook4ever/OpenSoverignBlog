@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 ammonia.workspace = true
-osb-kernel = { version = "=0.1.1", path = "../kernel" }
+osb-kernel = { version = "=0.1.2", path = "../kernel" }
 pulldown-cmark.workspace = true
 serde.workspace = true
 sha2.workspace = true

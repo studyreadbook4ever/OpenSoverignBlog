@@ -19,7 +19,7 @@ const CONSENT_COOKIE: &str = "osb_adfit_consent_v1";
 const CONSENT_MAX_AGE_SECONDS: u64 = 365 * 24 * 60 * 60;
 const CONSENT_BODY_LIMIT: usize = 1024;
 
-pub(super) const ADVERTISING_SECURITY_CSP: &str = "default-src 'none'; script-src 'self' https://t1.kakaocdn.net; style-src 'self'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://t1.kakaocdn.net https://analytics.ad.daum.net https://kaat.daum.net; font-src 'self'; connect-src 'self' https://serv.ds.kakao.com https://display.ad.daum.net https://aem-kakao-collector.onkakao.net; frame-src https://www.youtube-nocookie.com https://t1.kakaocdn.net https://t1.daumcdn.net; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'";
+pub(super) const ADVERTISING_SECURITY_CSP: &str = "default-src 'none'; script-src 'self' https://t1.kakaocdn.net; style-src 'self'; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: https://t1.kakaocdn.net https://analytics.ad.daum.net https://kaat.daum.net; font-src 'self'; connect-src 'self' https://serv.ds.kakao.com https://display.ad.daum.net https://kaat.daum.net https://aem-kakao-collector.onkakao.net; frame-src https://www.youtube-nocookie.com https://t1.kakaocdn.net https://t1.daumcdn.net; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; object-src 'none'";
 
 pub(super) fn is_public_reader_path(path: &str) -> bool {
     if path.starts_with("//") {
@@ -171,8 +171,9 @@ async fn set_consent(
     } else {
         ""
     };
+    let cookie_path = consent_cookie_path(&state);
     let cookie = format!(
-        "{CONSENT_COOKIE}={}; Path=/; Max-Age={CONSENT_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax{secure}",
+        "{CONSENT_COOKIE}={}; Path={cookie_path}; Max-Age={CONSENT_MAX_AGE_SECONDS}; HttpOnly; SameSite=Lax{secure}",
         match decision {
             ConsentStatus::Granted => "granted",
             ConsentStatus::Denied => "denied",
@@ -185,6 +186,15 @@ async fn set_consent(
         HeaderValue::from_str(&cookie).expect("static consent cookie is a valid header"),
     );
     response
+}
+
+fn consent_cookie_path(state: &AppState) -> String {
+    let path = state.seo_policy.public_url.path().trim_end_matches('/');
+    if path.is_empty() {
+        "/".into()
+    } else {
+        path.into()
+    }
 }
 
 fn consent_from_headers(headers: &HeaderMap) -> ConsentStatus {
@@ -341,7 +351,7 @@ mod tests {
             "/BLOG/legacy",
             "/@",
             "/@/post",
-            "/ontology//post",
+            "/notes//post",
             "//",
             "//attacker.example/",
         ] {
@@ -349,8 +359,8 @@ mod tests {
         }
         for path in [
             "/",
-            "/yangja",
-            "/ontology/post",
+            "/notes",
+            "/archive/post",
             "/@writer",
             "/@writer/series/post",
             "/references",

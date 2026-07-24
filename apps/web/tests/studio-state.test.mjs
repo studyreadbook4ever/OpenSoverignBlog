@@ -7,6 +7,9 @@ import {
   aiSummarySourceHash,
   editorFingerprint,
   homeCurationCandidates,
+  homeCurationRows,
+  homePinTargetKey,
+  homePinTargets,
   isAiSummarySourceCurrent,
   normalizeSavePayload,
   normalizedEditorTitle,
@@ -53,16 +56,57 @@ test("an accepted AI revision immediately matches the normalized editor draft", 
   );
 });
 
-test("home curation includes series/category trees and every published Studio document with pins first", () => {
-  const pinned = { id: "pinned", title: "발행 제목", slug: "published", blog: { handle: "owner" } };
-  const series = { id: "series", title: "시리즈 글", slug: "series-post", blog: { handle: "owner" } };
-  const category = { id: "category", title: "시리즈 글", slug: "series-post", blog: { handle: "owner" } };
-  const recent = { id: "recent", title: "최근 글", slug: "recent", blog: { handle: "member" } };
-  const olderStudioDocument = {
-    id: "older-studio",
+test("home curation uses published placement instead of the current draft category", () => {
+  const activeSeries = {
+    id: "ordered-series",
+    categoryId: "series-category",
+    status: "active",
+    title: "시리즈",
+    slug: "series",
+  };
+  const archivedSeries = {
+    id: "archived-series",
+    categoryId: "archived-category",
+    status: "archived",
+    title: "예전 시리즈",
+    slug: "archived-series",
+  };
+  const publicStandalone = {
+    id: "standalone",
+    title: "일반 글",
+    slug: "standalone",
+    blog: { handle: "owner", isPrimary: false },
+  };
+  const publishedMemberWithDraftMove = {
+    id: "published-member",
+    categoryId: undefined,
+    publishedCategoryId: activeSeries.categoryId,
     status: "published",
-    publishedRevisionId: "published-revision",
-    revision: { title: "오래된 발행 글", slug: "older-studio" },
+    publishedRevisionId: "member-revision",
+    revision: { title: "현재 초안은 독립 글", slug: "published-member" },
+  };
+  const publishedStandaloneWithDraftMove = {
+    id: "published-standalone",
+    categoryId: activeSeries.categoryId,
+    publishedCategoryId: null,
+    status: "published",
+    publishedRevisionId: "standalone-revision",
+    revision: { title: "발행본은 독립 글", slug: "published-standalone" },
+  };
+  const legacySeriesMember = {
+    id: "legacy-member",
+    categoryId: activeSeries.categoryId,
+    status: "published",
+    publishedRevisionId: "legacy-revision",
+    revision: { title: "구형 응답 시리즈 글", slug: "legacy-member" },
+  };
+  const archivedCategoryDocument = {
+    id: "archived-category-post",
+    categoryId: archivedSeries.categoryId,
+    publishedCategoryId: archivedSeries.categoryId,
+    status: "published",
+    publishedRevisionId: "archived-category-revision",
+    revision: { title: "독립 일반 글", slug: "independent" },
   };
   const draft = {
     id: "draft",
@@ -71,30 +115,87 @@ test("home curation includes series/category trees and every published Studio do
   };
   assert.deepEqual(
     homeCurationCandidates({
-      pinnedItems: [pinned],
-      seriesSections: [{ series: { id: "ordered-series" }, items: [pinned, series] }],
-      categorySections: [{ category: { id: "series" }, items: [pinned, category] }],
-      recentItems: [category, recent],
-    }, [olderStudioDocument, draft]).map((post) => post.id),
-    ["pinned", "series", "category", "recent", "older-studio"],
+      units: [{ kind: "post", post: publicStandalone }],
+      pinnedItems: [],
+      recentItems: [],
+    }, {
+      studioDocuments: [
+        publishedMemberWithDraftMove,
+        publishedStandaloneWithDraftMove,
+        legacySeriesMember,
+        archivedCategoryDocument,
+        draft,
+      ],
+      studioSeries: [activeSeries, archivedSeries],
+    }).map((candidate) => [
+      candidate.kind,
+      candidate.id,
+      candidate.locationLabel,
+    ]),
+    [
+      ["post", "standalone", "일반 글 · /@owner/standalone"],
+      ["series", "ordered-series", "시리즈 · /series"],
+      ["post", "published-standalone", "발행된 일반 글"],
+      ["post", "archived-category-post", "발행된 일반 글"],
+    ],
+  );
+});
+
+test("settings retains stale selected targets so they can always be moved or unpinned", () => {
+  const available = {
+    kind: "post",
+    id: "available",
+    target: { kind: "post", id: "available" },
+    title: "Available post",
+    slug: "available",
+    locationLabel: "Post · /@owner/available",
+  };
+  const unselected = {
+    kind: "series",
+    id: "series",
+    target: { kind: "series", id: "series" },
+    title: "Series",
+    slug: "series",
+    locationLabel: "Series · /series",
+  };
+  const rows = homeCurationRows(
+    [available, unselected],
+    [{ kind: "series", id: "archived" }, available.target],
+    "en",
+  );
+
+  assert.deepEqual(rows.map(({ kind, id }) => [kind, id]), [
+    ["series", "archived"],
+    ["post", "available"],
+    ["series", "series"],
+  ]);
+  assert.equal(rows[0].title, "Series archived");
+  assert.equal(rows[0].locationLabel, "Pinned · unavailable in the current publication list");
+});
+
+test("typed home pins retain kind/order with a document-only rolling-upgrade fallback", () => {
+  assert.deepEqual(
+    homePinTargets({
+      targets: [
+        { kind: "series", id: "series" },
+        { kind: "post", id: "post" },
+      ],
+      documentIds: ["legacy"],
+    }),
+    [
+      { kind: "series", id: "series" },
+      { kind: "post", id: "post" },
+    ],
   );
   assert.deepEqual(
-    homeCurationCandidates({
-      pinnedItems: [],
-      seriesSections: [],
-      categorySections: [],
-      recentItems: [],
-    }, [{
-      ...olderStudioDocument,
-      revision: { title: "", slug: "older-studio" },
-    }], "en")[0],
-    {
-      id: "older-studio",
-      title: "Untitled post",
-      slug: "older-studio",
-      locationLabel: "My published post · /older-studio",
-    },
+    homePinTargets({ documentIds: ["legacy", "legacy", "second"] }),
+    [
+      { kind: "post", id: "legacy" },
+      { kind: "post", id: "second" },
+    ],
   );
+  assert.equal(homePinTargetKey({ kind: "series", id: "same" }), "series:same");
+  assert.equal(homePinTargetKey({ kind: "post", id: "same" }), "post:same");
 });
 
 test("AI summary source hashing exactly mirrors the domain-separated server hash", async () => {

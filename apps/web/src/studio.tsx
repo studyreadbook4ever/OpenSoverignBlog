@@ -19,6 +19,7 @@ import type {
   CreatePostInput,
   DocumentSnapshot,
   EmbedReference,
+  HomePinTarget,
   OntologySidecar,
   PublishArtifact,
   SeriesSummary,
@@ -34,6 +35,10 @@ import {
   aiSummarySourceHash,
   editorFingerprint,
   homeCurationCandidates,
+  homeCurationRows,
+  homePinTargetKey,
+  homePinTargets,
+  publishedSeriesMembership,
   type HomeCurationCandidate,
   isAiSummarySourceCurrent,
   normalizeSavePayload,
@@ -103,8 +108,9 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const { session, capabilitiesError, refreshCapabilities } = useSession();
   const [documents, setDocuments] = useState<DocumentSnapshot[]>([]);
   const [categories, setCategories] = useState<CategorySummary[]>([]);
-  const [homePins, setHomePins] = useState<string[]>([]);
-  const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
+  const [series, setSeries] = useState<SeriesSummary[]>([]);
+  const [homePins, setHomePins] = useState<HomePinTarget[]>([]);
+  const [savedHomePins, setSavedHomePins] = useState<HomePinTarget[]>([]);
   const [homePinState, setHomePinState] = useState<HomePinLoadState>("unavailable");
   const [homePinNotice, setHomePinNotice] = useState<{ kind: "success" | "error"; text: string }>();
   const [savingHomePins, setSavingHomePins] = useState(false);
@@ -128,12 +134,16 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setLoading(true);
     setStatus(text("문서를 불러오는 중…", "Loading documents…"));
     try {
-      const [values, categoryResponse] = await Promise.all([
+      const [values, categoryResponse, seriesResponse] = await Promise.all([
         client.listStudioDocuments(),
         client.listStudioCategories(),
+        canCurateHome
+          ? client.listStudioSeries()
+          : Promise.resolve({ items: [] as SeriesSummary[] }),
       ]);
       setDocuments(values);
       setCategories(categoryResponse.items);
+      setSeries(seriesResponse.items);
       setStatus(values.length ? text(`${values.length}개의 문서를 불러왔습니다.`, `Loaded ${values.length} documents.`) : undefined);
     } catch (reason) {
       setStatus(asMessage(reason));
@@ -153,8 +163,9 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setHomePinNotice(undefined);
     try {
       const pins = await client.getHomePins();
-      setHomePins(pins.documentIds);
-      setSavedHomePins(pins.documentIds);
+      const targets = homePinTargets(pins);
+      setHomePins(targets);
+      setSavedHomePins(targets);
       setHomePinState("ready");
     } catch (reason) {
       if (isNotFound(reason)) setHomePinState("unavailable");
@@ -178,20 +189,34 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const collaboratorSession = studioAccess === "members" && session?.state === "authenticated"
     && Boolean(session.membershipRole && session.membershipRole !== "owner");
   const categoryById = new Map(categories.map((category) => [category.id, category]));
-  const documentById = new Map(documents.map((document) => [document.id, document]));
-  const homePinsChanged = homePins.join(":") !== savedHomePins.join(":");
+  const seriesMembership = publishedSeriesMembership(documents, series);
+  const homePinCandidates = homeCurationCandidates({
+    pinnedItems: [],
+    recentItems: [],
+  }, {
+    studioDocuments: documents,
+    studioSeries: series,
+    language: uiLanguage,
+  });
+  const homePinCandidateByKey = new Map(
+    homePinCandidates.map((candidate) => [homePinTargetKey(candidate.target), candidate]),
+  );
+  const selectedHomePinKeys = new Set(homePins.map(homePinTargetKey));
+  const homePinsChanged = homePins.map(homePinTargetKey).join(":")
+    !== savedHomePins.map(homePinTargetKey).join(":");
 
-  function toggleDashboardHomePin(documentId: string) {
+  function toggleDashboardHomePin(target: HomePinTarget) {
     setHomePinNotice(undefined);
-    if (homePins.includes(documentId)) {
-      setHomePins(homePins.filter((id) => id !== documentId));
+    const key = homePinTargetKey(target);
+    if (selectedHomePinKeys.has(key)) {
+      setHomePins(homePins.filter((item) => homePinTargetKey(item) !== key));
       return;
     }
     if (homePins.length >= 3) {
-      setHomePinNotice({ kind: "error", text: text("홈에는 글을 최대 3개까지 고정할 수 있습니다.", "You can pin up to three posts on the home page.") });
+      setHomePinNotice({ kind: "error", text: text("홈에는 시리즈와 일반 글을 합쳐 최대 3개까지 고정할 수 있습니다.", "You can pin up to three series and standalone posts combined.") });
       return;
     }
-    setHomePins([...homePins, documentId]);
+    setHomePins([...homePins, target]);
   }
 
   async function saveDashboardHomePins() {
@@ -199,10 +224,10 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setSavingHomePins(true);
     setHomePinNotice(undefined);
     try {
-      const saved = await client.replaceHomePins(homePins);
-      setHomePins(saved.documentIds);
-      setSavedHomePins(saved.documentIds);
-      setHomePinNotice({ kind: "success", text: text("홈 상단 고정 글을 저장했습니다.", "Saved home page pins.") });
+      const saved = homePinTargets(await client.replaceHomePinTargets(homePins));
+      setHomePins(saved);
+      setSavedHomePins(saved);
+      setHomePinNotice({ kind: "success", text: text("홈 항목의 고정 순서를 저장했습니다.", "Saved the pinned home-unit order.") });
     } catch (reason) {
       setHomePinNotice({ kind: "error", text: asMessage(reason) });
     } finally {
@@ -266,31 +291,56 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         <section className="studio-home-pin-panel" aria-labelledby="studio-home-pin-title">
           <div>
             <p className="eyebrow">Home curation</p>
-            <h2 id="studio-home-pin-title">{text("홈 상단 고정", "Pin to home")}</h2>
-            <p>{text("발행된 문서 카드에서 최대 3개를 선택하세요. 선택한 순서대로 공개 홈 맨 위에 표시됩니다.", "Choose up to three published documents. They appear at the top of the public home page in the selected order.")}</p>
+            <h2 id="studio-home-pin-title">{text("홈 순서 고정", "Pin home units")}</h2>
+            <p>{text("시리즈와 시리즈에 속하지 않은 일반 글을 합쳐 최대 3개까지 선택하세요. 고정한 항목은 공개 홈의 앞쪽에 선택 순서대로 놓입니다.", "Choose up to three series and standalone posts combined. Pinned units move to the front of the public home in your selected order.")}</p>
           </div>
           <span className="studio-home-pin-count">{homePins.length} / 3</span>
-          {homePinState === "loading" ? <p className="studio-home-pin-message" role="status">{text("현재 고정 글을 불러오는 중…", "Loading pinned posts…")}</p> : null}
+          {homePinState === "loading" ? <p className="studio-home-pin-message" role="status">{text("현재 고정 항목을 불러오는 중…", "Loading pinned units…")}</p> : null}
           {homePinState === "error" ? <p className="studio-home-pin-message is-error" role="alert">{homePinNotice?.text}</p> : null}
           {homePinState === "ready" ? (
             <>
-              <ol className="studio-home-pin-list" aria-label={text("현재 홈 상단 고정 순서", "Current home pin order")}>
-                {homePins.map((documentId, index) => {
-                  const document = documentById.get(documentId);
+              <ol className="studio-home-pin-list" aria-label={text("현재 홈 고정 순서", "Current home-unit pin order")}>
+                {homePins.map((target, index) => {
+                  const key = homePinTargetKey(target);
+                  const candidate = homePinCandidateByKey.get(key);
+                  const fallback = `${target.kind === "series" ? "Series" : "Post"} ${target.id.slice(0, 8)}`;
                   return (
-                    <li key={documentId}>
+                    <li key={key}>
                       <span aria-hidden="true">{index + 1}</span>
-                      <strong>{document?.revision.title || text(`발행 문서 ${documentId.slice(0, 8)}`, `Published document ${documentId.slice(0, 8)}`)}</strong>
-                      <button aria-label={text(`${document?.revision.title || "고정 글"} 고정 해제`, `Unpin ${document?.revision.title || "pinned post"}`)} onClick={() => toggleDashboardHomePin(documentId)} type="button">{text("해제", "Unpin")}</button>
+                      <span className={`home-pin-kind home-pin-kind-${target.kind}`}>{target.kind === "series" ? "Series" : "Post"}</span>
+                      <strong>{candidate?.title || fallback}</strong>
+                      <button aria-label={text(`${candidate?.title || fallback} 고정 해제`, `Unpin ${candidate?.title || fallback}`)} onClick={() => toggleDashboardHomePin(target)} type="button">{text("해제", "Unpin")}</button>
                     </li>
                   );
                 })}
               </ol>
-              {!homePins.length ? <p className="studio-home-pin-empty">{text("아직 고정한 글이 없습니다.", "No posts are pinned yet.")}</p> : null}
+              {!homePins.length ? <p className="studio-home-pin-empty">{text("아직 고정한 홈 항목이 없습니다.", "No home units are pinned yet.")}</p> : null}
+              {homePinCandidates.length ? (
+                <ul className="studio-home-pin-candidates" aria-label={text("고정할 수 있는 시리즈와 일반 글", "Series and standalone posts available to pin")}>
+                  {homePinCandidates.map((candidate) => {
+                    const key = homePinTargetKey(candidate.target);
+                    const selected = selectedHomePinKeys.has(key);
+                    return (
+                      <li key={key}>
+                        <button
+                          aria-pressed={selected}
+                          disabled={!selected && homePins.length >= 3}
+                          onClick={() => toggleDashboardHomePin(candidate.target)}
+                          type="button"
+                        >
+                          <span className={`home-pin-kind home-pin-kind-${candidate.kind}`}>{candidate.kind === "series" ? "Series" : "Post"}</span>
+                          <span><strong>{candidate.title}</strong><small>{candidate.locationLabel}</small></span>
+                          <span>{selected ? text("고정 해제", "Unpin") : text("고정", "Pin")}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : <p className="studio-home-pin-empty">{text("고정할 수 있는 발행 시리즈나 일반 글이 없습니다.", "There are no published series or standalone posts available to pin.")}</p>}
               <div className="studio-home-pin-actions">
                 <AppLink className="button button-ghost" href="/studio/settings">{text("순서 자세히 관리", "Manage order")}</AppLink>
                 <button className="button button-primary" disabled={!homePinsChanged || savingHomePins} onClick={() => void saveDashboardHomePins()} type="button">
-                  {savingHomePins ? text("저장하는 중…", "Saving…") : text("홈 고정 저장", "Save home pins")}
+                  {savingHomePins ? text("저장하는 중…", "Saving…") : text("홈 순서 저장", "Save home order")}
                 </button>
               </div>
               {homePinNotice ? <p className={`studio-home-pin-message is-${homePinNotice.kind}`} role={homePinNotice.kind === "error" ? "alert" : "status"}>{homePinNotice.text}</p> : null}
@@ -310,7 +360,12 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         ) : null}
         {documents.length ? (
           <div className="document-cards">
-            {documents.map((document) => (
+            {documents.map((document) => {
+              const target: HomePinTarget = { kind: "post", id: document.id };
+              const targetKey = homePinTargetKey(target);
+              const isSeriesMember = seriesMembership.documentIds.has(document.id);
+              const selected = selectedHomePinKeys.has(targetKey);
+              return (
               <article className="document-card" key={document.id}>
                 <div className="document-status-row">
                   <span className={`status-badge status-${document.status}`}>{document.status === "archived" ? text("보관됨", "Archived") : document.publishedRevisionId === document.currentRevisionId ? text("발행됨", "Published") : document.publishedRevisionId ? text("발행 대기 변경", "Changes pending publication") : text("초안", "Draft")}</span>
@@ -323,22 +378,23 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
                 <div className="document-card-footer">
                   <span>{text(`저장 버전 ${document.revision.revisionNumber}`, `Saved revision ${document.revision.revisionNumber}`)}</span>
                   <div className="document-card-actions">
-                    {canCurateHome && homePinState === "ready" && document.publishedRevisionId && document.status !== "archived" ? (
+                    {canCurateHome && homePinState === "ready" && document.publishedRevisionId && document.status !== "archived" && !isSeriesMember ? (
                       <button
-                        aria-pressed={homePins.includes(document.id)}
+                        aria-pressed={selected}
                         className="document-home-pin"
-                        disabled={!homePins.includes(document.id) && homePins.length >= 3}
-                        onClick={() => toggleDashboardHomePin(document.id)}
+                        disabled={!selected && homePins.length >= 3}
+                        onClick={() => toggleDashboardHomePin(target)}
                         type="button"
                       >
-                        {homePins.includes(document.id) ? text("홈 고정 해제", "Unpin from home") : text("홈에 고정", "Pin to home")}
+                        {selected ? text("홈 고정 해제", "Unpin from home") : text("홈에 고정", "Pin to home")}
                       </button>
                     ) : null}
                     <AppLink href={`/studio/write/${document.id}`}>{text("계속 쓰기", "Continue writing")} <span aria-hidden="true">→</span></AppLink>
                   </div>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         ) : null}
       </section>
@@ -360,9 +416,9 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const [customCss, setCustomCss] = useState("");
   const [saving, setSaving] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<{ kind: "success" | "error"; text: string }>();
-  const [curationPosts, setCurationPosts] = useState<HomeCurationCandidate[]>([]);
-  const [homePins, setHomePins] = useState<string[]>([]);
-  const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
+  const [curationCandidates, setCurationCandidates] = useState<HomeCurationCandidate[]>([]);
+  const [homePins, setHomePins] = useState<HomePinTarget[]>([]);
+  const [savedHomePins, setSavedHomePins] = useState<HomePinTarget[]>([]);
   const [curationState, setCurationState] = useState<SettingsLoadState>("unavailable");
   const [curationNotice, setCurationNotice] = useState<{ kind: "success" | "error"; text: string }>();
   const [savingCuration, setSavingCuration] = useState(false);
@@ -442,7 +498,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   useEffect(() => {
     if (!homeCurationAvailable) {
       setCurationState("unavailable");
-      setCurationPosts([]);
+      setCurationCandidates([]);
       setHomePins([]);
       setSavedHomePins([]);
       return;
@@ -454,11 +510,17 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       client.home(controller.signal),
       client.getHomePins(controller.signal),
       client.listStudioDocuments(controller.signal),
-    ]).then(([home, pins, documents]) => {
+      client.listStudioSeries(controller.signal),
+    ]).then(([home, pins, documents, seriesResponse]) => {
       if (controller.signal.aborted) return;
-      setCurationPosts(homeCurationCandidates(home, documents, uiLanguage));
-      setHomePins(pins.documentIds);
-      setSavedHomePins(pins.documentIds);
+      setCurationCandidates(homeCurationCandidates(home, {
+        studioDocuments: documents,
+        studioSeries: seriesResponse.items,
+        language: uiLanguage,
+      }));
+      const targets = homePinTargets(pins);
+      setHomePins(targets);
+      setSavedHomePins(targets);
       setCurationState("ready");
     }).catch((reason: unknown) => {
       if (controller.signal.aborted) return;
@@ -475,7 +537,9 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const settingsChanged = Boolean(settings) && (
     themePreset !== settings?.themePreset || (settings.customCssEnabled && customCss !== (settings.customCss ?? ""))
   );
-  const homePinsChanged = homePins.join(":") !== savedHomePins.join(":");
+  const homePinsChanged = homePins.map(homePinTargetKey).join(":")
+    !== savedHomePins.map(homePinTargetKey).join(":");
+  const curationRows = homeCurationRows(curationCandidates, homePins, uiLanguage);
 
   async function saveSettings() {
     if (!settings || saving) return;
@@ -539,21 +603,25 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     }
   }
 
-  function toggleHomePin(documentId: string) {
+  function toggleHomePin(target: HomePinTarget) {
     setCurationNotice(undefined);
     setHomePins((current) => {
-      if (current.includes(documentId)) return current.filter((id) => id !== documentId);
-      return current.length < 3 ? [...current, documentId] : current;
+      const key = homePinTargetKey(target);
+      if (current.some((item) => homePinTargetKey(item) === key)) {
+        return current.filter((item) => homePinTargetKey(item) !== key);
+      }
+      return current.length < 3 ? [...current, target] : current;
     });
   }
 
-  function moveHomePin(documentId: string, offset: -1 | 1) {
+  function moveHomePin(target: HomePinTarget, offset: -1 | 1) {
     setHomePins((current) => {
-      const index = current.indexOf(documentId);
-      const target = index + offset;
-      if (index < 0 || target < 0 || target >= current.length) return current;
+      const key = homePinTargetKey(target);
+      const index = current.findIndex((item) => homePinTargetKey(item) === key);
+      const targetIndex = index + offset;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.length) return current;
       const next = [...current];
-      [next[index], next[target]] = [next[target]!, next[index]!];
+      [next[index], next[targetIndex]] = [next[targetIndex]!, next[index]!];
       return next;
     });
   }
@@ -563,10 +631,10 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     setSavingCuration(true);
     setCurationNotice(undefined);
     try {
-      const saved = await client.replaceHomePins(homePins);
-      setHomePins(saved.documentIds);
-      setSavedHomePins(saved.documentIds);
-      setCurationNotice({ kind: "success", text: text("홈 주요 글을 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다.", "Saved featured home posts. The public home cache will also refresh.") });
+      const saved = homePinTargets(await client.replaceHomePinTargets(homePins));
+      setHomePins(saved);
+      setSavedHomePins(saved);
+      setCurationNotice({ kind: "success", text: text("홈 항목의 고정 순서를 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다.", "Saved the pinned home-unit order. The public home cache will also refresh.") });
     } catch (reason) {
       setCurationNotice({ kind: "error", text: asMessage(reason) });
     } finally {
@@ -681,7 +749,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
           {homeCurationAvailable ? (
             <section className="settings-panel home-curation-panel" aria-labelledby="home-curation-title">
               <div className="settings-panel-heading">
-                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">{text("홈 주요 글", "Featured home posts")}</h2><p>{text("발행된 글 중 최대 3개를 골라 공개 홈의 맨 위에 순서대로 고정합니다.", "Choose up to three published posts and pin them in order at the top of the public home page.")}</p></div></div>
+                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">{text("홈 항목 고정", "Pinned home units")}</h2><p>{text("시리즈와 시리즈에 속하지 않은 일반 글을 합쳐 최대 3개까지 고정합니다. 선택한 순서가 공개 홈의 앞쪽 순서가 됩니다.", "Pin up to three series and standalone posts combined. Your selected order becomes their order at the front of the public home.")}</p></div></div>
                 <span className="settings-revision">{homePins.length} / 3</span>
               </div>
               {curationState === "loading" ? <div className="collaboration-loading" role="status">{text("홈 구성을 불러오는 중…", "Loading home curation…")}</div> : null}
@@ -689,37 +757,42 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
               {curationState === "unavailable" ? <div className="collaboration-off"><strong>{text("홈 큐레이션 DLC가 활성화되지 않았습니다.", "Home curation is not enabled.")}</strong><p>{text("공개 피드는 계속 최신순으로 동작합니다.", "The public feed continues to use most-recent-first order.")}</p></div> : null}
               {curationState === "ready" ? (
                 <>
-                  {curationPosts.length ? (
+                  {curationRows.length ? (
                     <ol className="home-curation-list">
-                      {curationPosts.map((post) => {
-                        const position = homePins.indexOf(post.id);
+                      {curationRows.map((candidate) => {
+                        const key = homePinTargetKey(candidate.target);
+                        const position = homePins.findIndex((target) => homePinTargetKey(target) === key);
                         const selected = position >= 0;
                         return (
-                          <li className={selected ? "is-selected" : ""} key={post.id}>
+                          <li className={selected ? "is-selected" : ""} key={key}>
                             <button
                               aria-pressed={selected}
                               className="home-curation-select"
                               disabled={!selected && homePins.length >= 3}
-                              onClick={() => toggleHomePin(post.id)}
+                              onClick={() => toggleHomePin(candidate.target)}
                               type="button"
                             >
                               <span aria-hidden="true">{selected ? position + 1 : "＋"}</span>
-                              <span><strong>{post.title}</strong><small>{post.locationLabel}</small></span>
+                              <span>
+                                <span className={`home-pin-kind home-pin-kind-${candidate.kind}`}>{candidate.kind === "series" ? "Series" : "Post"}</span>
+                                <strong>{candidate.title}</strong>
+                                <small>{candidate.locationLabel}</small>
+                              </span>
                               <span>{selected ? text("고정 해제", "Unpin") : text("고정", "Pin")}</span>
                             </button>
                             {selected ? (
-                              <div className="home-curation-order" aria-label={text(`${post.title} 순서 변경`, `Change order for ${post.title}`)}>
-                                <button disabled={position === 0} onClick={() => moveHomePin(post.id, -1)} type="button">{text("위", "Up")}</button>
-                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(post.id, 1)} type="button">{text("아래", "Down")}</button>
+                              <div className="home-curation-order" aria-label={text(`${candidate.title} 순서 변경`, `Change order for ${candidate.title}`)}>
+                                <button disabled={position === 0} onClick={() => moveHomePin(candidate.target, -1)} type="button">{text("위", "Up")}</button>
+                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(candidate.target, 1)} type="button">{text("아래", "Down")}</button>
                               </div>
                             ) : null}
                           </li>
                         );
                       })}
                     </ol>
-                  ) : <div className="collaborator-empty"><p>{text("먼저 글을 하나 발행하면 여기에서 고를 수 있습니다.", "Publish a post first, then choose it here.")}</p></div>}
+                  ) : <div className="collaborator-empty"><p>{text("먼저 시리즈에 글을 발행하거나 일반 글을 하나 발행하면 여기에서 고를 수 있습니다.", "Publish a series entry or a standalone post first, then choose it here.")}</p></div>}
                   <div className="settings-save-row">
-                    <p>{text("고정 글은 최근 글 목록에서 중복해서 나오지 않습니다.", "Pinned posts are not duplicated in the recent-post list.")}</p>
+                    <p>{text("고정은 별도 구역이나 배지를 만들지 않고 홈 항목의 순서만 앞당깁니다.", "Pinning changes only the home-unit order; it does not add a separate section or badge.")}</p>
                     <button className="button button-primary" disabled={!homePinsChanged || savingCuration} onClick={() => void saveHomeCuration()} type="button">{savingCuration ? text("저장하는 중…", "Saving…") : text("홈 구성 저장", "Save home curation")}</button>
                   </div>
                   {curationNotice ? <p className={`settings-message is-${curationNotice.kind}`} role={curationNotice.kind === "error" ? "alert" : "status"}>{curationNotice.text}</p> : null}

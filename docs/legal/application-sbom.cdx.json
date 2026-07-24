@@ -6,9 +6,9 @@
   "metadata": {
     "component": {
       "type": "application",
-      "bom-ref": "pkg:generic/open-soverign-blog@0.1.1",
+      "bom-ref": "pkg:generic/open-soverign-blog@0.1.2",
       "name": "OpenSoverignBlog",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "licenses": [
         {
           "license": {

@@ -33,7 +33,8 @@ sizes above. Kakao says media review needs at least one unit and generally takes
 one or two business days, although it can take longer. Use the exact code and
 unit information issued for the registered media.
 
-Configure all four values together:
+After bootstrap, edit the four blank entries in the generated, ignored
+`.env` file and configure all four values together:
 
 | Environment variable | Value |
 | --- | --- |

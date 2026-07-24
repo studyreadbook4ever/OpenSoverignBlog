@@ -100,7 +100,6 @@ export function FeedPage() {
   }, []);
 
   const presentation = useMemo(() => presentHome(home), [home]);
-  const total = presentation.total;
   const writeHref = session?.state === "authenticated"
     ? (session.blog ? "/studio/new" : "/onboarding")
     : "/login";
@@ -113,28 +112,18 @@ export function FeedPage() {
       <aside className="wiki-sidebar" aria-label={text("홈 안내", "Home guide")}>
         <section>
           <h2>OpenSoverignBlog</h2>
-          <p>{text("Markdown 원문과 서버를 작성자가 직접 소유하는 온프레미스 블로그 엔진입니다.", "A self-hosted blog engine where authors own both their Markdown source and server.")}</p>
         </section>
         <nav aria-label={text("빠른 이동", "Quick navigation")}>
           <strong>{text("빠른 이동", "Quick navigation")}</strong>
-          {home.pinnedItems.length ? <a href="#home-pinned">{text("주요 글", "Featured posts")}</a> : null}
-          {presentation.seriesSections.map((section) => (
-            <a href={`#${section.anchorId}`} key={section.series.id}>{section.series.title}</a>
-          ))}
-          {presentation.categorySections.map((section) => (
-            <a href={`#${section.anchorId}`} key={section.category.id}>{section.category.title}</a>
-          ))}
-          {presentation.recentItems.length ? <a href="#home-recent">{text("최근 글", "Recent posts")}</a> : null}
+          {presentation.units.flatMap((unit) => unit.kind === "series"
+            ? [<a href={`#${unit.anchorId}`} key={unit.series.id}>{unit.series.title}</a>]
+            : [])}
           {capabilities?.references ? (
             <AppLink href={capabilities.references.href}>{capabilities.references.label}</AppLink>
           ) : null}
           <a href={publicPath("/openapi/openapi.yaml")}>OpenAPI</a>
           <a href={publicPath("/AI2AI.md")}>{text("AI 접근 안내", "AI access guide")}</a>
         </nav>
-        <dl>
-          <div><dt>{text("공개 글", "Public posts")}</dt><dd>{total.toLocaleString(uiLanguage === "en" ? "en-US" : "ko-KR")}</dd></div>
-          <div><dt>{text("운영 모드", "Mode")}</dt><dd>{capabilities && studioAccessFor(capabilities) === "disabled" ? text("읽기 전용", "Read only") : text("발행 가능", "Publishing enabled")}</dd></div>
-        </dl>
         {capabilities && studioAccessFor(capabilities) !== "disabled" ? (
           <AppLink className="button button-primary wiki-write" href={writeHref}>
             {session?.state === "authenticated" && session.blog
@@ -145,15 +134,9 @@ export function FeedPage() {
       </aside>
 
       <div className="wiki-main">
-        <header className="wiki-welcome">
-          <p className="eyebrow">Self-hosted publishing</p>
-          <h1>{text("읽는 화면은 가볍게, 기록의 소유권은 분명하게.", "A lightweight reading experience, with ownership kept clear.")}</h1>
-          <p>{text("이 홈은 발행된 불변 리비전만 보여 줍니다. 초안과 관리자 기능은 공개 캐시에서 분리됩니다.", "This home page shows only published immutable revisions. Drafts and administrator features stay outside the public cache.")}</p>
-        </header>
-
         {loading ? <FeedSkeleton /> : null}
         {error ? <StatusMessage title={text("홈을 불러오지 못했습니다", "Could not load home")} detail={error} /> : null}
-        {!loading && !error && total === 0 ? (
+        {!loading && !error && presentation.units.length === 0 ? (
           <EmptyState
             {...(!capabilities || studioAccessFor(capabilities) === "disabled" ? {} : {
               actionHref: writeHref,
@@ -168,46 +151,16 @@ export function FeedPage() {
           />
         ) : null}
 
-        {home.pinnedItems.length ? (
-          <HomePostSection id="home-pinned" items={home.pinnedItems} title={text("주요 글", "Featured posts")} tone="pinned" />
-        ) : null}
-        {presentation.seriesSections.map((section) => (
-          <HomePostSection
-            {...(section.series.description
-              ? { description: section.series.description }
-              : {})}
-            href={publicCategoryPath({
-              categorySlug: section.series.slug,
-              handle: "",
-              primary: true,
-            })}
-            id={section.anchorId}
-            items={section.items}
-            key={section.series.id}
-            title={section.series.title}
-            tone="series"
-          />
-        ))}
-        {presentation.categorySections.map((section) => (
-          <HomePostSection
-            {...(section.category.description
-              ? { description: section.category.description }
-              : {})}
-            href={publicCategoryPath({
-              categorySlug: section.category.slug,
-              handle: "",
-              primary: true,
-            })}
-            id={section.anchorId}
-            items={section.items}
-            key={section.category.id}
-            title={section.category.title}
-            tone="category"
-          />
-        ))}
-        {presentation.recentItems.length ? (
-          <HomePostSection id="home-recent" items={presentation.recentItems} title={text("최근 변경", "Recent changes")} tone="recent" />
-        ) : null}
+        {presentation.units.map((unit) => unit.kind === "post"
+          ? <HomeStandalonePost key={`post:${unit.post.id}`} post={unit.post} />
+          : (
+            <HomeSeriesUnitPanel
+              anchorId={unit.anchorId}
+              items={unit.items}
+              key={`series:${unit.series.id}`}
+              series={unit.series}
+            />
+          ))}
       </div>
     </div>
   );
@@ -253,71 +206,87 @@ export function ReferencesPage({ capabilities }: { capabilities: Capabilities | 
   );
 }
 
-function HomePostSection({
-  description,
-  href,
-  id,
+function HomeSeriesUnitPanel({
+  anchorId,
   items,
-  title,
-  tone,
+  series,
 }: {
-  description?: string;
-  href?: string;
-  id: string;
+  anchorId: string;
   items: FeedPostSummary[];
-  title: string;
-  tone: "pinned" | "series" | "category" | "recent";
+  series: {
+    id: string;
+    slug: string;
+    title: string;
+    description?: string;
+  };
 }) {
-  const collapsible = tone === "series" || tone === "category";
-  const [expanded, setExpanded] = useState(tone !== "series");
-  const contentId = `${id}-content`;
+  const [expanded, setExpanded] = useState(false);
+  const contentId = `${anchorId}-content`;
 
   useEffect(() => {
-    if (!collapsible) return;
     const revealFragmentTarget = () => {
-      if (window.location.hash === `#${id}`) setExpanded(true);
+      if (window.location.hash === `#${anchorId}`) setExpanded(true);
     };
     revealFragmentTarget();
     window.addEventListener("hashchange", revealFragmentTarget);
     return () => window.removeEventListener("hashchange", revealFragmentTarget);
-  }, [collapsible, id]);
+  }, [anchorId]);
 
   return (
-    <section className={`wiki-panel wiki-panel-${tone}`} id={id} aria-labelledby={`${id}-title`}>
+    <section className="wiki-panel wiki-panel-series" id={anchorId} aria-labelledby={`${anchorId}-title`}>
       <div className="wiki-panel-heading">
         <div className="wiki-panel-heading-copy">
-          <h2 id={`${id}-title`}>
-            {href ? <AppLink href={href}>{title}</AppLink> : title}
+          <h2 id={`${anchorId}-title`}>
+            <AppLink href={publicCategoryPath({
+              categorySlug: series.slug,
+              handle: "",
+              primary: true,
+            })}>{series.title}</AppLink>
           </h2>
-          {description ? <p className="wiki-panel-description">{description}</p> : null}
+          {series.description ? <p className="wiki-panel-description">{series.description}</p> : null}
         </div>
         <div className="wiki-panel-controls">
-          <span>{text(`${items.length}개`, `${items.length} posts`)}</span>
-          {collapsible ? (
-            <button
-              aria-controls={contentId}
-              aria-expanded={expanded}
-              className="wiki-panel-toggle"
-              onClick={() => setExpanded((value) => !value)}
-              type="button"
-            >
-              <span aria-hidden="true">{expanded ? "−" : "+"}</span>
-              <span>{expanded ? text("접기", "Collapse") : text("펼치기", "Expand")}</span>
-            </button>
-          ) : null}
+          <button
+            aria-controls={contentId}
+            aria-expanded={expanded}
+            className="wiki-panel-toggle"
+            onClick={() => setExpanded((value) => !value)}
+            type="button"
+          >
+            <span aria-hidden="true">{expanded ? "−" : "+"}</span>
+            <span>{expanded ? text("접기", "Collapse") : text("펼치기", "Expand")}</span>
+          </button>
         </div>
       </div>
-      <div className="wiki-post-list" hidden={collapsible && !expanded} id={contentId}>
+      <div className="wiki-post-list" hidden={!expanded} id={contentId}>
         {items.map((post) => <DensePostRow key={post.id} post={post} />)}
       </div>
     </section>
   );
 }
 
+function HomeStandalonePost({ post }: { post: FeedPostSummary }) {
+  return (
+    <article className="wiki-panel wiki-panel-post">
+      <div className="wiki-post-row">
+        <DensePostContent post={post} />
+      </div>
+    </article>
+  );
+}
+
 function DensePostRow({ post }: { post: FeedPostSummary }) {
-  const href = publicFeedPostPath(post);
   return (
     <article className="wiki-post-row">
+      <DensePostContent post={post} />
+    </article>
+  );
+}
+
+function DensePostContent({ post }: { post: FeedPostSummary }) {
+  const href = publicFeedPostPath(post);
+  return (
+    <>
       <div className="wiki-post-copy">
         <h3><AppLink href={href}>{post.title}</AppLink></h3>
         <p>{post.excerpt}</p>
@@ -330,7 +299,7 @@ function DensePostRow({ post }: { post: FeedPostSummary }) {
         </div>
       </div>
       <span className="list-arrow" aria-hidden="true">›</span>
-    </article>
+    </>
   );
 }
 

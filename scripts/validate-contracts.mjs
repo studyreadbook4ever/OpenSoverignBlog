@@ -30,6 +30,65 @@ if (
 ) {
   throw new Error(`${openApiPath}: BlogSummary must require the boolean isPrimary route identity`);
 }
+const publicHandlePattern = "^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$";
+const newHandlePattern = "^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$";
+const publicHandleParameter = openApi.components?.parameters?.Handle?.schema;
+const userSummaryHandle = openApi.components?.schemas?.UserSummary?.properties?.handle;
+const blogSummaryHandle = blogSummarySchema?.properties?.handle;
+const registerHandle = openApi.components?.schemas?.RegisterRequest?.properties?.handle;
+const createBlogHandle = openApi.components?.schemas?.CreateBlogRequest?.properties?.handle;
+if (
+  [publicHandleParameter, userSummaryHandle, blogSummaryHandle].some((schema) => (
+    schema?.minLength !== 1
+    || schema?.maxLength !== 40
+    || schema?.pattern !== publicHandlePattern
+  ))
+  || [registerHandle, createBlogHandle].some((schema) => (
+    schema?.minLength !== 3
+    || schema?.maxLength !== 40
+    || schema?.pattern !== newHandlePattern
+  ))
+) {
+  throw new Error(`${openApiPath}: persisted public handles must allow 1-40 characters while new handles remain 3-40`);
+}
+const documentSnapshotSchema = openApi.components?.schemas?.DocumentSnapshot;
+const publishedCategoryId =
+  documentSnapshotSchema?.properties?.publishedCategoryId;
+const studioDocumentSnapshotSchema =
+  openApi.components?.schemas?.StudioDocumentSnapshot;
+if (
+  JSON.stringify(publishedCategoryId?.type) !== JSON.stringify(["string", "null"])
+  || publishedCategoryId?.format !== "uuid"
+  || documentSnapshotSchema?.required?.includes("publishedCategoryId")
+  || studioDocumentSnapshotSchema?.allOf?.[0]?.$ref
+    !== "#/components/schemas/DocumentSnapshot"
+  || !studioDocumentSnapshotSchema?.allOf?.[1]?.required?.includes(
+    "publishedCategoryId",
+  )
+) {
+  throw new Error(
+    `${openApiPath}: Studio snapshots must require nullable publishedCategoryId without making it mandatory on shared legacy DocumentSnapshot responses`,
+  );
+}
+const studioDocumentSnapshotRef =
+  "#/components/schemas/StudioDocumentSnapshot";
+const studioDocumentResponseRefs = [
+  openApi.paths?.["/api/v1/studio/documents"]?.get?.responses?.["200"]
+    ?.content?.["application/json"]?.schema?.items?.$ref,
+  openApi.paths?.["/api/v1/studio/documents"]?.post?.responses?.["201"]
+    ?.content?.["application/json"]?.schema?.$ref,
+  openApi.paths?.["/api/v1/studio/documents/{id}"]?.get?.responses?.["200"]
+    ?.content?.["application/json"]?.schema?.$ref,
+  openApi.paths?.["/api/v1/studio/documents/{id}/revisions"]?.post
+    ?.responses?.["201"]?.content?.["application/json"]?.schema?.$ref,
+  openApi.paths?.["/api/v1/studio/documents/{id}/publish"]?.post
+    ?.responses?.["200"]?.content?.["application/json"]?.schema?.$ref,
+];
+if (studioDocumentResponseRefs.some((reference) => reference !== studioDocumentSnapshotRef)) {
+  throw new Error(
+    `${openApiPath}: every Studio document response must require StudioDocumentSnapshot`,
+  );
+}
 const capabilitiesSchema = openApi.components?.schemas?.Capabilities;
 if (
   !capabilitiesSchema?.required?.includes("language")
@@ -63,11 +122,28 @@ if (
 }
 const homeResponseSchema = openApi.components?.schemas?.HomeResponse;
 if (
-  !homeResponseSchema?.required?.includes("seriesSections")
+  !homeResponseSchema?.required?.includes("units")
+  || homeResponseSchema.properties?.units?.items?.$ref
+    !== "#/components/schemas/HomeUnit"
+  || !homeResponseSchema?.required?.includes("seriesSections")
   || homeResponseSchema.properties?.seriesSections?.items?.$ref
     !== "#/components/schemas/HomeSeriesSection"
 ) {
-  throw new Error(`${openApiPath}: HomeResponse must require typed seriesSections`);
+  throw new Error(`${openApiPath}: HomeResponse must require typed units and compatibility seriesSections`);
+}
+const homePinTargetSchema = openApi.components?.schemas?.HomePinTarget;
+const homePinsSchema = openApi.components?.schemas?.HomePins;
+const homePinsInputSchema = openApi.components?.schemas?.HomePinsInput;
+if (
+  homePinTargetSchema?.oneOf?.length !== 2
+  || !homePinsSchema?.required?.includes("targets")
+  || homePinsSchema.properties?.targets?.maxItems !== 3
+  || homePinsSchema.properties?.targets?.uniqueItems !== true
+  || homePinsSchema.properties?.targets?.items?.$ref
+    !== "#/components/schemas/HomePinTarget"
+  || homePinsInputSchema?.oneOf?.length !== 2
+) {
+  throw new Error(`${openApiPath}: home pins must expose at most three typed post/series targets with legacy input compatibility`);
 }
 
 const httpMethods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
@@ -164,10 +240,10 @@ for (const method of ["get", "put"]) {
   if (
     itemsSchema?.type !== "array"
     || itemsSchema.maxItems !== 500
-    || itemsSchema.items?.$ref !== "#/components/schemas/DocumentSnapshot"
+    || itemsSchema.items?.$ref !== "#/components/schemas/StudioDocumentSnapshot"
   ) {
     throw new Error(
-      `${openApiPath}: ${method.toUpperCase()} Studio series items must return bounded DocumentSnapshot arrays`,
+      `${openApiPath}: ${method.toUpperCase()} Studio series items must return bounded StudioDocumentSnapshot arrays`,
     );
   }
 }

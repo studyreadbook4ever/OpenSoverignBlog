@@ -44,8 +44,8 @@ test("advertising is limited to public reader routes", () => {
     "/@writer/post",
     "/@writer/series/post",
     "/blog/legacy-post",
-    "/ontology",
-    "/ontology/post",
+    "/notes",
+    "/archive/post",
   ]) {
     assert.equal(isAdvertisingReaderPath(pathname), true, pathname);
   }
@@ -73,7 +73,7 @@ test("advertising is limited to public reader routes", () => {
     "/BLOG/legacy-post",
     "/@",
     "/@/post",
-    "/ontology//post",
+    "/notes//post",
     "//",
     "//attacker.example/",
   ]) {
@@ -84,8 +84,8 @@ test("advertising is limited to public reader routes", () => {
 test("advertising requires confirmed reader content, including home, series, and posts", () => {
   for (const pathname of [
     "/",
-    "/ontology",
-    "/ontology/post",
+    "/notes",
+    "/archive/post",
     "/@writer/post",
   ]) {
     assert.equal(
@@ -193,6 +193,61 @@ test("the application exposes exactly two edge slots and no iframe adapter", asy
   assert.equal(policySource.includes(KAKAO_ADFIT_SCRIPT_URL), true);
 });
 
+test("source-checkout Compose exposes four empty operator-owned AdFit unit inputs", async () => {
+  const [environment, compose] = await Promise.all([
+    readFile(new URL("../../../.env.example", import.meta.url), "utf8"),
+    readFile(new URL("../../../compose.yaml", import.meta.url), "utf8"),
+  ]);
+  for (const name of [
+    "OSB_KAKAO_ADFIT_PC_TOP_UNIT",
+    "OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT",
+    "OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT",
+    "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT",
+  ]) {
+    assert.match(environment, new RegExp(`^${name}=$`, "m"));
+    assert.equal(
+      compose.includes(`${name}: "\${${name}:-}"`),
+      true,
+      `${name} must be forwarded into the blog container`,
+    );
+  }
+});
+
+test("runtime CSP covers every origin in the reviewed AdFit provider contract", async () => {
+  const [server, provider, runbook] = await Promise.all([
+    readFile(new URL("../../server/src/advertising.rs", import.meta.url), "utf8"),
+    readFile(new URL("../../../providers/kakao-adfit.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../../docs/monetization/KAKAO-ADFIT.md", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const csp = server.match(/ADVERTISING_SECURITY_CSP: &str = "([^"]+)"/)?.[1];
+  assert.ok(csp, "server advertising CSP must remain statically reviewable");
+  const runtimeDirectives = new Map(
+    csp.split(";").map((entry) => {
+      const [directive, ...sources] = entry.trim().split(/\s+/);
+      return [directive, new Set(sources)];
+    }),
+  );
+  const providerDirectives = parseProviderCsp(provider);
+  assert.ok(providerDirectives.size > 0, "provider CSP contract must be readable");
+  for (const [directive, origins] of providerDirectives) {
+    for (const origin of origins) {
+      assert.equal(
+        runtimeDirectives.get(directive)?.has(origin),
+        true,
+        `${directive} must allow ${origin}`,
+      );
+      assert.equal(
+        runbook.includes(origin),
+        true,
+        `operator runbook must document ${origin}`,
+      );
+    }
+  }
+});
+
 test("the official loader is consent-markup gated, unique, and removable", () => {
   const inert = fakeDocument(false);
   installKakaoAdFitLoader(inert, KAKAO_ADFIT_SCRIPT_URL);
@@ -222,6 +277,31 @@ test("the official loader is consent-markup gated, unique, and removable", () =>
   installKakaoAdFitLoader(document, "https://ads.example.invalid/loader.js");
   assert.equal(document.scripts.length, 0);
 });
+
+function parseProviderCsp(source) {
+  const directives = new Map();
+  let inCspRequirements = false;
+  let currentDirective;
+  for (const line of source.split(/\r?\n/)) {
+    if (line === "cspRequirements:") {
+      inCspRequirements = true;
+      continue;
+    }
+    if (!inCspRequirements) continue;
+    if (line && !line.startsWith(" ")) break;
+    const directive = line.match(/^  ([a-z-]+):$/)?.[1];
+    if (directive) {
+      currentDirective = directive;
+      directives.set(directive, []);
+      continue;
+    }
+    const origin = line.match(/^    - (https:\/\/\S+)$/)?.[1];
+    if (origin && currentDirective) {
+      directives.get(currentDirective).push(origin);
+    }
+  }
+  return directives;
+}
 
 function fakeDocument(hasAuthorizedUnit) {
   const scripts = [];

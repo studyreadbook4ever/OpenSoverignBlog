@@ -12,16 +12,16 @@ argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
-osb-assets-fs = { version = "=0.1.1", path = "../../crates/assets-fs" }
-osb-kernel = { version = "=0.1.1", path = "../../crates/kernel" }
-osb-plugin-api = { version = "=0.1.1", path = "../../crates/plugin-api" }
-osb-renderer = { version = "=0.1.1", path = "../../crates/renderer" }
-osb-storage-sqlite = { version = "=0.1.1", path = "../../crates/storage-sqlite" }
-osb-feature-seo = { version = "=0.1.1", path = "../../features/seo" }
-osb-feature-code-runner-client = { version = "=0.1.1", path = "../../features/code-runner-client" }
-osb-feature-comments = { version = "=0.1.1", path = "../../features/comments" }
-osb-feature-external-auth = { version = "=0.1.1", path = "../../features/external-auth" }
-osb-feature-monetization-policy = { version = "=0.1.1", path = "../../features/monetization-policy" }
+osb-assets-fs = { version = "=0.1.2", path = "../../crates/assets-fs" }
+osb-kernel = { version = "=0.1.2", path = "../../crates/kernel" }
+osb-plugin-api = { version = "=0.1.2", path = "../../crates/plugin-api" }
+osb-renderer = { version = "=0.1.2", path = "../../crates/renderer" }
+osb-storage-sqlite = { version = "=0.1.2", path = "../../crates/storage-sqlite" }
+osb-feature-seo = { version = "=0.1.2", path = "../../features/seo" }
+osb-feature-code-runner-client = { version = "=0.1.2", path = "../../features/code-runner-client" }
+osb-feature-comments = { version = "=0.1.2", path = "../../features/comments" }
+osb-feature-external-auth = { version = "=0.1.2", path = "../../features/external-auth" }
+osb-feature-monetization-policy = { version = "=0.1.2", path = "../../features/monetization-policy" }
 openidconnect.workspace = true
 percent-encoding.workspace = true
 rand_core.workspace = true

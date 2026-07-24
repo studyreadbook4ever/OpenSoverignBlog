@@ -12,9 +12,9 @@ argon2.workspace = true
 base64.workspace = true
 clap.workspace = true
 chrono.workspace = true
-osb-kernel = { version = "=0.1.1", path = "../../crates/kernel" }
-osb-plugin-api = { version = "=0.1.1", path = "../../crates/plugin-api" }
-osb-storage-sqlite = { version = "=0.1.1", path = "../../crates/storage-sqlite" }
+osb-kernel = { version = "=0.1.2", path = "../../crates/kernel" }
+osb-plugin-api = { version = "=0.1.2", path = "../../crates/plugin-api" }
+osb-storage-sqlite = { version = "=0.1.2", path = "../../crates/storage-sqlite" }
 rand_core.workspace = true
 semver.workspace = true
 serde.workspace = true

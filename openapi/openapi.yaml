@@ -2,7 +2,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: OpenSoverignBlog HTTP API
-  version: 0.1.1
+  version: 0.1.2
   description: |
     Contract for the routes mounted by the reference Rust server. This describes
     implemented wire behavior, not every capability that a future plugin may add.
@@ -233,7 +233,7 @@ paths:
           description: Consent decision persisted without returning a unique identifier.
           headers:
             Set-Cookie:
-              description: Static `osb_adfit_consent_v1` decision with HttpOnly, SameSite=Lax, Path=/, Max-Age, and Secure on HTTPS.
+              description: Static `osb_adfit_consent_v1` decision with HttpOnly, SameSite=Lax, the configured public base path (`/` for a root deployment), Max-Age, and Secure on HTTPS.
               schema: { type: string }
             Cache-Control:
               schema: { type: string, const: "private, no-store" }
@@ -242,13 +242,13 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/AdvertisingConsentStatus" }
-        "403": { $ref: "#/components/responses/Unavailable" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "422":
-          description: The body is malformed or contains a decision other than granted or denied.
+        "403":
+          description: The request is missing a valid same-origin Origin header.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorBody" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/JsonDataError" }
 
   /api/v1/references:
     get:
@@ -489,7 +489,7 @@ paths:
       tags: [Content]
       operationId: getCuratedHome
       summary: Read the optional curated home projection
-      description: Mounted only when the bundled home-curation DLC is active. Pinned posts never repeat in recentItems, seriesSections, or categorySections; series sections preserve explicit order, while ordinary category sections project remaining active primary-site categories from oldest to newest.
+      description: Mounted only when the bundled home-curation DLC is active. `units` is the authoritative order of pinned and unpinned series/post units. Series preserve explicit item order, while a post unit is never grouped under an artificial featured or recent collection. The four legacy projection fields remain for rolling compatibility.
       x-osb-route-source: true
       responses:
         "200":
@@ -941,7 +941,7 @@ paths:
         - SessionCookie: []
       responses:
         "200":
-          description: Ordered published document identifiers, with at most three entries.
+          description: Ordered typed series/post targets, with a deprecated document-only projection.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/HomePins" }
@@ -951,7 +951,8 @@ paths:
     put:
       tags: [Studio]
       operationId: replaceHomePins
-      summary: Atomically replace all global home pins
+      summary: Atomically replace up to three combined series/post home pins
+      description: "`targets` is authoritative. The mutually-exclusive legacy `documentIds` form remains accepted during rolling upgrades and normalizes a series-member document to its active primary-site series."
       x-osb-route-source: true
       security:
         - SessionCookie: []
@@ -959,7 +960,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/HomePins" }
+            schema: { $ref: "#/components/schemas/HomePinsInput" }
       responses:
         "200":
           description: The committed ordered pin identifiers.
@@ -969,6 +970,7 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/JsonDataError" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
   /api/v1/studio/documents:
@@ -986,7 +988,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: "#/components/schemas/DocumentSnapshot" }
+                items: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503": { $ref: "#/components/responses/Unavailable" }
     post:
@@ -1006,7 +1008,7 @@ paths:
           description: Draft created.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+              schema: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "503": { $ref: "#/components/responses/Unavailable" }
@@ -1026,7 +1028,7 @@ paths:
           description: Writable document, including its current private revision.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+              schema: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/Unavailable" }
@@ -1050,7 +1052,7 @@ paths:
           description: Updated document snapshot. A prior published revision stays public.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+              schema: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1076,7 +1078,7 @@ paths:
           description: Published document snapshot.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/DocumentSnapshot" }
+              schema: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
@@ -1311,7 +1313,7 @@ paths:
               schema:
                 type: array
                 maxItems: 500
-                items: { $ref: "#/components/schemas/DocumentSnapshot" }
+                items: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "503": { $ref: "#/components/responses/Unavailable" }
@@ -1337,7 +1339,7 @@ paths:
               schema:
                 type: array
                 maxItems: 500
-                items: { $ref: "#/components/schemas/DocumentSnapshot" }
+                items: { $ref: "#/components/schemas/StudioDocumentSnapshot" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -2320,9 +2322,12 @@ components:
       name: handle
       in: path
       required: true
+      description: Persisted public handle. Legacy/imported identities may contain one or two characters; new handles remain subject to the stricter creation schema.
       schema:
         type: string
-        pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+        minLength: 1
+        maxLength: 40
+        pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
     CategorySlug:
       name: category
       in: path
@@ -3116,7 +3121,9 @@ components:
         id: { type: string, format: uuid }
         handle:
           type: string
-          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
         displayName: { type: string, minLength: 1, maxLength: 80 }
         avatarUrl: { type: string, format: uri }
 
@@ -3142,7 +3149,9 @@ components:
         id: { type: string, format: uuid }
         handle:
           type: string
-          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
         title: { type: string, minLength: 1, maxLength: 100 }
         description: { type: string, minLength: 1, maxLength: 240 }
         owner: { $ref: "#/components/schemas/UserSummary" }
@@ -3383,6 +3392,8 @@ components:
         password: { type: string, format: password, minLength: 8, maxLength: 1024, writeOnly: true }
         handle:
           type: string
+          minLength: 3
+          maxLength: 40
           pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
         displayName: { type: string, minLength: 1, maxLength: 80 }
 
@@ -3414,6 +3425,8 @@ components:
       properties:
         handle:
           type: string
+          minLength: 3
+          maxLength: 40
           pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
         title: { type: string, minLength: 1, maxLength: 100 }
         description: { type: string, minLength: 1, maxLength: 240 }
@@ -3438,7 +3451,9 @@ components:
         email: { type: string, format: email, maxLength: 254 }
         handle:
           type: string
-          pattern: '^[a-z0-9](?:[a-z0-9-]{1,38}[a-z0-9])$'
+          minLength: 1
+          maxLength: 40
+          pattern: '^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$'
         displayName: { type: string, minLength: 1, maxLength: 100 }
         role: { $ref: "#/components/schemas/CollaboratorRole" }
         createdAt: { type: string, format: date-time }
@@ -3774,37 +3789,133 @@ components:
           description: Published posts in the series' explicit order.
           items: { $ref: "#/components/schemas/FeedPostSummary" }
 
+    HomePostUnit:
+      type: object
+      additionalProperties: false
+      required: [kind, post]
+      properties:
+        kind: { type: string, const: post }
+        post: { $ref: "#/components/schemas/FeedPostSummary" }
+
+    HomeSeriesUnit:
+      type: object
+      additionalProperties: false
+      required: [kind, series, items]
+      properties:
+        kind: { type: string, const: series }
+        series: { $ref: "#/components/schemas/SeriesSummary" }
+        items:
+          type: array
+          maxItems: 500
+          description: Published posts in explicit series order.
+          items: { $ref: "#/components/schemas/FeedPostSummary" }
+
+    HomeUnit:
+      oneOf:
+        - $ref: "#/components/schemas/HomePostUnit"
+        - $ref: "#/components/schemas/HomeSeriesUnit"
+      discriminator:
+        propertyName: kind
+        mapping:
+          post: "#/components/schemas/HomePostUnit"
+          series: "#/components/schemas/HomeSeriesUnit"
+
     HomeResponse:
       type: object
       additionalProperties: false
-      required: [pinnedItems, recentItems, categorySections, seriesSections]
+      required: [units, pinnedItems, recentItems, categorySections, seriesSections]
       properties:
+        units:
+          type: array
+          description: Authoritative ordered home units. Pinned targets appear first in slot order.
+          items: { $ref: "#/components/schemas/HomeUnit" }
         pinnedItems:
           type: array
           maxItems: 3
+          deprecated: true
+          description: Compatibility projection. A pinned series contributes its first published post.
           items: { $ref: "#/components/schemas/FeedPostSummary" }
         recentItems:
           type: array
+          deprecated: true
           items: { $ref: "#/components/schemas/FeedPostSummary" }
         categorySections:
           type: array
           maxItems: 500
+          deprecated: true
           items: { $ref: "#/components/schemas/HomeCategorySection" }
         seriesSections:
           type: array
           maxItems: 500
+          deprecated: true
           items: { $ref: "#/components/schemas/HomeSeriesSection" }
+
+    HomePostPinTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind: { type: string, const: post }
+        id: { type: string, format: uuid }
+
+    HomeSeriesPinTarget:
+      type: object
+      additionalProperties: false
+      required: [kind, id]
+      properties:
+        kind: { type: string, const: series }
+        id: { type: string, format: uuid }
+
+    HomePinTarget:
+      oneOf:
+        - $ref: "#/components/schemas/HomePostPinTarget"
+        - $ref: "#/components/schemas/HomeSeriesPinTarget"
+      discriminator:
+        propertyName: kind
+        mapping:
+          post: "#/components/schemas/HomePostPinTarget"
+          series: "#/components/schemas/HomeSeriesPinTarget"
 
     HomePins:
       type: object
       additionalProperties: false
-      required: [documentIds]
+      required: [targets, documentIds]
       properties:
+        targets:
+          type: array
+          maxItems: 3
+          uniqueItems: true
+          description: Authoritative combined series/post pin order.
+          items: { $ref: "#/components/schemas/HomePinTarget" }
         documentIds:
           type: array
           maxItems: 3
           uniqueItems: true
+          deprecated: true
+          description: Compatibility projection. A series target contributes its first published post when available.
           items: { type: string, format: uuid }
+
+    HomePinsInput:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [targets]
+          properties:
+            targets:
+              type: array
+              maxItems: 3
+              uniqueItems: true
+              items: { $ref: "#/components/schemas/HomePinTarget" }
+        - type: object
+          additionalProperties: false
+          deprecated: true
+          required: [documentIds]
+          properties:
+            documentIds:
+              type: array
+              maxItems: 3
+              uniqueItems: true
+              items: { type: string, format: uuid }
 
     BlogPostView:
       type: object
@@ -4212,8 +4323,19 @@ components:
           type: string
           format: uuid
           description: Present on private Studio projections when the current revision is categorized.
+        publishedCategoryId:
+          type: [string, "null"]
+          format: uuid
+          description: Always present on private Studio projections; identifies the published revision category, or null when unpublished or published without a category. Optional in this shared schema because legacy Administration responses and older servers do not project it.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+
+    StudioDocumentSnapshot:
+      description: Private Studio projection with explicit current and published placement state.
+      allOf:
+        - $ref: "#/components/schemas/DocumentSnapshot"
+        - type: object
+          required: [publishedCategoryId]
 
     PublishRequest:
       type: object

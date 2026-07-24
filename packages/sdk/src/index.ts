@@ -369,16 +369,46 @@ export interface HomeSeriesSection {
   items: FeedPostSummary[];
 }
 
+export interface HomePostUnit {
+  kind: "post";
+  post: FeedPostSummary;
+}
+
+export interface HomeSeriesUnit {
+  kind: "series";
+  series: SeriesSummary;
+  items: FeedPostSummary[];
+}
+
+export type HomeUnit = HomePostUnit | HomeSeriesUnit;
+
+export type HomePinTarget =
+  | { kind: "post"; id: string }
+  | { kind: "series"; id: string };
+
 export interface HomeResponse {
+  /**
+   * Authoritative ordered home units. Optional only while a newer SDK may
+   * encounter a pre-schema-10 server during a rolling upgrade.
+   */
+  units?: HomeUnit[];
+  /** @deprecated Use units. */
   pinnedItems: FeedPostSummary[];
+  /** @deprecated Use units. */
   recentItems: FeedPostSummary[];
-  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  /** @deprecated Use units. */
   categorySections?: HomeCategorySection[];
-  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  /** @deprecated Use units. */
   seriesSections?: HomeSeriesSection[];
 }
 
 export interface HomePinsResponse {
+  /**
+   * Authoritative combined post/series pin order. Optional only while a newer
+   * SDK may encounter a pre-schema-10 server during a rolling upgrade.
+   */
+  targets?: HomePinTarget[];
+  /** @deprecated Document-only compatibility projection. */
   documentIds: string[];
 }
 
@@ -737,6 +767,12 @@ export interface DocumentSnapshot {
   publishedRevisionId?: string;
   revision: RevisionSnapshot;
   categoryId?: string;
+  /**
+   * Category placement of the published revision in Studio responses.
+   * New servers always send either a UUID or null; the property stays optional
+   * so rolling-upgrade clients can still consume responses from older servers.
+   */
+  publishedCategoryId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -984,6 +1020,17 @@ export class OpenSoverignBlogClient {
     return this.#request("/api/v1/admin/home/pins", {
       method: "PUT",
       body: JSON.stringify({ documentIds }),
+      ...withSignal(signal),
+    });
+  }
+
+  async replaceHomePinTargets(
+    targets: HomePinTarget[],
+    signal?: AbortSignal,
+  ): Promise<HomePinsResponse> {
+    return this.#request("/api/v1/admin/home/pins", {
+      method: "PUT",
+      body: JSON.stringify({ targets }),
       ...withSignal(signal),
     });
   }

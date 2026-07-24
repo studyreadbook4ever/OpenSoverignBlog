@@ -2,7 +2,7 @@
   "schemaVersion": "open-soverign-blog-dependency-inventory/1",
   "project": {
     "name": "OpenSoverignBlog",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "licenseExpression": "Unlicense"
   },
   "scope": {

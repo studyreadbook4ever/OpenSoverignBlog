@@ -30,9 +30,9 @@ use osb_kernel::{
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
     AdminAuthMode as StoredAdminAuthMode, CategoryRecord, CategoryStatus, CommentRecord,
-    CreateCategoryInput, CreateSeriesInput, SeriesRecord, SessionAuthMethod, SiteMembershipRecord,
-    SiteMembershipRole, SiteRecord, SqliteRepository, ThemeProfile, UpdateCategoryInput,
-    UserRecord,
+    CreateCategoryInput, CreateSeriesInput, HomePinRecord, HomePinTarget, HomeUnitRecords,
+    SeriesRecord, SessionAuthMethod, SiteMembershipRecord, SiteMembershipRole, SiteRecord,
+    SqliteRepository, ThemeProfile, UpdateCategoryInput, UserRecord,
 };
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
@@ -363,7 +363,7 @@ async fn register(
     let email = validate_email(&input.email)?;
     let admission_key = member_auth_key("register", &email);
     state.member_auth_admission.admit(admission_key).await?;
-    validate_handle(&input.handle, "user handle")?;
+    validate_handle_for_creation(&input.handle, "user handle")?;
     let display_name = validate_text(&input.display_name, "display name", 80)?;
     validate_password(&input.password)?;
     let password_phc = hash_password(Arc::clone(&state.password_workers), input.password).await?;
@@ -683,7 +683,7 @@ async fn get_blog(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let custom_css_enabled = state.custom_css_enabled;
     let primary_site_id = state.site_id;
@@ -708,7 +708,7 @@ async fn get_blog_custom_css(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let (site_id, theme_revision, custom_css) = repository_task(move || {
         let site = repository.get_site_by_handle(&handle)?;
@@ -744,7 +744,7 @@ async fn create_blog(
     Json(input): Json<CreateBlogInput>,
 ) -> Result<Response, CommunityApiError> {
     let user = require_user(&state, &headers).await?;
-    validate_handle(&input.handle, "blog handle")?;
+    validate_handle_for_creation(&input.handle, "blog handle")?;
     let title = validate_text(&input.title, "blog title", 100)?;
     let description = input
         .description
@@ -816,6 +816,23 @@ async fn home(
     let primary_site_id = state.site_id;
     let response = repository_task(move || {
         let home = repository.home_feed(primary_site_id, 100)?;
+        let units = home
+            .units
+            .into_iter()
+            .map(|unit| match unit {
+                HomeUnitRecords::Post(document) => Ok(HomeUnit::Post {
+                    post: feed_item(&repository, document, primary_site_id)?,
+                }),
+                HomeUnitRecords::Series(section) => Ok(HomeUnit::Series {
+                    series: series_summary(section.series),
+                    items: section
+                        .items
+                        .into_iter()
+                        .map(|document| feed_item(&repository, document, primary_site_id))
+                        .collect::<Result<Vec<_>, RepositoryError>>()?,
+                }),
+            })
+            .collect::<Result<Vec<_>, RepositoryError>>()?;
         let pinned_items = home
             .pinned
             .into_iter()
@@ -857,6 +874,7 @@ async fn home(
             })
             .collect::<Result<Vec<_>, RepositoryError>>()?;
         Ok(HomeResponse {
+            units,
             pinned_items,
             recent_items,
             category_sections,
@@ -873,15 +891,13 @@ async fn get_home_pins(
 ) -> Result<Json<HomePinsResponse>, CommunityApiError> {
     require_instance_administrator(&state, &headers).await?;
     let repository = Arc::clone(&state.repository);
-    let document_ids = repository_task(move || {
-        Ok(repository
-            .list_home_pins()?
-            .into_iter()
-            .map(|pin| pin.document_id)
-            .collect())
+    let primary_site_id = state.site_id;
+    let response = repository_task(move || {
+        let pins = repository.list_home_pins()?;
+        home_pins_response(&repository, primary_site_id, pins)
     })
     .await?;
-    Ok(Json(HomePinsResponse { document_ids }))
+    Ok(Json(response))
 }
 
 async fn replace_home_pins(
@@ -892,15 +908,47 @@ async fn replace_home_pins(
     let administrator = require_instance_administrator(&state, &headers).await?;
     let _cache_mutation = begin_public_mutation(&state);
     let repository = Arc::clone(&state.repository);
-    let document_ids = repository_task(move || {
-        Ok(repository
-            .replace_home_pins(administrator.id, &input.document_ids)?
-            .into_iter()
-            .map(|pin| pin.document_id)
-            .collect())
+    let primary_site_id = state.site_id;
+    let response = repository_task(move || {
+        let pins = match input {
+            HomePinsInput::Targets { targets } => {
+                repository.replace_home_pins(administrator.id, &targets)?
+            }
+            HomePinsInput::Legacy { document_ids } => {
+                repository.replace_legacy_home_document_pins(administrator.id, &document_ids)?
+            }
+        };
+        home_pins_response(&repository, primary_site_id, pins)
     })
     .await?;
-    Ok(Json(HomePinsResponse { document_ids }))
+    Ok(Json(response))
+}
+
+fn home_pins_response(
+    repository: &SqliteRepository,
+    primary_site_id: Uuid,
+    pins: Vec<HomePinRecord>,
+) -> Result<HomePinsResponse, RepositoryError> {
+    let targets = pins.into_iter().map(|pin| pin.target).collect::<Vec<_>>();
+    let mut document_ids = Vec::with_capacity(targets.len());
+    for target in &targets {
+        match target {
+            HomePinTarget::Post { id } => document_ids.push(*id),
+            HomePinTarget::Series { id } => {
+                if let Some(document) = repository
+                    .list_published_in_series(primary_site_id, *id, 1)?
+                    .into_iter()
+                    .next()
+                {
+                    document_ids.push(document.id);
+                }
+            }
+        }
+    }
+    Ok(HomePinsResponse {
+        targets,
+        document_ids,
+    })
 }
 
 async fn list_blog_posts(
@@ -908,7 +956,7 @@ async fn list_blog_posts(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let primary_site_id = state.site_id;
     let items = repository_task(move || {
@@ -928,7 +976,7 @@ async fn list_blog_categories(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let response = repository_task(move || {
         let site = repository.get_site_by_handle(&handle)?;
@@ -969,7 +1017,7 @@ async fn list_blog_series(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let response = repository_task(move || {
         let site = repository.get_site_by_handle(&handle)?;
@@ -1008,7 +1056,8 @@ async fn get_blog_series(
     headers: HeaderMap,
     Path((handle, series_slug)): Path<(String, String)>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
+    validate_persisted_collection_slug_lookup(&series_slug)?;
     let repository = Arc::clone(&state.repository);
     let primary_site_id = state.site_id;
     let custom_css_enabled = state.custom_css_enabled;
@@ -1041,6 +1090,7 @@ async fn get_primary_series(
     headers: HeaderMap,
     Path(series_slug): Path<String>,
 ) -> Result<Response, CommunityApiError> {
+    validate_persisted_collection_slug_lookup(&series_slug)?;
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
     let custom_css_enabled = state.custom_css_enabled;
@@ -1067,7 +1117,8 @@ async fn list_blog_series_posts(
     headers: HeaderMap,
     Path((handle, series_slug)): Path<(String, String)>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
+    validate_persisted_collection_slug_lookup(&series_slug)?;
     let repository = Arc::clone(&state.repository);
     let primary_site_id = state.site_id;
     let items = repository_task(move || {
@@ -1088,6 +1139,7 @@ async fn list_primary_series_posts(
     headers: HeaderMap,
     Path(series_slug): Path<String>,
 ) -> Result<Response, CommunityApiError> {
+    validate_persisted_collection_slug_lookup(&series_slug)?;
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
     let items = repository_task(move || {
@@ -1107,7 +1159,8 @@ async fn get_blog_category(
     headers: HeaderMap,
     Path((handle, category_slug)): Path<(String, String)>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
+    validate_persisted_collection_slug_lookup(&category_slug)?;
     let repository = Arc::clone(&state.repository);
     let custom_css_enabled = state.custom_css_enabled;
     let primary_site_id = state.site_id;
@@ -1140,6 +1193,7 @@ async fn get_primary_category(
     headers: HeaderMap,
     Path(category_slug): Path<String>,
 ) -> Result<Response, CommunityApiError> {
+    validate_persisted_collection_slug_lookup(&category_slug)?;
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
     let custom_css_enabled = state.custom_css_enabled;
@@ -1166,7 +1220,8 @@ async fn list_blog_category_posts(
     headers: HeaderMap,
     Path((handle, category_slug)): Path<(String, String)>,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
+    validate_persisted_collection_slug_lookup(&category_slug)?;
     let repository = Arc::clone(&state.repository);
     let primary_site_id = state.site_id;
     let items = repository_task(move || {
@@ -1187,6 +1242,7 @@ async fn list_primary_category_posts(
     headers: HeaderMap,
     Path(category_slug): Path<String>,
 ) -> Result<Response, CommunityApiError> {
+    validate_persisted_collection_slug_lookup(&category_slug)?;
     let repository = Arc::clone(&state.repository);
     let site_id = state.site_id;
     let items = repository_task(move || {
@@ -1317,7 +1373,7 @@ async fn blog_post_at_path(
     requested_slug: String,
     view: ViewMode,
 ) -> Result<Response, CommunityApiError> {
-    validate_handle(&handle, "blog handle")?;
+    validate_persisted_handle_lookup(&handle, "blog handle")?;
     let repository = Arc::clone(&state.repository);
     let (document, site, owner, category) = repository_task(move || {
         let site = repository.get_site_by_handle(&handle)?;
@@ -2221,9 +2277,17 @@ fn studio_document_view(
     let category_id = repository
         .get_current_category(document.site_id, document.id)?
         .map(|category| category.id);
+    let published_category_id = if document.published_revision_id.is_some() {
+        repository
+            .get_published_category(document.site_id, document.id)?
+            .map(|category| category.id)
+    } else {
+        None
+    };
     Ok(StudioDocumentView {
         document,
         category_id,
+        published_category_id,
     })
 }
 
@@ -2474,9 +2538,46 @@ fn validate_email(value: &str) -> Result<String, CommunityApiError> {
     }
 }
 
-fn validate_handle(value: &str, label: &str) -> Result<(), CommunityApiError> {
+fn validate_handle_for_creation(value: &str, label: &str) -> Result<(), CommunityApiError> {
+    validate_handle_length(value, label, 3, "3-40")
+}
+
+fn validate_persisted_handle_lookup(value: &str, label: &str) -> Result<(), CommunityApiError> {
+    // Early installations and imported sites may legitimately carry one- or
+    // two-character handles. Public reads must remain able to resolve those
+    // persisted identities even though new handles use the stricter minimum.
+    validate_handle_length(value, label, 1, "1-40")
+}
+
+fn validate_persisted_collection_slug_lookup(value: &str) -> Result<(), CommunityApiError> {
+    // A one-segment public path is intentionally ambiguous: the SPA probes a
+    // collection before falling back to an uncategorized article. Segments
+    // that could never have been persisted as category/series slugs therefore
+    // mean "collection not found", not "bad request".
+    let normalized = value.trim().to_ascii_lowercase();
+    let valid = !normalized.is_empty()
+        && normalized.len() <= 40
+        && normalized.is_ascii()
+        && !normalized.starts_with('-')
+        && !normalized.ends_with('-')
+        && normalized
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+    if valid {
+        Ok(())
+    } else {
+        Err(CommunityApiError::NotFound)
+    }
+}
+
+fn validate_handle_length(
+    value: &str,
+    label: &str,
+    minimum: usize,
+    length_description: &str,
+) -> Result<(), CommunityApiError> {
     let bytes = value.as_bytes();
-    let valid = (3..=40).contains(&bytes.len())
+    let valid = (minimum..=40).contains(&bytes.len())
         && bytes
             .iter()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
@@ -2486,7 +2587,7 @@ fn validate_handle(value: &str, label: &str) -> Result<(), CommunityApiError> {
         Ok(())
     } else {
         Err(CommunityApiError::BadRequest(format!(
-            "{label} must be 3-40 lowercase ASCII letters, digits, or interior hyphens"
+            "{label} must be {length_description} lowercase ASCII letters, digits, or interior hyphens"
         )))
     }
 }
@@ -2877,24 +2978,49 @@ struct HomeSeriesSection {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum HomeUnit {
+    Post {
+        post: FeedPostSummary,
+    },
+    Series {
+        series: SeriesSummary,
+        items: Vec<FeedPostSummary>,
+    },
+}
+
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HomeResponse {
+    units: Vec<HomeUnit>,
+    /// Deprecated compatibility projection. Typed `units` is authoritative.
     pinned_items: Vec<FeedPostSummary>,
+    /// Deprecated compatibility projection. Typed `units` is authoritative.
     recent_items: Vec<FeedPostSummary>,
+    /// Deprecated compatibility projection. Typed `units` is authoritative.
     category_sections: Vec<HomeCategorySection>,
+    /// Deprecated compatibility projection. Typed `units` is authoritative.
     series_sections: Vec<HomeSeriesSection>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct HomePinsResponse {
+    targets: Vec<HomePinTarget>,
+    /// Deprecated document-only projection for pre-v10 clients.
     document_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct HomePinsInput {
-    document_ids: Vec<Uuid>,
+#[serde(untagged, rename_all = "camelCase", deny_unknown_fields)]
+enum HomePinsInput {
+    Targets {
+        targets: Vec<HomePinTarget>,
+    },
+    Legacy {
+        #[serde(rename = "documentIds")]
+        document_ids: Vec<Uuid>,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -2960,6 +3086,7 @@ struct StudioDocumentView {
     document: DocumentSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
     category_id: Option<Uuid>,
+    published_category_id: Option<Uuid>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3283,5 +3410,191 @@ mod tests {
             "research",
             "writing/articles"
         ));
+    }
+
+    #[test]
+    fn handle_creation_stays_strict_while_legacy_public_lookups_remain_readable() {
+        assert!(validate_handle_for_creation("new-blog", "blog handle").is_ok());
+        assert!(validate_handle_for_creation("me", "blog handle").is_err());
+        assert!(validate_handle_for_creation("x", "blog handle").is_err());
+
+        assert!(validate_persisted_handle_lookup("me", "blog handle").is_ok());
+        assert!(validate_persisted_handle_lookup("x", "blog handle").is_ok());
+        assert!(validate_persisted_handle_lookup("-x", "blog handle").is_err());
+        assert!(validate_persisted_handle_lookup("UPPER", "blog handle").is_err());
+        assert!(validate_persisted_handle_lookup("", "blog handle").is_err());
+    }
+
+    #[test]
+    fn impossible_collection_lookup_segments_are_reported_as_not_found() {
+        assert!(validate_persisted_collection_slug_lookup("notes").is_ok());
+        assert!(validate_persisted_collection_slug_lookup(" NOTES ").is_ok());
+        assert!(matches!(
+            validate_persisted_collection_slug_lookup("portable-기록"),
+            Err(CommunityApiError::NotFound)
+        ));
+    }
+
+    #[test]
+    fn studio_document_projection_keeps_current_and_published_placements_distinct() {
+        let repository = SqliteRepository::open_in_memory().unwrap();
+        let owner = repository
+            .create_user(
+                "placement-owner@example.test",
+                "placement-owner",
+                "Placement owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = repository
+            .create_site(
+                owner.id,
+                "placement-blog",
+                "Placement blog",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        let series = repository
+            .create_series(
+                owner.id,
+                site.id,
+                CreateSeriesInput {
+                    slug: "research-notes".into(),
+                    title: "Research notes".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let actor = RevisionActor {
+            kind: RevisionActorKind::Human,
+            id: owner.id.to_string(),
+            display_name: Some(owner.display_name.clone()),
+        };
+
+        let standalone = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "Published standalone".into(),
+                    slug: "published-standalone".into(),
+                    source_markdown: "# Published standalone".into(),
+                    embeds: Vec::new(),
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: actor.clone(),
+                },
+                None,
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                standalone.id,
+                standalone.current_revision_id,
+            )
+            .unwrap();
+        repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: standalone.id,
+                    base_revision_id: standalone.current_revision_id,
+                    title: "Draft in series".into(),
+                    slug: "draft-in-series".into(),
+                    source_markdown: "# Draft in series".into(),
+                    embeds: Vec::new(),
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: actor.clone(),
+                    idempotency_key: None,
+                },
+                Some(Some(series.category_id)),
+            )
+            .unwrap();
+        let standalone = repository
+            .get_document_in_writable_site(owner.id, site.id, standalone.id)
+            .unwrap();
+        let standalone = studio_document_view(&repository, standalone).unwrap();
+        assert_eq!(standalone.category_id, Some(series.category_id));
+        assert_eq!(standalone.published_category_id, None);
+        let standalone_json = serde_json::to_value(&standalone).unwrap();
+        assert_eq!(
+            standalone_json["categoryId"],
+            series.category_id.to_string()
+        );
+        assert!(standalone_json.get("publishedCategoryId").is_some());
+        assert_eq!(
+            standalone_json["publishedCategoryId"],
+            serde_json::Value::Null
+        );
+
+        let categorized = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id: site.id,
+                    title: "Published in series".into(),
+                    slug: "published-in-series".into(),
+                    source_markdown: "# Published in series".into(),
+                    embeds: Vec::new(),
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: actor.clone(),
+                },
+                Some(series.category_id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site.id,
+                categorized.id,
+                categorized.current_revision_id,
+            )
+            .unwrap();
+        repository
+            .revise_document_in_writable_site_with_category(
+                owner.id,
+                site.id,
+                ProposedRevision {
+                    document_id: categorized.id,
+                    base_revision_id: categorized.current_revision_id,
+                    title: "Draft standalone".into(),
+                    slug: "draft-standalone".into(),
+                    source_markdown: "# Draft standalone".into(),
+                    embeds: Vec::new(),
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor,
+                    idempotency_key: None,
+                },
+                Some(None),
+            )
+            .unwrap();
+        let categorized = repository
+            .get_document_in_writable_site(owner.id, site.id, categorized.id)
+            .unwrap();
+        let categorized = studio_document_view(&repository, categorized).unwrap();
+        assert_eq!(categorized.category_id, None);
+        assert_eq!(categorized.published_category_id, Some(series.category_id));
+        let categorized_json = serde_json::to_value(&categorized).unwrap();
+        assert!(categorized_json.get("categoryId").is_none());
+        assert_eq!(
+            categorized_json["publishedCategoryId"],
+            series.category_id.to_string()
+        );
     }
 }

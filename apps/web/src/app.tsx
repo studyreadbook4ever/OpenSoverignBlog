@@ -509,7 +509,7 @@ function SiteFooter() {
         <strong>OpenSoverignBlog</strong>
         <p>{text("당신의 Markdown, 당신의 서버, 당신의 기록.", "Your Markdown. Your server. Your record.")}</p>
         <p className="footer-version">
-          <span>{text("현재 버전", "Current version")} v{version?.currentVersion ?? "0.1.1"}</span>
+          <span>{text("현재 버전", "Current version")} v{version?.currentVersion ?? "0.1.2"}</span>
           <span>{text("출시일", "Released")} {version?.currentReleaseDate ?? text("미출시", "unreleased")}</span>
           {version?.latestVersion ? <span>{text("최신 버전", "Latest version")} v{version.latestVersion}{version.latestReleaseDate ? ` (${version.latestReleaseDate})` : ""}{version.updateAvailable ? text(" · 업데이트 가능", " · update available") : ""}</span> : null}
         </p>

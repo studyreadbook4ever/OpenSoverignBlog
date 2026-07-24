@@ -4418,6 +4418,10 @@ mod tests {
     }
 
     fn access_key_state(access_key: &str) -> AppState {
+        access_key_state_with_primary_handle(access_key, "test-blog")
+    }
+
+    fn access_key_state_with_primary_handle(access_key: &str, site_handle: &str) -> AppState {
         let mut state = test_state(None);
         state.local_auth_enabled = false;
         state.registration_open = false;
@@ -4438,7 +4442,7 @@ mod tests {
             .provision_primary_owner_site(
                 &PrimaryOwnerBootstrap {
                     site_id: state.site_id,
-                    site_handle: "test-blog".into(),
+                    site_handle: site_handle.into(),
                     site_title: "Test blog".into(),
                     site_description: None,
                     owner_display_name: "Test owner".into(),
@@ -4906,6 +4910,8 @@ mod tests {
             )
             .unwrap();
         let cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_token));
+        let repository = Arc::clone(&state.repository);
+        let primary_site_id = state.site_id;
         let router = app(state);
 
         let anonymous_write = router
@@ -4934,14 +4940,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replace.status(), StatusCode::OK);
+        let replace = json(replace).await;
+        assert_eq!(replace["targets"][0]["kind"], "post");
+        assert_eq!(replace["targets"][0]["id"], first.id.to_string());
+        assert_eq!(replace["documentIds"][0], first.id.to_string());
+
+        let typed_replace = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "targets": [{ "kind": "post", "id": first.id }],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(typed_replace.status(), StatusCode::OK);
+
+        for invalid_body in [
+            serde_json::json!({
+                "targets": null,
+                "documentIds": [first.id],
+            }),
+            serde_json::json!({
+                "targets": [{ "kind": "post", "id": first.id }],
+                "documentIds": [first.id],
+            }),
+            serde_json::json!({ "targets": null }),
+            serde_json::json!({ "documentIds": null }),
+        ] {
+            let rejected = router
+                .clone()
+                .oneshot(
+                    Request::put("/api/v1/admin/home/pins")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::ORIGIN, "https://blog.example")
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::from(invalid_body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
 
         let home = router
+            .clone()
             .oneshot(Request::get("/api/v1/home").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(home.status(), StatusCode::OK);
         assert!(home.headers().contains_key(header::ETAG));
         let payload = json(home).await;
+        assert_eq!(payload["units"][0]["kind"], "post");
+        assert_eq!(payload["units"][0]["post"]["id"], first.id.to_string());
         assert_eq!(payload["pinnedItems"][0]["id"], first.id.to_string());
         assert_eq!(payload["recentItems"][0]["id"], second.id.to_string());
         assert_eq!(payload["recentItems"].as_array().unwrap().len(), 3);
@@ -4970,6 +5029,111 @@ mod tests {
                 category_first.id.to_string(),
                 category_second.id.to_string()
             ]
+        );
+
+        let series = repository
+            .create_series(
+                control.owner_user_id,
+                primary_site_id,
+                osb_storage_sqlite::CreateSeriesInput {
+                    slug: "ordered-notes".into(),
+                    title: "Ordered notes".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let series_document = repository
+            .create_document_in_writable_site_with_category(
+                control.owner_user_id,
+                NewDocument {
+                    site_id: primary_site_id,
+                    title: "Series entry".into(),
+                    slug: "series-entry".into(),
+                    source_markdown: "# Series entry".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(series.category_id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                primary_site_id,
+                series_document.id,
+                series_document.current_revision_id,
+            )
+            .unwrap();
+
+        let direct_series_member = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "targets": [{ "kind": "post", "id": series_document.id }],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(direct_series_member.status(), StatusCode::BAD_REQUEST);
+
+        let combined = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "targets": [
+                                { "kind": "series", "id": series.id },
+                                { "kind": "post", "id": first.id },
+                            ],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(combined.status(), StatusCode::OK);
+        let combined = json(combined).await;
+        assert_eq!(combined["targets"][0]["kind"], "series");
+        assert_eq!(combined["targets"][0]["id"], series.id.to_string());
+        assert_eq!(combined["targets"][1]["kind"], "post");
+
+        let combined_home = router
+            .oneshot(Request::get("/api/v1/home").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(combined_home.status(), StatusCode::OK);
+        let combined_home = json(combined_home).await;
+        assert_eq!(combined_home["units"][0]["kind"], "series");
+        assert_eq!(
+            combined_home["units"][0]["series"]["id"],
+            series.id.to_string()
+        );
+        assert_eq!(combined_home["units"][1]["kind"], "post");
+        assert_eq!(
+            combined_home["units"][1]["post"]["id"],
+            first.id.to_string()
         );
     }
 
@@ -5176,6 +5340,7 @@ mod tests {
         assert_eq!(granted.status(), StatusCode::OK);
         let set_cookie = granted.headers()[header::SET_COOKIE].to_str().unwrap();
         assert!(set_cookie.starts_with("osb_adfit_consent_v1=granted;"));
+        assert!(set_cookie.contains("Path=/;"));
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("SameSite=Lax"));
         assert!(set_cookie.contains("Secure"));
@@ -5216,6 +5381,30 @@ mod tests {
             .unwrap();
         assert!(!control_csp.contains("kakaocdn.net"));
         assert!(!control_csp.contains("ad.daum.net"));
+    }
+
+    #[tokio::test]
+    async fn kakao_adfit_consent_cookie_is_scoped_to_the_public_base_path() {
+        let mut state = kakao_adfit_state();
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/team-a/").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let response = app(state)
+            .oneshot(
+                Request::post("/api/v1/advertising/consent")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(r#"{"decision":"granted"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(set_cookie.contains("; Path=/team-a;"));
+        assert!(!set_cookie.contains("; Path=/;"));
     }
 
     #[tokio::test]
@@ -8840,6 +9029,77 @@ mod tests {
         let canonical = "<loc>https://blog.example/base/@test-blog/owned-post</loc>";
         assert_eq!(sitemap.matches(canonical).count(), 1);
         assert!(!sitemap.contains("<loc>https://blog.example/base/blog/owned-post</loc>"));
+    }
+
+    #[tokio::test]
+    async fn legacy_two_character_primary_handle_serves_uncategorized_public_post() {
+        let state = access_key_state_with_primary_handle(
+            "short-handle-test-administrator-access-key",
+            "xy",
+        );
+        publish_primary_document(&state, "portable-기록", "Portable 기록");
+        let router = app(state);
+        let encoded_slug = "portable-%EA%B8%B0%EB%A1%9D";
+
+        // The SPA probes the ambiguous second segment as a category first.
+        // A segment that cannot be a category must be a real 404, not a
+        // handle/category-validation 400, so the browser can continue to the
+        // uncategorized article lookup.
+        let category_probe = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/blogs/xy/categories/{encoded_slug}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_probe.status(), StatusCode::NOT_FOUND);
+
+        // Category pages probe Series first. The same impossible collection
+        // segment must preserve that 404-based fallback contract.
+        let series_probe = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/blogs/xy/series/{encoded_slug}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(series_probe.status(), StatusCode::NOT_FOUND);
+
+        let public_api = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/blogs/xy/posts/{encoded_slug}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public_api.status(), StatusCode::OK);
+        let public_api = json(public_api).await;
+        assert_eq!(public_api["title"], "Portable 기록");
+        assert_eq!(public_api["blog"]["handle"], "xy");
+        assert_eq!(public_api["blog"]["isPrimary"], true);
+        assert_eq!(public_api["category"], serde_json::Value::Null);
+
+        let spa_entry = router
+            .oneshot(
+                Request::get(format!("/@xy/{encoded_slug}"))
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spa_entry.status(), StatusCode::OK);
+        let spa_entry = text(spa_entry).await;
+        assert!(spa_entry.contains("<title>Portable 기록 · Test blog</title>"));
+        assert!(spa_entry.contains(&format!(
+            "<link rel=\"canonical\" href=\"https://blog.example/@xy/{encoded_slug}\">"
+        )));
     }
 
     #[tokio::test]

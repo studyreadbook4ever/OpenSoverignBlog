@@ -243,14 +243,23 @@ into the deployment, bounded, SHA-256 pinned in the installation lock, and
 served only through the first-party CSS boundary. The original workstation
 path is not retained as the durable contract.
 
-The public home shows up to three administrator-selected posts first, ordered
-Series sections, ordinary category sections, and then recently published
-changes without duplicates. Series and category sections have independent,
-accessible collapse controls. Studio starts creation with an explicit
-Post-versus-Series choice, appends a published Series post to the reading-order
-tail, and lets the owner reorder the exact published member set. An existing
-category can be promoted idempotently without changing its URLs or published
-revision placement.
+The public home presents every ordered Series and the newest bounded set of
+standalone posts as peer home units, without artificial featured/recent
+buckets. Series have
+independent, accessible collapse controls and start collapsed; standalone posts
+remain direct cards. An administrator may move any combined set of up to three
+Series or standalone posts to the front. Studio starts creation with an
+explicit Post-versus-Series choice, appends a published Series post to the
+reading-order tail, and lets the owner reorder the exact published member set.
+An existing category can be promoted idempotently without changing its URLs or
+published revision placement.
+
+The home projection starts with the requested Series/category budget (normally
+100 for the public API), reserves one published item for every active,
+non-empty Series when that requires more room, and applies a hard 500-item cap.
+It assigns the remaining room in Series order. This keeps every Series unit
+present even when an earlier Series alone contains more posts than the
+requested page size.
 
 Studio also provides a direct title/Markdown writing surface, preview, explicit
 publication review, pinned-home management, portable AI authorship disclosure,
@@ -274,7 +283,7 @@ an exact bundled manifest digest. The current catalog is:
 | Alias | Runtime purpose |
 | --- | --- |
 | `seo` | Canonical discovery, robots, sitemap, metadata |
-| `home-curation` | Up to three pinned home posts and recent fallback |
+| `home-curation` | One ordered home of peer Series/standalone units, with up to three combined pins |
 | `ai-authorship` | Portable authorship disclosure and AI2AI proposal surface |
 | `ai-summary` | Opt-in, human-reviewed per-post summary generation with ephemeral provider keys |
 | `social-embeds` | Strict YouTube/X references and consent-first rendering |
