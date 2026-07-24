@@ -23,6 +23,7 @@ use osb_feature_code_runner_client::{
     CodeRunnerClient, QueuedRun, RemoteRunnerClient, RunLimits, RunSubmissionResult, RunnerError,
     SubmissionContext, TerminalRun,
 };
+use osb_feature_monetization_policy::KakaoAdFitUnits;
 use osb_feature_seo::SeoPolicy;
 use osb_kernel::{
     AI2AI_SPEC_VERSION, Ai2AiEnvelope, AiSummary, ContentRepository, IntentLayer, NewDocument,
@@ -53,6 +54,7 @@ use uuid::Uuid;
 mod admin_auth;
 mod admin_tree;
 mod admission;
+mod advertising;
 mod ai_summary;
 mod backup;
 mod cache;
@@ -203,6 +205,7 @@ struct AppState {
     mcp_token_hash: Option<[u8; 32]>,
     admin_auth: AdminAuthRuntime,
     features: Arc<FeatureRegistry>,
+    kakao_adfit: Option<Arc<KakaoAdFitUnits>>,
     ai_summary: Option<AiSummaryService>,
     runner: Option<Arc<RemoteRunnerClient>>,
     runner_jobs: Arc<tokio::sync::Mutex<HashMap<Uuid, QueuedRun>>>,
@@ -548,6 +551,23 @@ async fn main() -> Result<()> {
             )
             .map_err(anyhow::Error::msg)?;
     }
+    let kakao_adfit = match config.kakao_adfit {
+        Some(units) => {
+            if !features.is_requested("ads") {
+                anyhow::bail!(
+                    "Kakao AdFit units are configured, but the ads DLC is not enabled in the verified installation contract"
+                );
+            }
+            features
+                .activate_composed(
+                    "ads",
+                    "Kakao AdFit is composed for consent-gated public-reader site.top and site.bottom placements",
+                )
+                .map_err(anyhow::Error::msg)?;
+            Some(Arc::new(units))
+        }
+        None => None,
+    };
     let runner = if features.is_requested("code_runner") {
         match config.runner {
             Some(settings) => {
@@ -616,6 +636,7 @@ async fn main() -> Result<()> {
         mcp_token_hash,
         admin_auth,
         features: Arc::new(features),
+        kakao_adfit,
         ai_summary,
         runner,
         runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -740,6 +761,7 @@ fn app(state: AppState) -> Router {
             get(get_categorized_markdown_source),
         )
         .route("/media/{digest}", get(get_asset))
+        .merge(advertising::routes(state.clone()))
         .merge(admin_auth::routes(state.clone()))
         .merge(community::routes(state.clone()))
         .merge(mutation_routes)
@@ -771,9 +793,9 @@ fn app(state: AppState) -> Router {
             state.clone(),
             semantic_cache_middleware,
         ))
-        .layer(SetResponseHeaderLayer::if_not_present(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(SECURITY_CSP),
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_csp_middleware,
         ))
         .layer(DefaultBodyLimit::max(12 * 1024 * 1024))
         .layer(SetResponseHeaderLayer::if_not_present(
@@ -805,6 +827,33 @@ fn app(state: AppState) -> Router {
             }),
         )
         .with_state(state)
+}
+
+async fn security_csp_middleware(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let advertising_reader =
+        state.kakao_adfit.is_some() && advertising::is_public_reader_path(request.uri().path());
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .entry(header::CONTENT_SECURITY_POLICY)
+        .or_insert_with(|| {
+            HeaderValue::from_static(if advertising_reader {
+                advertising::ADVERTISING_SECURITY_CSP
+            } else {
+                SECURITY_CSP
+            })
+        });
+    if advertising_reader {
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        );
+    }
+    response
 }
 
 async fn livez() -> Json<serde_json::Value> {
@@ -1985,7 +2034,8 @@ async fn ai2ai_discovery(
             "collaboration": state.collaboration_enabled,
             "customCss": state.custom_css_enabled,
             "agentDiscovery": state.agent_discovery_enabled,
-            "deliveryOnly": state.delivery_only
+            "deliveryOnly": state.delivery_only,
+            "advertising": state.kakao_adfit.is_some()
         },
         "dependencies": {
             "cache": cache,
@@ -2111,6 +2161,7 @@ async fn capabilities(State(state): State<AppState>) -> Json<Capabilities> {
             href: "/references",
             label: page.label().to_owned(),
         }),
+        advertising: state.kakao_adfit.as_deref().map(advertising::capabilities),
         mutation_mode: if state.delivery_only {
             "read_only"
         } else if state.local_auth_enabled || has_admin_session {
@@ -3943,6 +3994,8 @@ struct Capabilities {
     mutation_mechanisms: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     references: Option<ReferencesDescriptor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    advertising: Option<advertising::AdvertisingCapabilities>,
     mutation_mode: &'static str,
 }
 
@@ -4300,6 +4353,7 @@ mod tests {
             mcp_token_hash: None,
             admin_auth: AdminAuthRuntime::Disabled,
             features: Arc::new(features),
+            kakao_adfit: None,
             ai_summary: None,
             runner: None,
             runner_jobs: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -4338,7 +4392,36 @@ mod tests {
         }
     }
 
+    fn kakao_adfit_state() -> AppState {
+        let mut state = test_state(None);
+        let mut features = FeatureRegistry::from_requested("seo,ads").unwrap();
+        features
+            .activate_composed("rbac", "test owner memberships")
+            .unwrap();
+        features
+            .activate_composed("comments", "test comment routes")
+            .unwrap();
+        features
+            .activate_composed("ads", "test Kakao AdFit adapter")
+            .unwrap();
+        state.features = Arc::new(features);
+        state.kakao_adfit = Some(Arc::new(
+            KakaoAdFitUnits::new(
+                "DAN-PcTop1234".into(),
+                "DAN-PcBottom1234".into(),
+                "DAN-MobileTop1234".into(),
+                "DAN-MobileBottom1234".into(),
+            )
+            .unwrap(),
+        ));
+        state
+    }
+
     fn access_key_state(access_key: &str) -> AppState {
+        access_key_state_with_primary_handle(access_key, "test-blog")
+    }
+
+    fn access_key_state_with_primary_handle(access_key: &str, site_handle: &str) -> AppState {
         let mut state = test_state(None);
         state.local_auth_enabled = false;
         state.registration_open = false;
@@ -4359,7 +4442,7 @@ mod tests {
             .provision_primary_owner_site(
                 &PrimaryOwnerBootstrap {
                     site_id: state.site_id,
-                    site_handle: "test-blog".into(),
+                    site_handle: site_handle.into(),
                     site_title: "Test blog".into(),
                     site_description: None,
                     owner_display_name: "Test owner".into(),
@@ -4827,6 +4910,8 @@ mod tests {
             )
             .unwrap();
         let cookie = format!("osb_session={}", URL_SAFE_NO_PAD.encode(raw_token));
+        let repository = Arc::clone(&state.repository);
+        let primary_site_id = state.site_id;
         let router = app(state);
 
         let anonymous_write = router
@@ -4855,14 +4940,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replace.status(), StatusCode::OK);
+        let replace = json(replace).await;
+        assert_eq!(replace["targets"][0]["kind"], "post");
+        assert_eq!(replace["targets"][0]["id"], first.id.to_string());
+        assert_eq!(replace["documentIds"][0], first.id.to_string());
+
+        let typed_replace = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "targets": [{ "kind": "post", "id": first.id }],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(typed_replace.status(), StatusCode::OK);
+
+        for invalid_body in [
+            serde_json::json!({
+                "targets": null,
+                "documentIds": [first.id],
+            }),
+            serde_json::json!({
+                "targets": [{ "kind": "post", "id": first.id }],
+                "documentIds": [first.id],
+            }),
+            serde_json::json!({ "targets": null }),
+            serde_json::json!({ "documentIds": null }),
+        ] {
+            let rejected = router
+                .clone()
+                .oneshot(
+                    Request::put("/api/v1/admin/home/pins")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .header(header::ORIGIN, "https://blog.example")
+                        .header(header::COOKIE, &cookie)
+                        .body(Body::from(invalid_body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        }
 
         let home = router
+            .clone()
             .oneshot(Request::get("/api/v1/home").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(home.status(), StatusCode::OK);
         assert!(home.headers().contains_key(header::ETAG));
         let payload = json(home).await;
+        assert_eq!(payload["units"][0]["kind"], "post");
+        assert_eq!(payload["units"][0]["post"]["id"], first.id.to_string());
         assert_eq!(payload["pinnedItems"][0]["id"], first.id.to_string());
         assert_eq!(payload["recentItems"][0]["id"], second.id.to_string());
         assert_eq!(payload["recentItems"].as_array().unwrap().len(), 3);
@@ -4891,6 +5029,111 @@ mod tests {
                 category_first.id.to_string(),
                 category_second.id.to_string()
             ]
+        );
+
+        let series = repository
+            .create_series(
+                control.owner_user_id,
+                primary_site_id,
+                osb_storage_sqlite::CreateSeriesInput {
+                    slug: "ordered-notes".into(),
+                    title: "Ordered notes".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let series_document = repository
+            .create_document_in_writable_site_with_category(
+                control.owner_user_id,
+                NewDocument {
+                    site_id: primary_site_id,
+                    title: "Series entry".into(),
+                    slug: "series-entry".into(),
+                    source_markdown: "# Series entry".into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                Some(series.category_id),
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                control.owner_user_id,
+                primary_site_id,
+                series_document.id,
+                series_document.current_revision_id,
+            )
+            .unwrap();
+
+        let direct_series_member = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "targets": [{ "kind": "post", "id": series_document.id }],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(direct_series_member.status(), StatusCode::BAD_REQUEST);
+
+        let combined = router
+            .clone()
+            .oneshot(
+                Request::put("/api/v1/admin/home/pins")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "targets": [
+                                { "kind": "series", "id": series.id },
+                                { "kind": "post", "id": first.id },
+                            ],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(combined.status(), StatusCode::OK);
+        let combined = json(combined).await;
+        assert_eq!(combined["targets"][0]["kind"], "series");
+        assert_eq!(combined["targets"][0]["id"], series.id.to_string());
+        assert_eq!(combined["targets"][1]["kind"], "post");
+
+        let combined_home = router
+            .oneshot(Request::get("/api/v1/home").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(combined_home.status(), StatusCode::OK);
+        let combined_home = json(combined_home).await;
+        assert_eq!(combined_home["units"][0]["kind"], "series");
+        assert_eq!(
+            combined_home["units"][0]["series"]["id"],
+            series.id.to_string()
+        );
+        assert_eq!(combined_home["units"][1]["kind"], "post");
+        assert_eq!(
+            combined_home["units"][1]["post"]["id"],
+            first.id.to_string()
         );
     }
 
@@ -4983,6 +5226,185 @@ mod tests {
                 .iter()
                 .any(|feature| feature == "comments" || feature == "rbac")
         );
+    }
+
+    #[tokio::test]
+    async fn kakao_adfit_is_discovered_and_loaded_only_after_same_origin_consent() {
+        let inactive = app(test_state(None));
+        let inactive_capabilities = inactive
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            json(inactive_capabilities)
+                .await
+                .get("advertising")
+                .is_none()
+        );
+        let inactive_consent = inactive
+            .oneshot(
+                Request::get("/api/v1/advertising/consent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(inactive_consent.status(), StatusCode::NOT_FOUND);
+
+        let router = app(kakao_adfit_state());
+        let capabilities = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/capabilities")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let capabilities = json(capabilities).await;
+        let advertising = &capabilities["advertising"];
+        assert_eq!(advertising["provider"], "kakao-adfit");
+        assert_eq!(
+            advertising["scriptUrl"],
+            "https://t1.kakaocdn.net/kas/static/ba.min.js"
+        );
+        assert_eq!(advertising["policyVersion"], "kakao-adfit/1");
+        assert_eq!(advertising["placements"]["top"]["pc"]["width"], 728);
+        assert_eq!(advertising["placements"]["top"]["pc"]["height"], 90);
+        assert_eq!(advertising["placements"]["bottom"]["mobile"]["width"], 320);
+        assert_eq!(advertising["placements"]["bottom"]["mobile"]["height"], 100);
+        let discovery = router
+            .clone()
+            .oneshot(
+                Request::get("/.well-known/open-soverign-blog.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json(discovery).await["operatorIntent"]["advertising"], true);
+
+        let unknown = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/advertising/consent")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), StatusCode::OK);
+        assert!(!unknown.headers().contains_key(header::SET_COOKIE));
+        assert_eq!(json(unknown).await["decision"], "unknown");
+
+        let missing_origin = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/advertising/consent")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"decision":"granted"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_origin.status(), StatusCode::FORBIDDEN);
+        let cross_origin = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/advertising/consent")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://attacker.example")
+                    .body(Body::from(r#"{"decision":"granted"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cross_origin.status(), StatusCode::FORBIDDEN);
+
+        let granted = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/advertising/consent")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(r#"{"decision":"granted"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(granted.status(), StatusCode::OK);
+        let set_cookie = granted.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(set_cookie.starts_with("osb_adfit_consent_v1=granted;"));
+        assert!(set_cookie.contains("Path=/;"));
+        assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Lax"));
+        assert!(set_cookie.contains("Secure"));
+        assert_eq!(json(granted).await["decision"], "granted");
+
+        let persisted = router
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/advertising/consent")
+                    .header(header::COOKIE, "other=x; osb_adfit_consent_v1=granted")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(json(persisted).await["decision"], "granted");
+
+        let reader = router
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let reader_csp = reader.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert!(reader_csp.contains("script-src 'self' https://t1.kakaocdn.net"));
+        let reader_body = text(reader).await;
+        assert!(!reader_body.contains("ba.min.js"));
+        assert!(!reader_body.contains("kakao_ad_area"));
+
+        let control = router
+            .oneshot(Request::get("/login").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let control_csp = control.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(!control_csp.contains("kakaocdn.net"));
+        assert!(!control_csp.contains("ad.daum.net"));
+    }
+
+    #[tokio::test]
+    async fn kakao_adfit_consent_cookie_is_scoped_to_the_public_base_path() {
+        let mut state = kakao_adfit_state();
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/team-a/").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let response = app(state)
+            .oneshot(
+                Request::post("/api/v1/advertising/consent")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::ORIGIN, "https://blog.example")
+                    .body(Body::from(r#"{"decision":"granted"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookie = response.headers()[header::SET_COOKIE].to_str().unwrap();
+        assert!(set_cookie.contains("; Path=/team-a;"));
+        assert!(!set_cookie.contains("; Path=/;"));
     }
 
     #[tokio::test]
@@ -8607,6 +9029,77 @@ mod tests {
         let canonical = "<loc>https://blog.example/base/@test-blog/owned-post</loc>";
         assert_eq!(sitemap.matches(canonical).count(), 1);
         assert!(!sitemap.contains("<loc>https://blog.example/base/blog/owned-post</loc>"));
+    }
+
+    #[tokio::test]
+    async fn legacy_two_character_primary_handle_serves_uncategorized_public_post() {
+        let state = access_key_state_with_primary_handle(
+            "short-handle-test-administrator-access-key",
+            "xy",
+        );
+        publish_primary_document(&state, "portable-기록", "Portable 기록");
+        let router = app(state);
+        let encoded_slug = "portable-%EA%B8%B0%EB%A1%9D";
+
+        // The SPA probes the ambiguous second segment as a category first.
+        // A segment that cannot be a category must be a real 404, not a
+        // handle/category-validation 400, so the browser can continue to the
+        // uncategorized article lookup.
+        let category_probe = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/blogs/xy/categories/{encoded_slug}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(category_probe.status(), StatusCode::NOT_FOUND);
+
+        // Category pages probe Series first. The same impossible collection
+        // segment must preserve that 404-based fallback contract.
+        let series_probe = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/blogs/xy/series/{encoded_slug}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(series_probe.status(), StatusCode::NOT_FOUND);
+
+        let public_api = router
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/blogs/xy/posts/{encoded_slug}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(public_api.status(), StatusCode::OK);
+        let public_api = json(public_api).await;
+        assert_eq!(public_api["title"], "Portable 기록");
+        assert_eq!(public_api["blog"]["handle"], "xy");
+        assert_eq!(public_api["blog"]["isPrimary"], true);
+        assert_eq!(public_api["category"], serde_json::Value::Null);
+
+        let spa_entry = router
+            .oneshot(
+                Request::get(format!("/@xy/{encoded_slug}"))
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spa_entry.status(), StatusCode::OK);
+        let spa_entry = text(spa_entry).await;
+        assert!(spa_entry.contains("<title>Portable 기록 · Test blog</title>"));
+        assert!(spa_entry.contains(&format!(
+            "<link rel=\"canonical\" href=\"https://blog.example/@xy/{encoded_slug}\">"
+        )));
     }
 
     #[tokio::test]

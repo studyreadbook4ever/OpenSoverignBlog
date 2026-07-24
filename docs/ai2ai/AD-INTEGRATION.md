@@ -64,6 +64,28 @@ the portable source URL remains unchanged. A diff and per-document opt-out are
 required. Direct sponsorship and house ads should be supported without a
 third-party runtime.
 
+## Shipped provider profile
+
+The repository ships one narrowly scoped third-party web adapter:
+[`kakao.adfit`](../../providers/kakao-adfit.yaml). It is disabled unless the
+operator installs the `ads` DLC, enables the feature, and supplies four valid
+desktop/mobile top/bottom unit IDs. Its complete operational contract is
+[`KAKAO-ADFIT.md`](../monetization/KAKAO-ADFIT.md).
+
+The explicit loader is
+`https://t1.kakaocdn.net/kas/static/ba.min.js`, mounted directly in an eligible
+public reader document only after consent. Kakao's operating policy prohibits
+publisher-created iframe delivery, so do not wrap the unit in an isolation
+iframe. The provider SDK itself currently calls Kakao-operated legacy Daum
+hosts; these must be declared as post-grant network capabilities, not rewritten
+into an invented loader. Login, onboarding, Studio, administrator, API, and
+error views are outside the adapter boundary.
+
+AdFit unit IDs are public browser identifiers even when supplied from a local
+ignored environment file. They do not justify `secret.use`, and an agent must
+never ask for or place a Kakao password, administrator key, or settlement
+credential in those fields.
+
 ## Agent response format
 
 An installation proposal should return:

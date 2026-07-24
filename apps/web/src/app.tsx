@@ -2,8 +2,10 @@ import {
   createContext,
   lazy,
   Suspense,
+  useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -21,6 +23,11 @@ import {
   OnboardingPage,
   ReferencesPage,
 } from "./public-pages";
+import {
+  AdvertisingSettingsButton,
+  KakaoAdFitProvider,
+  KakaoAdFitSlot,
+} from "./kakao-adfit";
 import { isReferencesPath } from "./references";
 
 const StudioDashboard = lazy(async () => ({
@@ -60,10 +67,32 @@ interface SessionContextValue {
 
 const SessionContext = createContext<SessionContextValue | undefined>(undefined);
 
+export type PublicReaderContentStatus = "pending" | "ready" | "error";
+
+interface PublicReaderContentState {
+  pathname: string;
+  status: PublicReaderContentStatus;
+}
+
+const PublicReaderContentContext = createContext<
+  ((status: PublicReaderContentStatus) => void) | undefined
+>(undefined);
+
 export function useSession(): SessionContextValue {
   const value = useContext(SessionContext);
   if (!value) throw new Error("SessionContext is unavailable");
   return value;
+}
+
+export function usePublicReaderContentStatus(
+  status: PublicReaderContentStatus | undefined,
+) {
+  const report = useContext(PublicReaderContentContext);
+  useLayoutEffect(() => {
+    if (!report || !status) return undefined;
+    report(status);
+    return () => report("pending");
+  }, [report, status]);
 }
 
 export function App() {
@@ -72,6 +101,10 @@ export function App() {
   const [capabilities, setCapabilities] = useState<Capabilities>();
   const [capabilitiesError, setCapabilitiesError] = useState<string>();
   const [sessionError, setSessionError] = useState<string>();
+  const [readerContent, setReaderContent] = useState<PublicReaderContentState>({
+    pathname,
+    status: "pending",
+  });
   const mainRef = useRef<HTMLElement>(null);
 
   async function refreshSession() {
@@ -146,6 +179,18 @@ export function App() {
   const editorMatch = pathname.match(/^\/studio\/write(?:\/([^/]+))?\/?$/);
   const editorDocumentId = editorMatch?.[1] ? decodePathSegment(editorMatch[1]) : undefined;
   const page = resolvePage(pathname, capabilities);
+  const reportReaderContent = useCallback(
+    (status: PublicReaderContentStatus) => {
+      setReaderContent((current) => (
+        current.pathname === pathname && current.status === status
+          ? current
+          : { pathname, status }
+      ));
+    },
+    [pathname],
+  );
+  const readerContentReady = readerContent.pathname === pathname
+    && readerContent.status === "ready";
 
   return (
     <SessionContext.Provider value={context}>
@@ -167,13 +212,21 @@ export function App() {
           </Suspense>
         </main>
       ) : (
-        <>
+        <KakaoAdFitProvider
+          advertising={capabilities?.advertising}
+          contentReady={readerContentReady}
+          pathname={pathname}
+        >
           <SiteHeader />
+          <KakaoAdFitSlot placement="top" />
           <main className="route-main" id="main-content" ref={mainRef} tabIndex={-1}>
-            {page}
+            <PublicReaderContentContext.Provider value={reportReaderContent}>
+              {page}
+            </PublicReaderContentContext.Provider>
           </main>
+          <KakaoAdFitSlot placement="bottom" />
           <SiteFooter />
-        </>
+        </KakaoAdFitProvider>
       )}
     </SessionContext.Provider>
   );
@@ -283,6 +336,11 @@ function MemberCategoryOrArticlePage({
 }) {
   const [resolution, setResolution] = useState<"loading" | "category" | "article" | "error">("loading");
   const [detail, setDetail] = useState<string>();
+  usePublicReaderContentStatus(
+    resolution === "error"
+      ? "error"
+      : resolution === "loading" ? "pending" : undefined,
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -451,7 +509,7 @@ function SiteFooter() {
         <strong>OpenSoverignBlog</strong>
         <p>{text("당신의 Markdown, 당신의 서버, 당신의 기록.", "Your Markdown. Your server. Your record.")}</p>
         <p className="footer-version">
-          <span>{text("현재 버전", "Current version")} v{version?.currentVersion ?? "0.1.1"}</span>
+          <span>{text("현재 버전", "Current version")} v{version?.currentVersion ?? "0.1.2"}</span>
           <span>{text("출시일", "Released")} {version?.currentReleaseDate ?? text("미출시", "unreleased")}</span>
           {version?.latestVersion ? <span>{text("최신 버전", "Latest version")} v{version.latestVersion}{version.latestReleaseDate ? ` (${version.latestReleaseDate})` : ""}{version.updateAvailable ? text(" · 업데이트 가능", " · update available") : ""}</span> : null}
         </p>
@@ -464,6 +522,7 @@ function SiteFooter() {
         <a href={publicPath("/openapi/openapi.yaml")}>OpenAPI</a>
         <a href={publicPath("/AI2AI.md")}>AI2AI</a>
         <a href={publicPath(version?.licenseHref ?? "/UNLICENSE")}>Unlicense</a>
+        <AdvertisingSettingsButton />
         <a className="footer-github" href={version?.repositoryUrl ?? "https://github.com/studyreadbook4ever/OpenSoverignBlog"} rel="noreferrer" target="_blank">
           <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 .7a11.5 11.5 0 0 0-3.64 22.4c.58.1.79-.25.79-.56v-2.23c-3.23.7-3.91-1.37-3.91-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.17.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.39.96.1-.75.4-1.26.74-1.55-2.58-.29-5.29-1.29-5.29-5.7 0-1.26.45-2.29 1.2-3.1-.12-.3-.52-1.48.11-3.07 0 0 .98-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.2-1.5 3.17-1.18 3.17-1.18.63 1.6.23 2.78.11 3.07.75.81 1.2 1.84 1.2 3.1 0 4.43-2.72 5.4-5.3 5.7.42.36.78 1.07.78 2.16v3.2c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z" /></svg>
           GitHub

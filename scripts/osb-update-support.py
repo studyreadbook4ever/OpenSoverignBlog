@@ -979,7 +979,7 @@ def command_self_test(_: argparse.Namespace) -> None:
     repository_example = Path(__file__).resolve().parent.parent / "osb.lock.example.json"
     if repository_example.is_file():
         example_lock = load_lock(repository_example)
-        assert example_lock["engine"]["version"] == "0.1.1"
+        assert example_lock["engine"]["version"] == "0.1.2"
         assert example_lock["selection"]["cache"] == "redis_managed"
     with tempfile.TemporaryDirectory(prefix="osb-update-support-test-") as raw:
         root = Path(raw)
@@ -1043,7 +1043,7 @@ def command_self_test(_: argparse.Namespace) -> None:
                 argparse.Namespace(
                     source=retained_candidate_path,
                     target=promoted_live,
-                    from_version="0.1.1",
+                    from_version="0.1.2",
                     to_version="0.2.0",
                 )
             )
@@ -1161,13 +1161,25 @@ def command_self_test(_: argparse.Namespace) -> None:
         )
         assert (major_plan / "status").read_text(encoding="utf-8").strip() == "major_available"
         source = root / ".env"
-        source.write_text("SECRET=do-not-print\nOSB_IMAGE=old\n", encoding="utf-8")
+        source.write_text(
+            "SECRET=do-not-print\n"
+            "OSB_KAKAO_ADFIT_PC_TOP_UNIT=DAN-TEST-PC-TOP-0001\n"
+            "OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT=DAN-TEST-PC-BOTTOM-0001\n"
+            "OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT=DAN-TEST-MOBILE-TOP-0001\n"
+            "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT=DAN-TEST-MOBILE-BOTTOM-0001\n"
+            "OSB_IMAGE=old\n",
+            encoding="utf-8",
+        )
         output = root / "next.env"
         command_env_rewrite(
             argparse.Namespace(source=source, output=output, set=["OSB_IMAGE=sha256:abc", "OSB_DATA_VOLUME=v2"])
         )
         rendered = output.read_text(encoding="utf-8")
         assert "SECRET=do-not-print" in rendered
+        assert "OSB_KAKAO_ADFIT_PC_TOP_UNIT=DAN-TEST-PC-TOP-0001" in rendered
+        assert "OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT=DAN-TEST-PC-BOTTOM-0001" in rendered
+        assert "OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT=DAN-TEST-MOBILE-TOP-0001" in rendered
+        assert "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT=DAN-TEST-MOBILE-BOTTOM-0001" in rendered
         assert "OSB_IMAGE=sha256:abc" in rendered
         assert "OSB_DATA_VOLUME=v2" in rendered
         deployment = root / "deployment"

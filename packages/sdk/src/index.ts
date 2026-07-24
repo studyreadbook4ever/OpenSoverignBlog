@@ -369,16 +369,46 @@ export interface HomeSeriesSection {
   items: FeedPostSummary[];
 }
 
+export interface HomePostUnit {
+  kind: "post";
+  post: FeedPostSummary;
+}
+
+export interface HomeSeriesUnit {
+  kind: "series";
+  series: SeriesSummary;
+  items: FeedPostSummary[];
+}
+
+export type HomeUnit = HomePostUnit | HomeSeriesUnit;
+
+export type HomePinTarget =
+  | { kind: "post"; id: string }
+  | { kind: "series"; id: string };
+
 export interface HomeResponse {
+  /**
+   * Authoritative ordered home units. Optional only while a newer SDK may
+   * encounter a pre-schema-10 server during a rolling upgrade.
+   */
+  units?: HomeUnit[];
+  /** @deprecated Use units. */
   pinnedItems: FeedPostSummary[];
+  /** @deprecated Use units. */
   recentItems: FeedPostSummary[];
-  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  /** @deprecated Use units. */
   categorySections?: HomeCategorySection[];
-  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  /** @deprecated Use units. */
   seriesSections?: HomeSeriesSection[];
 }
 
 export interface HomePinsResponse {
+  /**
+   * Authoritative combined post/series pin order. Optional only while a newer
+   * SDK may encounter a pre-schema-10 server during a rolling upgrade.
+   */
+  targets?: HomePinTarget[];
+  /** @deprecated Document-only compatibility projection. */
   documentIds: string[];
 }
 
@@ -452,11 +482,62 @@ export interface Capabilities {
   auth?: AdminAuthCapabilities;
   /** Optional instance-wide attribution, licensing, privacy, and policy page. */
   references?: ReferencesDescriptor;
+  /**
+   * Optional, public advertising configuration. Unit IDs are browser-facing
+   * placement identifiers; administrator credentials are never exposed here.
+   */
+  advertising?: AdvertisingCapabilities;
 }
 
 export interface ReferencesDescriptor {
   href: "/references";
   label: string;
+}
+
+export type AdvertisingPlacement = "top" | "bottom";
+export type AdvertisingViewport = "pc" | "mobile";
+export type AdvertisingConsentDecision = "unknown" | "granted" | "denied";
+
+export interface AdvertisingUnitDescriptor {
+  unitId: string;
+  width: number;
+  height: number;
+}
+
+export interface AdvertisingPlacementDescriptor {
+  pc: AdvertisingUnitDescriptor;
+  mobile: AdvertisingUnitDescriptor;
+}
+
+export interface AdvertisingConsentDescriptor {
+  required: true;
+  statusHref: string;
+  actionHref: string;
+  purposeIds: string[];
+  privacyHref: string;
+  policyHref: string;
+}
+
+/**
+ * A capability-gated Kakao AdFit configuration. Clients must wait for an
+ * explicit `granted` decision before creating provider markup or loading the
+ * advertised script.
+ */
+export interface AdvertisingCapabilities {
+  provider: "kakao-adfit";
+  scriptUrl: "https://t1.kakaocdn.net/kas/static/ba.min.js";
+  policyVersion: string;
+  consent: AdvertisingConsentDescriptor;
+  placements: Record<AdvertisingPlacement, AdvertisingPlacementDescriptor>;
+}
+
+export interface AdvertisingConsentStatus {
+  decision: AdvertisingConsentDecision;
+  policyVersion?: string;
+}
+
+export interface SetAdvertisingConsentInput {
+  decision: Exclude<AdvertisingConsentDecision, "unknown">;
 }
 
 export interface ReferencesPage {
@@ -557,6 +638,8 @@ export interface DiscoveryDocument {
     customCss: boolean;
     agentDiscovery: boolean;
     deliveryOnly: boolean;
+    /** Optional while clients may encounter a pre-advertising discovery document. */
+    advertising?: boolean;
   };
   dependencies: {
     cache: DiscoveryCacheDependency;
@@ -684,6 +767,12 @@ export interface DocumentSnapshot {
   publishedRevisionId?: string;
   revision: RevisionSnapshot;
   categoryId?: string;
+  /**
+   * Category placement of the published revision in Studio responses.
+   * New servers always send either a UUID or null; the property stays optional
+   * so rolling-upgrade clients can still consume responses from older servers.
+   */
+  publishedCategoryId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -789,6 +878,35 @@ export class OpenSoverignBlogClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return this.#request("/api/v1/capabilities", withSignal(signal));
+  }
+
+  async advertisingConsent(
+    statusHref = "/api/v1/advertising/consent",
+    signal?: AbortSignal,
+  ): Promise<AdvertisingConsentStatus> {
+    return this.#request(validateAdvertisingConsentHref(statusHref), {
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
+  }
+
+  async setAdvertisingConsent(
+    input: SetAdvertisingConsentInput,
+    actionHref = "/api/v1/advertising/consent",
+    signal?: AbortSignal,
+  ): Promise<AdvertisingConsentStatus> {
+    return this.#request(validateAdvertisingConsentHref(actionHref), {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
   }
 
   async references(signal?: AbortSignal): Promise<ReferencesPage> {
@@ -902,6 +1020,17 @@ export class OpenSoverignBlogClient {
     return this.#request("/api/v1/admin/home/pins", {
       method: "PUT",
       body: JSON.stringify({ documentIds }),
+      ...withSignal(signal),
+    });
+  }
+
+  async replaceHomePinTargets(
+    targets: HomePinTarget[],
+    signal?: AbortSignal,
+  ): Promise<HomePinsResponse> {
+    return this.#request("/api/v1/admin/home/pins", {
+      method: "PUT",
+      body: JSON.stringify({ targets }),
       ...withSignal(signal),
     });
   }
@@ -1697,4 +1826,16 @@ function validateAdminAuthActionHref(value: string): string {
     throw new TypeError("administrator authentication action must target /api/v1/auth/");
   }
   return `${parsed.pathname}${parsed.search}`;
+}
+
+function validateAdvertisingConsentHref(value: string): string {
+  if (
+    typeof value !== "string"
+    || value !== "/api/v1/advertising/consent"
+  ) {
+    throw new TypeError(
+      "advertising consent action must target /api/v1/advertising/consent",
+    );
+  }
+  return value;
 }

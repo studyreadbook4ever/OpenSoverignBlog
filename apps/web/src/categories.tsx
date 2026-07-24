@@ -15,7 +15,7 @@ import type {
   UpdateCategoryInput,
 } from "@opensoverignblog/sdk";
 import { AdminAccessKeyForm } from "./admin-access";
-import { useSession } from "./app";
+import { usePublicReaderContentStatus, useSession } from "./app";
 import { adminAuthChoices, studioAccessFor } from "./auth-policy";
 import { publicCategoryPath, publicCategoryPostPath } from "./article-location";
 import { safeBlogStylesheetUrl } from "./site-stylesheet";
@@ -67,6 +67,9 @@ export function CategoryPage({
   >();
   const [posts, setPosts] = useState<FeedPostSummary[]>([]);
   const [error, setError] = useState<string>();
+  usePublicReaderContentStatus(
+    error ? "error" : collection ? "ready" : "pending",
+  );
   const collectionTitle = collection?.kind === "series"
     ? collection.page.series.title
     : collection?.page.category.title;
@@ -413,14 +416,14 @@ export function StudioCategoriesPage({
                   maxLength={40}
                   onChange={(event) => setSlug(event.target.value.toLowerCase())}
                   pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-                  placeholder="yangja"
+                  placeholder="research-notes"
                   required
                   value={slug}
                 /></span>
               </label>
               <label>
                 {text("표시 이름", "Display name")}
-                <input maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder={text("양자", "Quantum")} required value={title} />
+                <input maxLength={200} onChange={(event) => setTitle(event.target.value)} placeholder={text("연구 노트", "Research notes")} required value={title} />
               </label>
             </div>
             <label>

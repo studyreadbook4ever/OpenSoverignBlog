@@ -3,99 +3,110 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  homeCategoryAnchor,
   homeSeriesAnchor,
   presentHome,
 } from "../src/home-presentation.ts";
 
-const post = (id) => ({ id });
+const post = (id, category) => ({
+  id,
+  ...(category ? { category } : {}),
+});
 const category = (id, slug, title, description) => ({ id, slug, title, description });
+const series = (id, categoryId, slug, title = slug) => ({
+  id,
+  categoryId,
+  slug,
+  title,
+  status: "active",
+});
 
-test("home presentation preserves API section and item order without duplicate rows", () => {
-  const home = {
-    pinnedItems: [post("pinned")],
+test("authoritative typed units preserve one flat post/series order", () => {
+  const orderedSeries = series("series-id", "category-id", "ordered-notes");
+  const presentation = presentHome({
+    units: [
+      { kind: "post", post: post("pinned-post") },
+      {
+        kind: "series",
+        series: orderedSeries,
+        items: [post("series-1"), post("series-2")],
+      },
+      { kind: "post", post: post("ordinary-post") },
+      { kind: "post", post: post("ordinary-post") },
+    ],
+    // Typed units are authoritative even if rolling-upgrade compatibility
+    // projections contain a conflicting order.
+    pinnedItems: [post("legacy-pin")],
+    recentItems: [post("legacy-recent")],
+    seriesSections: [],
+    categorySections: [],
+  });
+
+  assert.deepEqual(
+    presentation.units.map((unit) => (
+      unit.kind === "post"
+        ? ["post", unit.post.id]
+        : ["series", unit.series.id, unit.items.map(({ id }) => id)]
+    )),
+    [
+      ["post", "pinned-post"],
+      ["series", "series-id", ["series-1", "series-2"]],
+      ["post", "ordinary-post"],
+    ],
+  );
+  assert.equal(presentation.units[1].anchorId, homeSeriesAnchor("ordered-notes"));
+});
+
+test("legacy Series-member pins remain visible with the old server projection", () => {
+  const seriesCategory = category("series-category", "series", "Series");
+  const plainCategory = category("plain-category", "notes", "Notes");
+  const orderedSeries = series("series-id", seriesCategory.id, "series");
+  const first = post("series-first", seriesCategory);
+  const second = post("series-second", seriesCategory);
+
+  const presentation = presentHome({
+    pinnedItems: [second, post("standalone-pin")],
+    seriesSections: [{
+      series: orderedSeries,
+      // Schema-9 servers removed pinned IDs before constructing Series rows.
+      items: [first],
+    }],
     categorySections: [
-      {
-        category: category("yangja-id", "yangja", "yangja", "양자 컴퓨팅"),
-        items: [post("pinned"), post("yangja-1"), post("yangja-2")],
-      },
-      {
-        category: category("ontology-id", "ontology", "ontology", "온톨로지"),
-        items: [post("ontology-1"), post("ontology-2")],
-      },
+      { category: seriesCategory, items: [first, second] },
+      { category: plainCategory, items: [post("categorized", plainCategory)] },
     ],
     recentItems: [
-      post("ontology-2"),
-      post("yangja-1"),
-      post("uncategorized"),
-      post("uncategorized"),
+      second,
+      post("categorized", plainCategory),
+      post("standalone-recent"),
     ],
-  };
-
-  const presentation = presentHome(home);
-
-  assert.deepEqual(
-    presentation.categorySections.map(({ category: item }) => [item.title, item.description]),
-    [["yangja", "양자 컴퓨팅"], ["ontology", "온톨로지"]],
-  );
-  assert.deepEqual(
-    presentation.categorySections.map(({ items }) => items.map(({ id }) => id)),
-    [["yangja-1", "yangja-2"], ["ontology-1", "ontology-2"]],
-  );
-  assert.deepEqual(presentation.recentItems.map(({ id }) => id), ["uncategorized"]);
-  assert.equal(presentation.total, 6);
-  assert.equal(presentation.categorySections[0].anchorId, "home-category-yangja");
-  assert.equal(presentation.categorySections[0].anchorId, homeCategoryAnchor("yangja"));
-});
-
-test("empty and duplicate-only category sections do not produce dead sidebar targets", () => {
-  const presentation = presentHome({
-    pinnedItems: [post("pinned")],
-    categorySections: [
-      { category: category("empty", "empty", "Empty"), items: [] },
-      { category: category("duplicate", "duplicate", "Duplicate"), items: [post("pinned")] },
-    ],
-    recentItems: [],
   });
 
-  assert.deepEqual(presentation.categorySections, []);
-  assert.equal(presentation.total, 1);
+  assert.deepEqual(
+    presentation.units.map((unit) => (
+      unit.kind === "post"
+        ? ["post", unit.post.id]
+        : ["series", unit.series.id, unit.items.map(({ id }) => id)]
+    )),
+    [
+      ["post", "series-second"],
+      ["post", "standalone-pin"],
+      ["series", "series-id", ["series-first"]],
+      ["post", "categorized"],
+      ["post", "standalone-recent"],
+    ],
+  );
 });
 
-test("first-class series win over duplicate backing-category rows", () => {
-  const home = {
-    pinnedItems: [],
-    seriesSections: [{
-      series: {
-        id: "series-id",
-        categoryId: "category-id",
-        slug: "yangja",
-        title: "yangja",
-      },
-      items: [post("first"), post("second")],
-    }],
-    categorySections: [{
-      category: category("category-id", "yangja", "yangja"),
-      items: [post("first"), post("second")],
-    }],
-    recentItems: [post("second"), post("recent")],
-  };
-
-  const presentation = presentHome(home);
-  assert.deepEqual(presentation.seriesSections[0].items.map(({ id }) => id), ["first", "second"]);
-  assert.equal(presentation.seriesSections[0].anchorId, homeSeriesAnchor("yangja"));
-  assert.deepEqual(presentation.categorySections, []);
-  assert.deepEqual(presentation.recentItems.map(({ id }) => id), ["recent"]);
-});
-
-test("legacy home payloads still render their recent rows", () => {
+test("legacy recent-only payloads remain readable as standalone home units", () => {
   const presentation = presentHome({
     pinnedItems: [],
-    recentItems: [post("one"), post("two")],
+    recentItems: [post("one"), post("two"), post("one")],
   });
 
-  assert.deepEqual(presentation.recentItems.map(({ id }) => id), ["one", "two"]);
-  assert.equal(presentation.total, 2);
+  assert.deepEqual(
+    presentation.units.map((unit) => [unit.kind, unit.kind === "post" && unit.post.id]),
+    [["post", "one"], ["post", "two"]],
+  );
 });
 
 test("dense home rows no longer contain or reserve the one-character index", async () => {
@@ -110,17 +121,50 @@ test("dense home rows no longer contain or reserve the one-character index", asy
   assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.wiki-post-row \{[^}]*grid-template-columns: minmax\(0, 1fr\);/);
 });
 
-test("home series and category sections expose an accessible independent collapse control", async () => {
+test("home chrome omits operational counters and the generic publishing hero", async () => {
   const [component, styles] = await Promise.all([
     readFile(new URL("../src/public-pages.tsx", import.meta.url), "utf8"),
     readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
   ]);
 
-  assert.match(component, /const collapsible = tone === "series" \|\| tone === "category"/);
+  assert.doesNotMatch(component, /<dt>\{text\("공개 글", "Public posts"\)/);
+  assert.doesNotMatch(component, /<dt>\{text\("운영 모드", "Mode"\)/);
+  assert.doesNotMatch(component, /className="wiki-welcome"/);
+  assert.doesNotMatch(component, /Markdown 원문과 서버를 작성자가 직접 소유/);
+  assert.doesNotMatch(component, /\$\{items\.length\} posts/);
+  assert.doesNotMatch(styles, /\.wiki-sidebar dl/);
+  assert.doesNotMatch(styles, /\.wiki-welcome/);
+  assert.match(styles, /\.wiki-main > \.wiki-panel:first-child \{ margin-top: 0; \}/);
+});
+
+test("home renders peer units without featured, recent, or category grouping", async () => {
+  const [component, styles] = await Promise.all([
+    readFile(new URL("../src/public-pages.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(component, /presentation\.units\.map/);
+  assert.match(component, /function HomeStandalonePost/);
+  assert.match(component, /className="wiki-panel wiki-panel-post"/);
+  assert.match(component, /function HomeSeriesUnitPanel/);
+  assert.doesNotMatch(component, /id="home-pinned"/);
+  assert.doesNotMatch(component, /id="home-recent"/);
+  assert.doesNotMatch(component, /tone="(?:pinned|recent|category)"/);
+  assert.doesNotMatch(styles, /\.wiki-panel-recent/);
+});
+
+test("only Series units expose an accessible collapse control and start closed", async () => {
+  const [component, styles] = await Promise.all([
+    readFile(new URL("../src/public-pages.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../src/styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(component, /function HomeSeriesUnitPanel[\s\S]*useState\(false\)/);
   assert.match(component, /aria-controls=\{contentId\}/);
   assert.match(component, /aria-expanded=\{expanded\}/);
-  assert.match(component, /hidden=\{collapsible && !expanded\}/);
+  assert.match(component, /hidden=\{!expanded\}/);
   assert.match(component, /window\.addEventListener\("hashchange", revealFragmentTarget\)/);
+  assert.doesNotMatch(component, /function HomeStandalonePost[\s\S]*aria-expanded/);
   assert.match(styles, /\.wiki-panel-toggle \{/);
   assert.match(styles, /\.wiki-post-list\[hidden\] \{ display: none; \}/);
 });

@@ -1535,7 +1535,7 @@ dependencies = [
 
 [[package]]
 name = "osb-assets-fs"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "osb-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "osb-feature-code-runner-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "axum",
@@ -1587,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "osb-feature-comments"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "osb-renderer",
@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "osb-feature-external-auth"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "osb-kernel",
  "serde",
@@ -1607,7 +1607,7 @@ dependencies = [
 
 [[package]]
 name = "osb-feature-monetization-policy"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1617,7 +1617,7 @@ dependencies = [
 
 [[package]]
 name = "osb-feature-rbac"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "osb-kernel",
  "serde",
@@ -1626,7 +1626,7 @@ dependencies = [
 
 [[package]]
 name = "osb-feature-seo"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "osb-kernel"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "osb-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -1660,7 +1660,7 @@ dependencies = [
 
 [[package]]
 name = "osb-plugin-api"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "semver",
  "serde",
@@ -1674,7 +1674,7 @@ dependencies = [
 
 [[package]]
 name = "osb-renderer"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "ammonia",
  "osb-kernel",
@@ -1686,7 +1686,7 @@ dependencies = [
 
 [[package]]
 name = "osb-server"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1698,6 +1698,7 @@ dependencies = [
  "osb-feature-code-runner-client",
  "osb-feature-comments",
  "osb-feature-external-auth",
+ "osb-feature-monetization-policy",
  "osb-feature-seo",
  "osb-kernel",
  "osb-plugin-api",
@@ -1728,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "osb-storage-sqlite"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "osb-kernel",

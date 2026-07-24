@@ -2,9 +2,9 @@
   "schemaVersion": "open-soverign-blog-lock/1",
   "installationId": "019f7979-723a-75c0-8e97-11c3b13b004d",
   "engine": {
-    "version": "0.1.1",
+    "version": "0.1.2",
     "configSchemaVersion": "open-soverign-blog/2",
-    "databaseSchemaVersion": 9,
+    "databaseSchemaVersion": 10,
     "pluginApi": "1",
     "source": "source-checkout"
   },
@@ -45,5 +45,5 @@
       "engineVersion": "0.1.0"
     }
   ],
-  "lockDigest": "2395131688701cf8898a96a50476e34b08d2d913a0694423bb3891c3c71bf5dc"
+  "lockDigest": "a6f1ebe7277a695fc051872d8db86c0900ec4dd8d06c1f9e5cea268a3ccba6d0"
 }
