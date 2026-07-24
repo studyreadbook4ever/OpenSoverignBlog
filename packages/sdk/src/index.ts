@@ -452,11 +452,62 @@ export interface Capabilities {
   auth?: AdminAuthCapabilities;
   /** Optional instance-wide attribution, licensing, privacy, and policy page. */
   references?: ReferencesDescriptor;
+  /**
+   * Optional, public advertising configuration. Unit IDs are browser-facing
+   * placement identifiers; administrator credentials are never exposed here.
+   */
+  advertising?: AdvertisingCapabilities;
 }
 
 export interface ReferencesDescriptor {
   href: "/references";
   label: string;
+}
+
+export type AdvertisingPlacement = "top" | "bottom";
+export type AdvertisingViewport = "pc" | "mobile";
+export type AdvertisingConsentDecision = "unknown" | "granted" | "denied";
+
+export interface AdvertisingUnitDescriptor {
+  unitId: string;
+  width: number;
+  height: number;
+}
+
+export interface AdvertisingPlacementDescriptor {
+  pc: AdvertisingUnitDescriptor;
+  mobile: AdvertisingUnitDescriptor;
+}
+
+export interface AdvertisingConsentDescriptor {
+  required: true;
+  statusHref: string;
+  actionHref: string;
+  purposeIds: string[];
+  privacyHref: string;
+  policyHref: string;
+}
+
+/**
+ * A capability-gated Kakao AdFit configuration. Clients must wait for an
+ * explicit `granted` decision before creating provider markup or loading the
+ * advertised script.
+ */
+export interface AdvertisingCapabilities {
+  provider: "kakao-adfit";
+  scriptUrl: "https://t1.kakaocdn.net/kas/static/ba.min.js";
+  policyVersion: string;
+  consent: AdvertisingConsentDescriptor;
+  placements: Record<AdvertisingPlacement, AdvertisingPlacementDescriptor>;
+}
+
+export interface AdvertisingConsentStatus {
+  decision: AdvertisingConsentDecision;
+  policyVersion?: string;
+}
+
+export interface SetAdvertisingConsentInput {
+  decision: Exclude<AdvertisingConsentDecision, "unknown">;
 }
 
 export interface ReferencesPage {
@@ -557,6 +608,8 @@ export interface DiscoveryDocument {
     customCss: boolean;
     agentDiscovery: boolean;
     deliveryOnly: boolean;
+    /** Optional while clients may encounter a pre-advertising discovery document. */
+    advertising?: boolean;
   };
   dependencies: {
     cache: DiscoveryCacheDependency;
@@ -789,6 +842,35 @@ export class OpenSoverignBlogClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return this.#request("/api/v1/capabilities", withSignal(signal));
+  }
+
+  async advertisingConsent(
+    statusHref = "/api/v1/advertising/consent",
+    signal?: AbortSignal,
+  ): Promise<AdvertisingConsentStatus> {
+    return this.#request(validateAdvertisingConsentHref(statusHref), {
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
+  }
+
+  async setAdvertisingConsent(
+    input: SetAdvertisingConsentInput,
+    actionHref = "/api/v1/advertising/consent",
+    signal?: AbortSignal,
+  ): Promise<AdvertisingConsentStatus> {
+    return this.#request(validateAdvertisingConsentHref(actionHref), {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
   }
 
   async references(signal?: AbortSignal): Promise<ReferencesPage> {
@@ -1697,4 +1779,16 @@ function validateAdminAuthActionHref(value: string): string {
     throw new TypeError("administrator authentication action must target /api/v1/auth/");
   }
   return `${parsed.pathname}${parsed.search}`;
+}
+
+function validateAdvertisingConsentHref(value: string): string {
+  if (
+    typeof value !== "string"
+    || value !== "/api/v1/advertising/consent"
+  ) {
+    throw new TypeError(
+      "advertising consent action must target /api/v1/advertising/consent",
+    );
+  }
+  return value;
 }

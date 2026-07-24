@@ -283,7 +283,7 @@ an exact bundled manifest digest. The current catalog is:
 | `rbac` | Owner/editor/writer collaboration when enabled |
 | `external-auth` | Generic external identity composition |
 | `code-runner` | Contract for an out-of-process isolated runner; broker required |
-| `ads` | Monetization/consent policy contract; provider adapter required |
+| `ads` | Monetization/consent policy plus the optional, consent-gated [Kakao AdFit top/bottom adapter](docs/monetization/KAKAO-ADFIT.md) |
 
 The last two do not become operational merely by being named. Capabilities
 report `misconfigured` or `available` until their separately isolated adapter

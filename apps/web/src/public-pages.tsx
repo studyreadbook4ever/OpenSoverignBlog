@@ -23,7 +23,7 @@ import type {
   ViewMode,
 } from "@opensoverignblog/sdk";
 import { AdminAccessKeyForm } from "./admin-access";
-import { useSession } from "./app";
+import { usePublicReaderContentStatus, useSession } from "./app";
 import {
   articleHref,
   articleViewFromSearch,
@@ -82,6 +82,9 @@ export function FeedPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  usePublicReaderContentStatus(
+    error ? "error" : loading ? "pending" : "ready",
+  );
 
   useEffect(() => {
     const controller = new AbortController();
@@ -214,6 +217,7 @@ export function ReferencesPage({ capabilities }: { capabilities: Capabilities | 
   const advertisedLabel = capabilities?.references?.label ?? text("레퍼런스", "References");
   const [page, setPage] = useState<ReferencesPageView>();
   const [error, setError] = useState<string>();
+  usePublicReaderContentStatus(error ? "error" : page ? "ready" : "pending");
   usePageTitle(page?.label ?? advertisedLabel);
 
   useEffect(() => {
@@ -385,6 +389,7 @@ export function BlogPage({ handle }: { handle: string }) {
   const [blog, setBlog] = useState<BlogSummary>();
   const [posts, setPosts] = useState<FeedPostSummary[]>([]);
   const [error, setError] = useState<string>();
+  usePublicReaderContentStatus(error ? "error" : blog ? "ready" : "pending");
   usePageTitle(blog?.title ?? `@${handle}`);
 
   useEffect(() => {
@@ -473,6 +478,7 @@ export function ArticlePage({
   const [view, setView] = useState<ViewMode>(() => articleViewFromSearch(window.location.search));
   const [post, setPost] = useState<BlogPostView>();
   const [error, setError] = useState<string>();
+  usePublicReaderContentStatus(error ? "error" : post ? "ready" : "pending");
   const legacyArticle = legacy;
   usePageTitle(post?.title ?? text("글 읽기", "Read post"));
 
@@ -1102,6 +1108,7 @@ export function OnboardingPage() {
 }
 
 export function NotFoundPage() {
+  usePublicReaderContentStatus("error");
   usePageTitle(text("페이지 없음", "Page not found"));
   return <EmptyState actionHref="/" actionLabel={text("피드로 돌아가기", "Back to feed")} description={text("주소가 바뀌었거나 존재하지 않는 페이지입니다.", "The address may have changed, or this page does not exist.")} title={text("길을 잃은 것 같아요", "This page seems to be lost")} />;
 }

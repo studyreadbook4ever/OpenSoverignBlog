@@ -2,18 +2,21 @@
 manifestVersion = 1
 id = "org.open-soverign-blog.monetization-policy"
 name = "Monetization policy and slots"
-version = "0.1.0"
+version = "0.1.1"
 license = "Unlicense"
 pluginApi = "1"
 coreCompatibility = ">=0.1.0, <0.2.0"
 kinds = ["ad-provider", "render-extension"]
-description = "Named monetization slots, disclosure, consent gating, and provider adapter contracts."
+description = "Named monetization slots, disclosure, default-deny consent gating, static first-party ads, and an optional Kakao AdFit adapter."
 permissions = [
-  { capability = "content.read", scope = "published" },
-  { capability = "render.slot", resources = ["site.header", "article.before", "article.after", "article.inline"], reason = "Resolve explicit named slots after policy evaluation." },
-  { capability = "state.read", scope = "site" },
-  { capability = "state.write", scope = "site" }
+  { capability = "content.read", scope = "published", reason = "Resolve approved monetization only for published public-reader content." },
+  { capability = "render.slot", resources = ["site_top", "site_bottom", "article_footer"], reason = "Render only the typed top, bottom, and static first-party footer slots after policy evaluation." },
+  { capability = "route.public", resources = ["advertising.consent"], reason = "Read and change the visitor's first-party advertising choice without administrator authentication." },
+  { capability = "network.connect", resources = ["aem-kakao-collector.onkakao.net", "analytics.ad.daum.net", "display.ad.daum.net", "kaat.daum.net", "serv.ds.kakao.com", "t1.daumcdn.net", "t1.kakaocdn.net"], reason = "After an explicit grant only, load the official Kakao AdFit SDK and its declared Kakao-operated and legacy Daum resources." },
+  { capability = "state.read", scope = "site", reason = "Read the active monetization policy and provider configuration." },
+  { capability = "state.write", scope = "site", reason = "Maintain versioned site monetization policy state; visitor choice remains a data-minimised first-party cookie." }
 ]
+metadata = { bundled = true, default_enabled = false }
 
 [provenance]
 origin = "original"

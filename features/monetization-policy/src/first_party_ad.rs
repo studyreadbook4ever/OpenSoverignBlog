@@ -23,12 +23,16 @@ pub enum FirstPartyAdKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NamedAdSlot {
+    SiteTop,
+    SiteBottom,
     ArticleFooter,
 }
 
 impl NamedAdSlot {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::SiteTop => "site_top",
+            Self::SiteBottom => "site_bottom",
             Self::ArticleFooter => "article_footer",
         }
     }

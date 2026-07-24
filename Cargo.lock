@@ -1698,6 +1698,7 @@ dependencies = [
  "osb-feature-code-runner-client",
  "osb-feature-comments",
  "osb-feature-external-auth",
+ "osb-feature-monetization-policy",
  "osb-feature-seo",
  "osb-kernel",
  "osb-plugin-api",

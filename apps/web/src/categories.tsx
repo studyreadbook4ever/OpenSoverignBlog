@@ -15,7 +15,7 @@ import type {
   UpdateCategoryInput,
 } from "@opensoverignblog/sdk";
 import { AdminAccessKeyForm } from "./admin-access";
-import { useSession } from "./app";
+import { usePublicReaderContentStatus, useSession } from "./app";
 import { adminAuthChoices, studioAccessFor } from "./auth-policy";
 import { publicCategoryPath, publicCategoryPostPath } from "./article-location";
 import { safeBlogStylesheetUrl } from "./site-stylesheet";
@@ -67,6 +67,9 @@ export function CategoryPage({
   >();
   const [posts, setPosts] = useState<FeedPostSummary[]>([]);
   const [error, setError] = useState<string>();
+  usePublicReaderContentStatus(
+    error ? "error" : collection ? "ready" : "pending",
+  );
   const collectionTitle = collection?.kind === "series"
     ? collection.page.series.title
     : collection?.page.category.title;

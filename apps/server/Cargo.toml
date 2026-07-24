@@ -21,6 +21,7 @@ osb-feature-seo = { version = "=0.1.1", path = "../../features/seo" }
 osb-feature-code-runner-client = { version = "=0.1.1", path = "../../features/code-runner-client" }
 osb-feature-comments = { version = "=0.1.1", path = "../../features/comments" }
 osb-feature-external-auth = { version = "=0.1.1", path = "../../features/external-auth" }
+osb-feature-monetization-policy = { version = "=0.1.1", path = "../../features/monetization-policy" }
 openidconnect.workspace = true
 percent-encoding.workspace = true
 rand_core.workspace = true

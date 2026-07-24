@@ -1,7 +1,7 @@
 {
   "$schema": "https://open-soverign-blog.invalid/providers/index.schema.json",
   "schemaVersion": "1.0",
-  "generatedAt": "2026-07-18",
+  "generatedAt": "2026-07-24",
   "entries": [
     {
       "id": "amazon.associates.us",
@@ -43,6 +43,13 @@
       "path": "providers/google-adsense.yaml",
       "adapterStatus": "catalog-only",
       "lastVerified": "2026-07-18",
+      "example": false
+    },
+    {
+      "id": "kakao.adfit",
+      "path": "providers/kakao-adfit.yaml",
+      "adapterStatus": "core-maintained",
+      "lastVerified": "2026-07-24",
       "example": false
     },
     {
