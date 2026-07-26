@@ -303,6 +303,7 @@ mod tests {
                 document_id: Uuid::now_v7(),
                 base_revision_id: Uuid::now_v7(),
                 title: "Title".into(),
+                subtitle: None,
                 slug: "title".into(),
                 source_markdown: "# Title".into(),
                 embeds: vec![],

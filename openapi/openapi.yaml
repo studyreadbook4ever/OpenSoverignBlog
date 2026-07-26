@@ -2,7 +2,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: OpenSoverignBlog HTTP API
-  version: 0.1.2
+  version: 0.1.3
   description: |
     Contract for the routes mounted by the reference Rust server. This describes
     implemented wire behavior, not every capability that a future plugin may add.
@@ -3092,6 +3092,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug:
           type: string
           description: Backwards-compatible leaf slug without a category prefix.
@@ -3741,6 +3742,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string }
         excerpt: { type: string }
         publishedAt: { type: string, format: date-time }
@@ -3939,6 +3941,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         canonicalSlug: { type: string }
         requestedSlug: { type: string }
         revisionId: { type: string, format: uuid }
@@ -4096,11 +4099,19 @@ components:
             type: string
             pattern: '^[A-Za-z0-9._-]{1,200}$'
 
+    PostSubtitle:
+      type: string
+      minLength: 1
+      maxLength: 500
+      pattern: '^[^\s\u0000-\u001F\u007F-\u009F\u2028\u2029](?:[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*[^\s\u0000-\u001F\u007F-\u009F\u2028\u2029])?$'
+      description: Optional author-written, canonical one-line deck. Leading/trailing whitespace and control characters are rejected.
+
     CreatePostRequest:
       type: object
       required: [title, slug, sourceMarkdown]
       properties:
         title: { type: string, minLength: 1, maxLength: 300 }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string, minLength: 1, maxLength: 240 }
         sourceMarkdown: { type: string, maxLength: 10485760 }
         embeds:
@@ -4129,6 +4140,7 @@ components:
       required: [title, slug, sourceMarkdown]
       properties:
         title: { type: string, minLength: 1, maxLength: 300 }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string, minLength: 1, maxLength: 240 }
         sourceMarkdown: { type: string, maxLength: 10485760 }
         embeds:
@@ -4160,6 +4172,7 @@ components:
         documentId: { type: string, format: uuid }
         baseRevisionId: { type: string, format: uuid }
         title: { type: string, minLength: 1, maxLength: 300 }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string, minLength: 1, maxLength: 240 }
         sourceMarkdown: { type: string, maxLength: 10485760 }
         embeds:
@@ -4194,6 +4207,7 @@ components:
       properties:
         baseRevisionId: { type: string, format: uuid }
         title: { type: string, minLength: 1, maxLength: 300 }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string, minLength: 1, maxLength: 240 }
         sourceMarkdown: { type: string, maxLength: 10485760 }
         embeds:
@@ -4225,6 +4239,7 @@ components:
       properties:
         baseRevisionId: { type: string, format: uuid }
         title: { type: string, minLength: 1, maxLength: 300 }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string, minLength: 1, maxLength: 240 }
         sourceMarkdown: { type: string, maxLength: 10485760 }
         embeds:
@@ -4275,6 +4290,7 @@ components:
         revisionNumber: { type: integer, minimum: 1 }
         parentRevisionId: { type: string, format: uuid }
         title: { type: string }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         slug: { type: string }
         sourceMarkdown: { type: string }
         embeds:
@@ -4390,6 +4406,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         title: { type: string }
+        subtitle: { $ref: "#/components/schemas/PostSubtitle" }
         canonicalSlug: { type: string }
         requestedSlug: { type: string }
         revisionId: { type: string, format: uuid }

@@ -121,6 +121,14 @@ compose_invoke() {
     compose_install_source="$ACTIVE_CONTROL_ROOT/osb.install.toml"
     compose_lock_source="$ACTIVE_CONTROL_ROOT/osb.lock.json"
     compose_css_source="$ACTIVE_CONTROL_ROOT/custom.css"
+    compose_handoff_source="$ACTIVE_CONTROL_ROOT/osb.intent.json"
+    compose_references_source="$ACTIVE_CONTROL_ROOT/references.md"
+    if [ ! -f "$compose_handoff_source" ]; then
+        compose_handoff_source="$(dirname "$ACTIVE_COMPOSE")/osb.intent.example.json"
+    fi
+    if [ ! -f "$compose_references_source" ]; then
+        compose_references_source="$(dirname "$ACTIVE_COMPOSE")/deploy/references.md"
+    fi
     [ -n "$BACKUP_ROOT" ] || die "internal error: no validated backup root"
     compose_backup_source=$BACKUP_ROOT
     case "$CACHE_MODE" in
@@ -128,9 +136,11 @@ compose_invoke() {
             env \
                 COMPOSE_PROFILES= \
                 OSB_CONFIG_SOURCE="$compose_config_source" \
+                OSB_HANDOFF_SOURCE="$compose_handoff_source" \
                 OSB_INSTALL_SOURCE="$compose_install_source" \
                 OSB_LOCK_SOURCE="$compose_lock_source" \
                 OSB_CUSTOM_CSS_SOURCE="$compose_css_source" \
+                OSB_REFERENCES_SOURCE="$compose_references_source" \
                 OSB_BACKUP_VOLUME="$compose_backup_source" \
                 docker compose -p "$COMPOSE_PROJECT" --env-file "$ACTIVE_ENV" -f "$ACTIVE_COMPOSE" \
                 --profile redis-managed "$@"
@@ -139,9 +149,11 @@ compose_invoke() {
             env \
                 COMPOSE_PROFILES= \
                 OSB_CONFIG_SOURCE="$compose_config_source" \
+                OSB_HANDOFF_SOURCE="$compose_handoff_source" \
                 OSB_INSTALL_SOURCE="$compose_install_source" \
                 OSB_LOCK_SOURCE="$compose_lock_source" \
                 OSB_CUSTOM_CSS_SOURCE="$compose_css_source" \
+                OSB_REFERENCES_SOURCE="$compose_references_source" \
                 OSB_BACKUP_VOLUME="$compose_backup_source" \
                 docker compose -p "$COMPOSE_PROJECT" --env-file "$ACTIVE_ENV" -f "$ACTIVE_COMPOSE" \
                 --profile redis-standalone "$@"
@@ -150,9 +162,11 @@ compose_invoke() {
             env \
                 COMPOSE_PROFILES= \
                 OSB_CONFIG_SOURCE="$compose_config_source" \
+                OSB_HANDOFF_SOURCE="$compose_handoff_source" \
                 OSB_INSTALL_SOURCE="$compose_install_source" \
                 OSB_LOCK_SOURCE="$compose_lock_source" \
                 OSB_CUSTOM_CSS_SOURCE="$compose_css_source" \
+                OSB_REFERENCES_SOURCE="$compose_references_source" \
                 OSB_BACKUP_VOLUME="$compose_backup_source" \
                 docker compose -p "$COMPOSE_PROJECT" --env-file "$ACTIVE_ENV" -f "$ACTIVE_COMPOSE" "$@"
             ;;
@@ -625,6 +639,12 @@ mkdir -m 755 "$CANDIDATE_CONTROL"
 for control_name in config.toml custom.css osb.install.toml osb.lock.json; do
     cp "$CONTROL_SNAPSHOT/$control_name" "$CANDIDATE_CONTROL/$control_name"
     chmod 644 "$CANDIDATE_CONTROL/$control_name"
+done
+for control_name in osb.intent.json references.md; do
+    if [ -f "$CONTROL_SNAPSHOT/$control_name" ]; then
+        cp "$CONTROL_SNAPSHOT/$control_name" "$CANDIDATE_CONTROL/$control_name"
+        chmod 644 "$CANDIDATE_CONTROL/$control_name"
+    fi
 done
 CANDIDATE_ENV="$CANDIDATE_CONTROL/.env"
 cp "$CONTROL_SNAPSHOT/.env" "$CANDIDATE_ENV"

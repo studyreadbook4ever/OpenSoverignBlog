@@ -16,14 +16,147 @@ export function normalizedEditorTitle(title: string): string {
   return title.trim();
 }
 
-export function normalizeSavePayload(post: CreatePostInput): CreatePostInput {
-  if (!post.authorship || post.authorship.kind === "human" || post.authorship.humanReviewed) {
-    return post;
+/** Empty editor subtitles are omitted instead of becoming meaningless fields. */
+export function normalizedEditorSubtitle(subtitle: string | undefined): string | undefined {
+  const normalized = subtitle?.trim();
+  return normalized ? normalized : undefined;
+}
+
+export const STUDIO_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const STUDIO_IMAGE_BATCH_LIMIT = 8;
+
+const STUDIO_IMAGE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+]);
+
+const STUDIO_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif"]);
+
+export interface StudioImageCandidate {
+  name: string;
+  size: number;
+  type: string;
+}
+
+export type StudioImageRejectionReason = "unsupported" | "too_large" | "batch_limit";
+
+export function selectStudioImageBatch<T extends StudioImageCandidate>(
+  files: readonly T[],
+): {
+  accepted: T[];
+  rejected: Array<{ file: T; reason: StudioImageRejectionReason }>;
+} {
+  const accepted: T[] = [];
+  const rejected: Array<{ file: T; reason: StudioImageRejectionReason }> = [];
+  for (const file of files) {
+    const mediaType = file.type.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const extension = file.name.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+    const supported = STUDIO_IMAGE_MEDIA_TYPES.has(mediaType)
+      || (
+        !mediaType
+        && (
+          !file.name.trim()
+          || Boolean(extension && STUDIO_IMAGE_EXTENSIONS.has(extension))
+        )
+      );
+    if (!supported) {
+      rejected.push({ file, reason: "unsupported" });
+    } else if (file.size > STUDIO_IMAGE_MAX_BYTES) {
+      rejected.push({ file, reason: "too_large" });
+    } else if (accepted.length >= STUDIO_IMAGE_BATCH_LIMIT) {
+      rejected.push({ file, reason: "batch_limit" });
+    } else {
+      accepted.push(file);
+    }
   }
+  return { accepted, rejected };
+}
+
+/**
+ * Runs a bounded batch in selection order. Sequential uploads avoid turning a
+ * multi-image paste into a burst of 10 MiB requests, while one failed image
+ * does not prevent later valid images from being attempted.
+ */
+export async function uploadStudioImageQueue<T, R>(
+  files: readonly T[],
+  upload: (file: T) => Promise<R>,
+): Promise<{
+  completed: Array<{ file: T; result: R }>;
+  failed: Array<{ file: T; reason: unknown }>;
+}> {
+  const completed: Array<{ file: T; result: R }> = [];
+  const failed: Array<{ file: T; reason: unknown }> = [];
+  for (const file of files) {
+    try {
+      completed.push({ file, result: await upload(file) });
+    } catch (reason) {
+      failed.push({ file, reason });
+    }
+  }
+  return { completed, failed };
+}
+
+export function firstPartyAssetMarkdownUrl(uploadedUrl: string, pageUrl: string): string {
+  const page = new URL(pageUrl);
+  const uploaded = new URL(uploadedUrl, page);
+  if (
+    uploaded.origin !== page.origin
+    || uploaded.username
+    || uploaded.password
+    || !/\/media\/[a-f0-9]{64}$/.test(uploaded.pathname)
+  ) {
+    throw new TypeError("asset upload response is not a same-origin media URL");
+  }
+  return `${uploaded.pathname}${uploaded.search}${uploaded.hash}`;
+}
+
+export function markdownImageSource(filename: string, url: string): string {
+  const alt = filename
+    .replace(/[\r\n]+/g, " ")
+    .replace(/([\\\[\]])/g, "\\$1")
+    .trim() || "image";
+  return `![${alt}](${url})`;
+}
+
+export function insertMarkdownBlock(
+  source: string,
+  selectionStart: number,
+  selectionEnd: number,
+  block: string,
+): { sourceMarkdown: string; caret: number } {
+  const start = Math.max(0, Math.min(source.length, selectionStart));
+  const end = Math.max(start, Math.min(source.length, selectionEnd));
+  const left = source.slice(0, start);
+  const right = source.slice(end);
+  const before = left && !left.endsWith("\n\n")
+    ? left.endsWith("\n") ? "\n" : "\n\n"
+    : "";
+  const after = right && !right.startsWith("\n\n")
+    ? right.startsWith("\n") ? "\n" : "\n\n"
+    : "";
+  const insertion = `${before}${block}${after}`;
   return {
-    ...post,
-    authorship: { ...post.authorship, humanReviewed: true },
+    sourceMarkdown: `${left}${insertion}${right}`,
+    caret: left.length + insertion.length,
   };
+}
+
+export function normalizeSavePayload(post: CreatePostInput): CreatePostInput {
+  const normalized = { ...post };
+  delete normalized.subtitle;
+  const subtitle = normalizedEditorSubtitle(post.subtitle);
+  if (subtitle) normalized.subtitle = subtitle;
+  if (
+    normalized.authorship
+    && normalized.authorship.kind !== "human"
+    && !normalized.authorship.humanReviewed
+  ) {
+    normalized.authorship = { ...normalized.authorship, humanReviewed: true };
+  }
+  return normalized;
 }
 
 /**
@@ -60,6 +193,7 @@ export function acceptedEditorState(payload: CreatePostInput): {
 export function payloadFingerprint(post: CreatePostInput): string {
   return JSON.stringify({
     title: post.title.trim(),
+    subtitle: normalizedEditorSubtitle(post.subtitle) ?? null,
     slug: post.slug.trim(),
     sourceMarkdown: post.sourceMarkdown,
     embeds: post.embeds ?? [],
@@ -81,6 +215,7 @@ export function editorFingerprint(
     const ontology = ontologyText.trim() ? JSON.parse(ontologyText) as unknown : null;
     return JSON.stringify({
       title: post.title.trim(),
+      subtitle: normalizedEditorSubtitle(post.subtitle) ?? null,
       slug: post.slug.trim(),
       sourceMarkdown: post.sourceMarkdown,
       embeds,
@@ -93,6 +228,7 @@ export function editorFingerprint(
   } catch {
     return `invalid-sidecar:${JSON.stringify({
       title: post.title,
+      subtitle: post.subtitle ?? null,
       slug: post.slug,
       sourceMarkdown: post.sourceMarkdown,
       embedText,

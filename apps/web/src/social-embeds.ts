@@ -15,6 +15,27 @@ export function socialEmbedFromUrl(raw: string, language: "ko" | "en" = "ko"): E
   return youtubeEmbed(url, language) ?? xEmbed(url, language);
 }
 
+/**
+ * Accepts the two things writers most commonly copy: a provider URL or the
+ * iframe snippet offered by YouTube. Any iframe markup is discarded; only its
+ * validated HTTPS source is converted into OSB's inert typed reference.
+ */
+export function socialEmbedFromInput(
+  raw: string,
+  language: "ko" | "en" = "ko",
+): EmbedReference | undefined {
+  const value = raw.trim();
+  if (!value || value.length > 16_384) return undefined;
+  return socialEmbedFromUrl(value, language)
+    ?? iframeSource(value)
+      .map((source) => socialEmbedFromUrl(source, language))
+      .find((embed) => embed !== undefined);
+}
+
+export function socialEmbedDirective(embed: EmbedReference): string {
+  return `::osb-embed ${embed.id}`;
+}
+
 export function isYouTubeEmbed(embed: EmbedReference): boolean {
   return embed.provider === "youtube" && YOUTUBE_ID.test(embed.resourceId);
 }
@@ -73,13 +94,15 @@ function youtubeEmbed(url: URL, language: "ko" | "en"): EmbedReference | undefin
   let resourceId: string | undefined;
   if (host === "youtu.be") {
     resourceId = singlePathSegment(url.pathname);
-  } else if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
+  } else if (["youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"].includes(host)) {
     if (url.pathname === "/watch") {
       resourceId = url.searchParams.get("v") ?? undefined;
     } else {
-      const match = url.pathname.match(/^\/(?:shorts|embed)\/([A-Za-z0-9_-]+)\/?$/);
+      const match = url.pathname.match(/^\/(?:shorts|live|embed)\/([A-Za-z0-9_-]+)\/?$/);
       resourceId = match?.[1];
     }
+  } else if (["youtube-nocookie.com", "www.youtube-nocookie.com"].includes(host)) {
+    resourceId = url.pathname.match(/^\/embed\/([A-Za-z0-9_-]+)\/?$/)?.[1];
   }
   if (!resourceId || !YOUTUBE_ID.test(resourceId)) return undefined;
   return {
@@ -117,4 +140,13 @@ function xEmbed(url: URL, language: "ko" | "en"): EmbedReference | undefined {
 function singlePathSegment(pathname: string): string | undefined {
   const match = pathname.match(/^\/([^/]+)\/?$/);
   return match?.[1];
+}
+
+function iframeSource(value: string): string[] {
+  if (!/^<iframe\b/i.test(value) || !/<\/iframe>\s*$/i.test(value)) return [];
+  const tag = value.match(/^<iframe\b([^>]*)>/i)?.[1];
+  if (!tag) return [];
+  const match = tag.match(/\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)')/i);
+  const source = match?.[1] ?? match?.[2];
+  return source ? [source] : [];
 }

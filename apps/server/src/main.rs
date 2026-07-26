@@ -2302,6 +2302,7 @@ async fn list_posts(State(state): State<AppState>) -> Result<Json<Vec<PostSummar
             Ok(PostSummary {
                 id: document.id,
                 title: document.revision.title,
+                subtitle: document.revision.subtitle,
                 slug: document.revision.slug,
                 api_href: machine_post_href(&state.seo_policy, &route_path, false)?,
                 source_href: machine_post_href(&state.seo_policy, &route_path, true)?,
@@ -2428,6 +2429,7 @@ async fn get_post_by_route(
     Ok(Json(PostView {
         id: document.id,
         title: document.revision.title,
+        subtitle: document.revision.subtitle,
         canonical_slug: document.revision.slug,
         requested_slug: route_path,
         revision_id: document.revision.id,
@@ -2539,6 +2541,7 @@ async fn create_post(
     let new_document = NewDocument {
         site_id: state.site_id,
         title: input.title,
+        subtitle: input.subtitle,
         slug: input.slug,
         source_markdown: input.source_markdown,
         embeds: input.embeds,
@@ -2571,6 +2574,7 @@ async fn propose_revision(
         document_id,
         base_revision_id: input.base_revision_id,
         title: input.title,
+        subtitle: input.subtitle,
         slug: input.slug,
         source_markdown: input.source_markdown,
         embeds: input.embeds,
@@ -2709,7 +2713,7 @@ async fn public_community_blog(
         } else {
             community_public_url(&state.seo_policy, &site.handle, Some(&post.revision.slug))?
         };
-        let excerpt = summarize_markdown(&post.revision.source_markdown, 220);
+        let excerpt = public_revision_description(&post.revision, 220);
         archive.push_str(&format!(
             "<article class=\"blog-list-item\"><span class=\"post-order\" aria-hidden=\"true\">{:02}</span>\
              <div><div class=\"post-card-meta\"><time datetime=\"{}\">{}</time>{}</div>\
@@ -2821,7 +2825,7 @@ async fn render_category_landing_document(
             &category.slug,
             Some(&post.revision.slug),
         )?;
-        let excerpt = summarize_markdown(&post.revision.source_markdown, 220);
+        let excerpt = public_revision_description(&post.revision, 220);
         archive.push_str(&format!(
             "<article class=\"blog-list-item\"><span class=\"post-order\" aria-hidden=\"true\">{:02}</span>\
              <div><div class=\"post-card-meta\"><time datetime=\"{}\">{}</time>{}</div>\
@@ -3101,6 +3105,189 @@ async fn public_community_post(
     .await
 }
 
+#[derive(Debug)]
+struct SeriesPostNavigationItem {
+    title: String,
+    slug: String,
+}
+
+#[derive(Debug)]
+struct SeriesPostNavigationContext {
+    position: usize,
+    total: usize,
+    previous: Option<SeriesPostNavigationItem>,
+    next: Option<SeriesPostNavigationItem>,
+}
+
+async fn load_series_post_navigation(
+    state: &AppState,
+    site_id: Uuid,
+    category_id: Uuid,
+    document_id: Uuid,
+) -> Option<SeriesPostNavigationContext> {
+    let repository = Arc::clone(&state.repository);
+    let result = repository_task(move || {
+        let series = repository.get_series_by_category_id(site_id, category_id)?;
+        let posts = repository.list_published_in_series(site_id, series.id, 500)?;
+        let Some(index) = posts.iter().position(|post| post.id == document_id) else {
+            return Ok(None);
+        };
+        if posts.len() < 2 {
+            return Ok(None);
+        }
+        let navigation_item = |post: &osb_kernel::DocumentSnapshot| SeriesPostNavigationItem {
+            title: post.revision.title.clone(),
+            slug: post.revision.slug.clone(),
+        };
+        Ok(Some(SeriesPostNavigationContext {
+            position: index + 1,
+            total: posts.len(),
+            previous: index
+                .checked_sub(1)
+                .map(|previous| navigation_item(&posts[previous])),
+            next: posts.get(index + 1).map(navigation_item),
+        }))
+    })
+    .await;
+    match result {
+        Ok(navigation) => navigation,
+        Err(ApiError::Repository(RepositoryError::NotFound)) => None,
+        Err(_) => {
+            tracing::warn!(
+                %site_id,
+                %category_id,
+                %document_id,
+                "series navigation lookup failed; serving the article without progressive navigation"
+            );
+            None
+        }
+    }
+}
+
+fn explicit_public_projection_url(mut url: Url, view: ViewMode) -> Url {
+    let view = match view {
+        ViewMode::Intent => "intent",
+        ViewMode::Markdown => "markdown",
+        ViewMode::MarkdownSource => "markdown_source",
+    };
+    url.query_pairs_mut().append_pair("view", view);
+    url
+}
+
+fn local_public_href(url: &Url) -> String {
+    let mut href = url.path().to_owned();
+    if let Some(query) = url.query() {
+        href.push('?');
+        href.push_str(query);
+    }
+    href
+}
+
+fn render_series_post_navigation(
+    state: &AppState,
+    site: &osb_storage_sqlite::SiteRecord,
+    category: &osb_storage_sqlite::CategoryRecord,
+    navigation: &SeriesPostNavigationContext,
+    view: ViewMode,
+) -> Result<String, ApiError> {
+    let handle = (site.id != state.site_id).then_some(site.handle.as_str());
+    let series_href = category_public_url(&state.seo_policy, handle, &category.slug, None)?;
+    let render_link = |item: &SeriesPostNavigationItem,
+                       class_name: &str,
+                       relation: &str,
+                       direction: &str,
+                       arrow: &str,
+                       arrow_after: bool|
+     -> Result<String, ApiError> {
+        let href =
+            category_public_url(&state.seo_policy, handle, &category.slug, Some(&item.slug))?;
+        let href = explicit_public_projection_url(href, view);
+        let aria_label = match (state.language, relation) {
+            (UiLanguage::Ko, "prev") => format!("이전 글: {}", item.title),
+            (UiLanguage::En, "prev") => format!("Previous post: {}", item.title),
+            (UiLanguage::Ko, _) => format!("다음 글: {}", item.title),
+            (UiLanguage::En, _) => format!("Next post: {}", item.title),
+        };
+        let direction = escape_xml(direction);
+        let arrow = escape_xml(arrow);
+        let direction_markup = if arrow_after {
+            format!(
+                "{direction}<span aria-hidden=\"true\" class=\"series-post-navigation-arrow\">{arrow}</span>"
+            )
+        } else {
+            format!(
+                "<span aria-hidden=\"true\" class=\"series-post-navigation-arrow\">{arrow}</span>{direction}"
+            )
+        };
+        Ok(format!(
+            "<a aria-label=\"{}\" class=\"series-post-navigation-link {}\" href=\"{}\" rel=\"{}\">\
+             <span class=\"series-post-navigation-direction\">{direction_markup}</span>\
+             <strong>{}</strong></a>",
+            escape_attribute(&aria_label),
+            class_name,
+            escape_attribute(&local_public_href(&href)),
+            relation,
+            escape_xml(&item.title),
+        ))
+    };
+    let previous = navigation
+        .previous
+        .as_ref()
+        .map(|item| {
+            render_link(
+                item,
+                "series-post-navigation-previous",
+                "prev",
+                ui_text(state.language, "이전 글", "Previous post"),
+                "←",
+                false,
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| {
+            "<span aria-hidden=\"true\" class=\"series-post-navigation-spacer\"></span>".into()
+        });
+    let next = navigation
+        .next
+        .as_ref()
+        .map(|item| {
+            render_link(
+                item,
+                "series-post-navigation-next",
+                "next",
+                ui_text(state.language, "다음 글", "Next post"),
+                "→",
+                true,
+            )
+        })
+        .transpose()?
+        .unwrap_or_else(|| {
+            "<span aria-hidden=\"true\" class=\"series-post-navigation-spacer\"></span>".into()
+        });
+    let position_label = match state.language {
+        UiLanguage::Ko => format!(
+            "시리즈 전체 {}편 중 {}번째 글",
+            navigation.total, navigation.position
+        ),
+        UiLanguage::En => format!(
+            "Post {} of {} in this series",
+            navigation.position, navigation.total
+        ),
+    };
+    Ok(format!(
+        "<nav aria-labelledby=\"series-post-navigation-title\" class=\"series-post-navigation\">\
+         <div class=\"series-post-navigation-heading\"><div><p class=\"eyebrow\">Series</p>\
+         <h2 id=\"series-post-navigation-title\"><a href=\"{}\">{}</a></h2></div>\
+         <p aria-label=\"{}\" class=\"series-post-navigation-position\">{} / {}</p></div>\
+         <div class=\"series-post-navigation-links\">{previous}{next}</div></nav>",
+        escape_attribute(&local_public_href(&series_href)),
+        escape_xml(&category.title),
+        escape_attribute(&position_label),
+        navigation.position,
+        navigation.total,
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn render_community_post_document(
     state: &AppState,
@@ -3114,7 +3301,26 @@ async fn render_community_post_document(
     headers: &HeaderMap,
 ) -> Result<Response, ApiError> {
     let artifact = render_revision(&document.revision, view);
-    let description = summarize_markdown(&document.revision.source_markdown, 180);
+    let description = public_revision_description(&document.revision, 180);
+    let series_navigation = if let Some(category) = category {
+        match load_series_post_navigation(state, site.id, category.id, document.id).await {
+            Some(navigation) => {
+                match render_series_post_navigation(state, site, category, &navigation, view) {
+                    Ok(rendered) => rendered,
+                    Err(_) => {
+                        tracing::warn!(
+                            document_id = %document.id,
+                            "series navigation URL rendering failed; serving the article without progressive navigation"
+                        );
+                        String::new()
+                    }
+                }
+            }
+            None => String::new(),
+        }
+    } else {
+        String::new()
+    };
     let page_title = format!("{} · {}", document.revision.title, site.title);
     let mut head = if state.features.is_active("seo") {
         community_meta_head(
@@ -3153,7 +3359,7 @@ async fn render_community_post_document(
          <nav class=\"projection-switcher\" aria-label=\"{projection_label}\">\
          <a href=\"{}?view=intent\"{intent_current}>{intent_label}</a>\
          <a href=\"{}?view=markdown_source\"{source_current}>{source_label}</a></nav></header>\
-         <div class=\"article-content\" data-revision=\"{}\">{}</div></article></div></div></main>",
+         <div class=\"article-content\" data-revision=\"{}\">{}</div>{}</article></div></div></main>",
         site.id,
         category
             .and_then(|category| category.theme_profile)
@@ -3177,8 +3383,19 @@ async fn render_community_post_document(
         escape_attribute(canonical.as_str()),
         document.revision.id,
         artifact.html,
+        series_navigation,
     );
     render_spa_document(method, headers, state, &head, &root).await
+}
+
+fn public_revision_description(
+    revision: &osb_kernel::RevisionSnapshot,
+    fallback_limit: usize,
+) -> String {
+    revision
+        .subtitle
+        .clone()
+        .unwrap_or_else(|| summarize_markdown(&revision.source_markdown, fallback_limit))
 }
 
 fn basic_page_head(title: &str) -> String {
@@ -3594,7 +3811,7 @@ async fn public_post(
         .seo_policy
         .canonical_article_url(&document.revision.slug)
         .map_err(|error| ApiError::Internal(error.to_string()))?;
-    let description = summarize_markdown(&document.revision.source_markdown, 180);
+    let description = public_revision_description(&document.revision, 180);
     let seo_head = if state.features.is_active("seo") {
         community_meta_head(
             &page_title,
@@ -4031,6 +4248,8 @@ struct AuthMethodDescriptor {
 struct PostSummary {
     id: Uuid,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtitle: Option<String>,
     /// The leaf slug remains stable for clients that render their own routes.
     slug: String,
     /// The stored public lookup path, including an immutable category prefix.
@@ -4048,6 +4267,8 @@ struct PostSummary {
 struct PostView {
     id: Uuid,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtitle: Option<String>,
     canonical_slug: String,
     requested_slug: String,
     revision_id: Uuid,
@@ -4086,6 +4307,8 @@ where
 #[serde(rename_all = "camelCase")]
 struct CreatePostRequest {
     title: String,
+    #[serde(default)]
+    subtitle: Option<String>,
     slug: String,
     source_markdown: String,
     #[serde(default)]
@@ -4105,6 +4328,8 @@ struct CreatePostRequest {
 struct ProposeRevisionRequest {
     base_revision_id: Uuid,
     title: String,
+    #[serde(default)]
+    subtitle: Option<String>,
     slug: String,
     source_markdown: String,
     #[serde(default)]
@@ -4490,6 +4715,7 @@ mod tests {
                 NewDocument {
                     site_id: state.site_id,
                     title: title.into(),
+                    subtitle: None,
                     slug: slug.into(),
                     source_markdown: format!("# {title}"),
                     embeds: vec![],
@@ -4515,6 +4741,50 @@ mod tests {
                 document.current_revision_id,
             )
             .unwrap();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_owned_test_document(
+        repository: &SqliteRepository,
+        owner: &osb_storage_sqlite::UserRecord,
+        site_id: Uuid,
+        category_id: Option<Uuid>,
+        title: &str,
+        subtitle: Option<&str>,
+        slug: &str,
+        source_markdown: &str,
+    ) -> osb_kernel::DocumentSnapshot {
+        let document = repository
+            .create_document_in_writable_site_with_category(
+                owner.id,
+                NewDocument {
+                    site_id,
+                    title: title.into(),
+                    subtitle: subtitle.map(str::to_owned),
+                    slug: slug.into(),
+                    source_markdown: source_markdown.into(),
+                    embeds: vec![],
+                    intent: None,
+                    ontology: None,
+                    authorship: Default::default(),
+                    ai_summary: None,
+                    actor: RevisionActor {
+                        kind: RevisionActorKind::Human,
+                        id: owner.id.to_string(),
+                        display_name: Some(owner.display_name.clone()),
+                    },
+                },
+                category_id,
+            )
+            .unwrap();
+        repository
+            .publish_document_in_owned_site(
+                owner.id,
+                site_id,
+                document.id,
+                document.current_revision_id,
+            )
+            .unwrap()
     }
 
     fn ai_summary_state() -> (AppState, String) {
@@ -4742,6 +5012,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: title.into(),
+                    subtitle: None,
                     slug: slug.into(),
                     source_markdown: format!("# {title}\n\nCrawlable body"),
                     embeds: vec![],
@@ -4867,6 +5138,7 @@ mod tests {
                     NewDocument {
                         site_id: state.site_id,
                         title: title.into(),
+                        subtitle: None,
                         slug: slug.into(),
                         source_markdown: format!("# {title}"),
                         embeds: vec![],
@@ -5049,6 +5321,7 @@ mod tests {
                 NewDocument {
                     site_id: primary_site_id,
                     title: "Series entry".into(),
+                    subtitle: None,
                     slug: "series-entry".into(),
                     source_markdown: "# Series entry".into(),
                     embeds: vec![],
@@ -5581,6 +5854,7 @@ mod tests {
                 NewDocument {
                     site_id: state.site_id,
                     title: "Preserved reference note".into(),
+                    subtitle: None,
                     slug: "legacy-policy".into(),
                     source_markdown: "# Preserved reference note".into(),
                     embeds: vec![],
@@ -5984,6 +6258,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: state.site_id,
                 title: "Tree-visible title".into(),
+                subtitle: None,
                 slug: "tree-visible-slug".into(),
                 source_markdown: "PRIVATE MARKDOWN MUST NOT LEAK".into(),
                 embeds: vec![],
@@ -7056,7 +7331,7 @@ mod tests {
                     .header(header::CONTENT_TYPE, "application/json")
                     .header(header::COOKIE, &cookie)
                     .body(Body::from(
-                        r##"{"title":"Published title","slug":"continuity","sourceMarkdown":"# Public body"}"##,
+                        r##"{"title":"Published title","subtitle":"An author-written deck","slug":"continuity","sourceMarkdown":"# Public body"}"##,
                     ))
                     .unwrap(),
             )
@@ -7064,6 +7339,7 @@ mod tests {
             .unwrap();
         assert_eq!(create.status(), StatusCode::CREATED);
         let created = json(create).await;
+        assert_eq!(created["revision"]["subtitle"], "An author-written deck",);
         let document_id = created["id"].as_str().unwrap().to_owned();
         let first_revision = created["currentRevisionId"].as_str().unwrap().to_owned();
 
@@ -7097,6 +7373,7 @@ mod tests {
         let etag = feed.headers()[header::ETAG].to_str().unwrap().to_owned();
         let feed_json = json(feed).await;
         assert_eq!(feed_json["items"][0]["title"], "Published title");
+        assert_eq!(feed_json["items"][0]["subtitle"], "An author-written deck",);
         assert_eq!(feed_json["items"][0]["blog"]["handle"], "alice-notes");
         assert_eq!(feed_json["items"][0]["blog"]["isPrimary"], false);
 
@@ -7111,7 +7388,9 @@ mod tests {
             .unwrap();
         assert_eq!(archive.status(), StatusCode::OK);
         let archive_etag = archive.headers()[header::ETAG].to_str().unwrap().to_owned();
-        assert_eq!(json(archive).await["items"][0]["slug"], "continuity");
+        let archive = json(archive).await;
+        assert_eq!(archive["items"][0]["slug"], "continuity");
+        assert_eq!(archive["items"][0]["subtitle"], "An author-written deck",);
         let archive_not_modified = router
             .clone()
             .oneshot(
@@ -7185,6 +7464,7 @@ mod tests {
         assert_eq!(public.status(), StatusCode::OK);
         let public = json(public).await;
         assert_eq!(public["title"], "Published title");
+        assert_eq!(public["subtitle"], "An author-written deck");
         assert_eq!(public["markdown"], "# Public body");
 
         let private = router
@@ -7282,6 +7562,7 @@ mod tests {
                 NewDocument {
                     site_id: alice_site.id,
                     title: "Alice post".into(),
+                    subtitle: None,
                     slug: "alice-post".into(),
                     source_markdown: "hello".into(),
                     embeds: vec![],
@@ -7793,6 +8074,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn community_ssr_prefers_escaped_subtitles_and_falls_back_to_markdown_summaries() {
+        let mut state = test_state(None);
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let owner = state
+            .repository
+            .create_user(
+                "subtitle-ssr@example.test",
+                "subtitle-ssr-owner",
+                "Subtitle SSR owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = state
+            .repository
+            .create_site(
+                owner.id,
+                "subtitle-notes",
+                "Subtitle notes",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        let category = state
+            .repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "essays".into(),
+                    title: "Essays".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(category.id),
+            "Post with a deck",
+            Some("Author deck <safe> & \"quoted\""),
+            "with-deck",
+            "# Source heading\n\nGenerated fallback must not replace the author deck.",
+        );
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(category.id),
+            "Post without a deck",
+            None,
+            "without-deck",
+            "Fallback sentence for readers.\n\nMore detail.",
+        );
+        let router = app(state);
+
+        for path in ["/@subtitle-notes", "/@subtitle-notes/essays"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT, "text/html")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let html = text(response).await;
+            assert!(html.contains("Author deck &lt;safe&gt; &amp; &quot;quoted&quot;"));
+            assert!(html.contains("Fallback sentence for readers. More detail."));
+            assert!(!html.contains("Generated fallback must not replace the author deck."));
+            assert!(!html.contains("<safe>"));
+        }
+
+        let deck_article = router
+            .clone()
+            .oneshot(
+                Request::get("/@subtitle-notes/essays/with-deck")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deck_article.status(), StatusCode::OK);
+        let deck_article = text(deck_article).await;
+        assert!(deck_article.contains(
+            "<meta name=\"description\" content=\"Author deck &lt;safe&gt; &amp; &quot;quoted&quot;\">"
+        ));
+        assert!(deck_article.contains(
+            "<p class=\"article-deck\">Author deck &lt;safe&gt; &amp; &quot;quoted&quot;</p>"
+        ));
+        assert!(!deck_article.contains(
+            "<p class=\"article-deck\">Source heading Generated fallback must not replace the author deck.</p>"
+        ));
+
+        let fallback_article = router
+            .oneshot(
+                Request::get("/@subtitle-notes/essays/without-deck")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fallback_article.status(), StatusCode::OK);
+        let fallback_article = text(fallback_article).await;
+        assert!(fallback_article.contains(
+            "<meta name=\"description\" content=\"Fallback sentence for readers. More detail.\">"
+        ));
+        assert!(
+            fallback_article.contains(
+                "<p class=\"article-deck\">Fallback sentence for readers. More detail.</p>"
+            )
+        );
+    }
+
+    #[tokio::test]
     async fn community_html_is_crawlable_route_aware_cached_and_xss_safe() {
         let mut state = test_state(None);
         state.custom_css_enabled = true;
@@ -7836,6 +8241,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Old title".into(),
+                    subtitle: None,
                     slug: "old-slug".into(),
                     source_markdown: "Old body".into(),
                     embeds: vec![],
@@ -7864,6 +8270,7 @@ mod tests {
                     document_id: first.id,
                     base_revision_id: first.current_revision_id,
                     title: "A </title><script>alert(1)</script> story".into(),
+                    subtitle: None,
                     slug: "canonical-slug".into(),
                     source_markdown:
                         "# Crawlable heading\n\nSafe body.\n\n<img src=x onerror=alert(1)>".into(),
@@ -8130,6 +8537,7 @@ mod tests {
                 NewDocument {
                     site_id: state.site_id,
                     title: "Grover".into(),
+                    subtitle: None,
                     slug: "grover".into(),
                     source_markdown: "# Grover".into(),
                     embeds: vec![],
@@ -8240,6 +8648,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Natural route".into(),
+                    subtitle: None,
                     slug: "measurement".into(),
                     source_markdown: "# Natural route".into(),
                     embeds: vec![],
@@ -8330,6 +8739,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "A second measurement".into(),
+                    subtitle: None,
                     slug: "measurement".into(),
                     source_markdown: "# A second measurement".into(),
                     embeds: vec![],
@@ -8426,6 +8836,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Public <Post>".into(),
+                    subtitle: None,
                     slug: "first-observation".into(),
                     source_markdown,
                     embeds: vec![],
@@ -8573,6 +8984,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Primary natural route".into(),
+                    subtitle: None,
                     slug: "measurement".into(),
                     source_markdown: "# Primary natural route\n\nPortable body.".into(),
                     embeds: vec![],
@@ -8833,6 +9245,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Duplicate primary leaf".into(),
+                    subtitle: None,
                     slug: "measurement".into(),
                     source_markdown: "# Duplicate primary leaf".into(),
                     embeds: vec![],
@@ -8878,6 +9291,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: legacy_site.id,
                 title: "Legacy without SEO".into(),
+                subtitle: None,
                 slug: "legacy-without-seo".into(),
                 source_markdown: "# Legacy body".into(),
                 embeds: vec![],
@@ -8948,6 +9362,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: state.site_id,
                 title: "Owned post".into(),
+                subtitle: None,
                 slug: "old-owned-post".into(),
                 source_markdown: "# Owned post\n\nPublic body.".into(),
                 embeds: vec![],
@@ -8972,6 +9387,7 @@ mod tests {
                 document_id: document.id,
                 base_revision_id: document.current_revision_id,
                 title: "Owned post".into(),
+                subtitle: None,
                 slug: "owned-post".into(),
                 source_markdown: "# Owned post\n\nPublic body.".into(),
                 embeds: vec![],
@@ -9113,6 +9529,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: state.site_id,
                 title: "Legacy post".into(),
+                subtitle: None,
                 slug: "legacy".into(),
                 source_markdown: "Legacy body".into(),
                 embeds: vec![],
@@ -9517,6 +9934,262 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn primary_series_ssr_navigation_uses_exact_order_and_hides_for_other_collections() {
+        let mut state = access_key_state_with_primary_handle(
+            "primary-series-ssr-administrator-key-with-enough-entropy",
+            "primary-reading",
+        );
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let control = state.repository.get_admin_control_plane().unwrap();
+        let site = state.repository.get_site_by_id(state.site_id).unwrap();
+        let owner = state
+            .repository
+            .get_user_by_id(control.owner_user_id)
+            .unwrap();
+        let series = state
+            .repository
+            .create_series(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateSeriesInput {
+                    slug: "reading-path".into(),
+                    title: "Reading path".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        let first = publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(series.category_id),
+            "First chapter",
+            None,
+            "first",
+            "# First chapter",
+        );
+        let second = publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(series.category_id),
+            "Second chapter",
+            None,
+            "second",
+            "# Second chapter",
+        );
+        let third = publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(series.category_id),
+            "Third chapter",
+            None,
+            "third",
+            "# Third chapter",
+        );
+        state
+            .repository
+            .replace_series_order(
+                owner.id,
+                site.id,
+                series.id,
+                &[third.id, first.id, second.id],
+            )
+            .unwrap();
+
+        let ordinary_category = state
+            .repository
+            .create_category(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateCategoryInput {
+                    slug: "loose-notes".into(),
+                    title: "Loose notes".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(ordinary_category.id),
+            "Ordinary post",
+            None,
+            "ordinary",
+            "# Ordinary post",
+        );
+        let single_series = state
+            .repository
+            .create_series(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateSeriesInput {
+                    slug: "single-reading".into(),
+                    title: "Single reading".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(single_series.category_id),
+            "Only chapter",
+            None,
+            "only",
+            "# Only chapter",
+        );
+        let router = app(state);
+
+        let article = router
+            .clone()
+            .oneshot(
+                Request::get("/reading-path/first?view=markdown_source")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(article.status(), StatusCode::OK);
+        let article = text(article).await;
+        assert!(article.contains(
+            "<nav aria-labelledby=\"series-post-navigation-title\" class=\"series-post-navigation\">"
+        ));
+        assert!(article.contains(
+            "<h2 id=\"series-post-navigation-title\"><a href=\"/base/reading-path\">Reading path</a></h2>"
+        ));
+        assert!(article.contains(
+            "aria-label=\"시리즈 전체 3편 중 2번째 글\" class=\"series-post-navigation-position\">2 / 3"
+        ));
+        assert!(article.contains(
+            "aria-label=\"이전 글: Third chapter\" class=\"series-post-navigation-link series-post-navigation-previous\" href=\"/base/reading-path/third?view=markdown_source\" rel=\"prev\""
+        ));
+        assert!(article.contains(
+            "aria-label=\"다음 글: Second chapter\" class=\"series-post-navigation-link series-post-navigation-next\" href=\"/base/reading-path/second?view=markdown_source\" rel=\"next\""
+        ));
+        assert!(
+            article.find("Third chapter").unwrap() < article.find("Second chapter").unwrap(),
+            "navigation must follow the explicit series order"
+        );
+
+        for path in ["/loose-notes/ordinary", "/single-reading/only"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::ACCEPT, "text/html")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let html = text(response).await;
+            assert!(html.contains("class=\"article-content\""), "{path}");
+            assert!(!html.contains("series-post-navigation"), "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn member_series_ssr_navigation_uses_member_paths_and_preserves_intent_view() {
+        let mut state = test_state(None);
+        state.seo_policy = Arc::new(SeoPolicy {
+            public_url: Url::parse("https://blog.example/base").unwrap(),
+            article_base_path: "blog".into(),
+            no_index: false,
+        });
+        let owner = state
+            .repository
+            .create_user(
+                "member-series-ssr@example.test",
+                "member-series-ssr-owner",
+                "Member series SSR owner",
+                "$argon2id$test-only",
+            )
+            .unwrap();
+        let site = state
+            .repository
+            .create_site(
+                owner.id,
+                "member-reading",
+                "Member reading",
+                None,
+                ThemeProfile::Paper,
+            )
+            .unwrap();
+        let series = state
+            .repository
+            .create_series(
+                owner.id,
+                site.id,
+                osb_storage_sqlite::CreateSeriesInput {
+                    slug: "chapters".into(),
+                    title: "Chapters".into(),
+                    description: None,
+                    theme_profile: None,
+                },
+            )
+            .unwrap();
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(series.category_id),
+            "Member first",
+            None,
+            "first",
+            "# Member first",
+        );
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            Some(series.category_id),
+            "Member second",
+            None,
+            "second",
+            "# Member second",
+        );
+        let router = app(state);
+
+        let response = router
+            .oneshot(
+                Request::get("/@member-reading/chapters/first?view=intent")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = text(response).await;
+        assert!(html.contains(
+            "<h2 id=\"series-post-navigation-title\"><a href=\"/base/@member-reading/chapters\">Chapters</a></h2>"
+        ));
+        assert!(html.contains(
+            "aria-label=\"시리즈 전체 2편 중 1번째 글\" class=\"series-post-navigation-position\">1 / 2"
+        ));
+        assert!(html.contains(
+            "<span aria-hidden=\"true\" class=\"series-post-navigation-spacer\"></span>"
+        ));
+        assert!(html.contains(
+            "aria-label=\"다음 글: Member second\" class=\"series-post-navigation-link series-post-navigation-next\" href=\"/base/@member-reading/chapters/second?view=intent\" rel=\"next\""
+        ));
+        assert!(!html.contains("series-post-navigation-previous"));
+    }
+
+    #[tokio::test]
     async fn series_studio_auth_promotion_public_order_and_exact_reorder_are_enforced() {
         let mut state = test_state(None);
         let mut features = FeatureRegistry::from_requested("seo,home_curation").unwrap();
@@ -9547,6 +10220,9 @@ mod tests {
             )
             .unwrap();
         state.site_id = site.id;
+        repository
+            .reconcile_admin_control_plane(site.id, StoredAdminAuthMode::AccessKey, &[0xd2_u8; 32])
+            .unwrap();
         let owner_token = [0xd1_u8; 32];
         let owner_token_hash: [u8; 32] = Sha256::digest(owner_token).into();
         repository

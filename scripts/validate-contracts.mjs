@@ -145,6 +145,34 @@ if (
 ) {
   throw new Error(`${openApiPath}: home pins must expose at most three typed post/series targets with legacy input compatibility`);
 }
+const postSubtitleSchema = openApi.components?.schemas?.PostSubtitle;
+const postSubtitleReference = "#/components/schemas/PostSubtitle";
+const subtitleCarriers = [
+  "PostSummary",
+  "FeedPostSummary",
+  "BlogPostView",
+  "CreatePostRequest",
+  "StudioDocumentRequest",
+  "ProposedRevision",
+  "ProposeRevisionRequest",
+  "StudioRevisionRequest",
+  "RevisionSnapshot",
+  "PostView",
+];
+if (
+  postSubtitleSchema?.type !== "string"
+  || postSubtitleSchema?.minLength !== 1
+  || postSubtitleSchema?.maxLength !== 500
+  || typeof postSubtitleSchema?.pattern !== "string"
+  || subtitleCarriers.some((name) =>
+    openApi.components?.schemas?.[name]?.properties?.subtitle?.$ref
+      !== postSubtitleReference
+  )
+) {
+  throw new Error(
+    `${openApiPath}: every post create/revise/snapshot/list/detail contract must share the optional canonical PostSubtitle schema`,
+  );
+}
 
 const httpMethods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
 const documentedRoutes = new Map();
@@ -532,6 +560,45 @@ for (const relative of schemaPaths.sort()) {
 for (const { relative, schema } of loadedSchemas) {
   if (!ajv.getSchema(schema.$id)) throw new Error(`schema did not compile: ${relative}`);
   process.stdout.write(`schema ok: ${relative}\n`);
+}
+
+const contentEnvelopeSchema = loadedSchemas.find(
+  ({ relative }) => relative === "schemas/content-envelope.v1.schema.json",
+)?.schema;
+const ai2aiEnvelopeSchema = loadedSchemas.find(
+  ({ relative }) => relative === "schemas/ai2ai-envelope.v1.schema.json",
+)?.schema;
+const portableSubtitleSchema = contentEnvelopeSchema?.$defs?.subtitle;
+if (
+  !portableSubtitleSchema
+  || portableSubtitleSchema.minLength !== postSubtitleSchema.minLength
+  || portableSubtitleSchema.maxLength !== postSubtitleSchema.maxLength
+  || portableSubtitleSchema.pattern !== postSubtitleSchema.pattern
+  || contentEnvelopeSchema?.properties?.subtitle?.$ref !== "#/$defs/subtitle"
+  || ai2aiEnvelopeSchema?.$defs?.proposal?.properties?.subtitle?.$ref
+    !== "content-envelope.v1.schema.json#/$defs/subtitle"
+) {
+  throw new Error(
+    "OpenAPI, content-envelope, and AI2AI proposal subtitle contracts have drifted",
+  );
+}
+const validatePortableSubtitle = ajv.compile(portableSubtitleSchema);
+for (const value of ["한 줄 소제목", "A canonical one-line deck"]) {
+  if (!validatePortableSubtitle(value)) {
+    throw new Error(`portable subtitle unexpectedly rejected ${JSON.stringify(value)}`);
+  }
+}
+for (const value of [
+  "",
+  " leading",
+  "trailing ",
+  "two\nlines",
+  "C1\u0085control",
+  "x".repeat(501),
+]) {
+  if (validatePortableSubtitle(value)) {
+    throw new Error(`portable subtitle unexpectedly accepted ${JSON.stringify(value)}`);
+  }
 }
 
 const installationIntentSchemaId =

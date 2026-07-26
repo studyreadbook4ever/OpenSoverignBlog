@@ -1,13 +1,21 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { installSocialEmbedHydration, socialEmbedFromUrl } from "../src/social-embeds.ts";
+import {
+  installSocialEmbedHydration,
+  socialEmbedDirective,
+  socialEmbedFromInput,
+  socialEmbedFromUrl,
+} from "../src/social-embeds.ts";
 
 test("normalizes supported YouTube URL shapes", () => {
   for (const href of [
     "https://youtu.be/dQw4w9WgXcQ?t=10",
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ&feature=share",
     "https://youtube.com/shorts/dQw4w9WgXcQ",
+    "https://youtube.com/live/dQw4w9WgXcQ",
+    "https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?rel=0",
   ]) {
     assert.deepEqual(socialEmbedFromUrl(href), {
       id: "youtube-dQw4w9WgXcQ",
@@ -18,6 +26,29 @@ test("normalizes supported YouTube URL shapes", () => {
       consentPurposeIds: ["external-media"],
     });
   }
+});
+
+test("converts copied YouTube iframe markup into an inert typed reference", () => {
+  const embed = socialEmbedFromInput(
+    '<iframe width="560" height="315" src="https://www.youtube.com/embed/AbCdEf123_-?si=test" allowfullscreen></iframe>',
+  );
+  assert.deepEqual(embed, {
+    id: "youtube-AbCdEf123_-",
+    provider: "youtube",
+    resourceId: "AbCdEf123_-",
+    canonicalUrl: "https://www.youtube.com/watch?v=AbCdEf123_-",
+    title: "YouTube 동영상",
+    consentPurposeIds: ["external-media"],
+  });
+  assert.equal(socialEmbedDirective(embed), "::osb-embed youtube-AbCdEf123_-");
+  assert.equal(
+    socialEmbedFromInput('<iframe src="javascript:alert(1)"></iframe>'),
+    undefined,
+  );
+  assert.equal(
+    socialEmbedFromInput('<script><iframe src="https://youtube.com/embed/dQw4w9WgXcQ"></iframe></script>'),
+    undefined,
+  );
 });
 
 test("normalizes X links into a script-free canonical card", () => {
@@ -38,6 +69,8 @@ test("rejects executable, credentialed, malformed, and lookalike URLs", () => {
     "https://youtube.example/watch?v=dQw4w9WgXcQ",
     "https://x.com/not/a/status",
     "https://x.com/openai/status/not-a-number",
+    '<iframe src="javascript:alert(1)"></iframe>',
+    '<script><iframe src="https://youtube.com/embed/dQw4w9WgXcQ"></iframe></script>',
   ]) assert.equal(socialEmbedFromUrl(href), undefined, href);
 });
 
@@ -91,6 +124,16 @@ test("malformed facades stay inert", () => {
   installSocialEmbedHydration(fakeRoot(figure));
   assert.equal(link.textContent, "원문 보기");
   assert.equal(link.listenerCount(), 0);
+});
+
+test("Studio exposes semantic embeds by default and inserts them at the Markdown cursor", async () => {
+  const source = await readFile(new URL("../src/studio.tsx", import.meta.url), "utf8");
+  assert.match(source, /socialEmbedFromInput\(url, uiLanguage\)/);
+  assert.match(source, /<details className="social-embed-composer" open>/);
+  assert.match(source, /insertSemanticEmbed\(directive: string\)/);
+  assert.match(source, /insertMarkdownBlock\(draft\.sourceMarkdown, start, end, directive\)/);
+  assert.match(source, /YouTube iframe 코드/);
+  assert.doesNotMatch(source, /sourceMarkdown\.trimEnd\(\).*::osb-embed/s);
 });
 
 function fakeRoot(...figures) {

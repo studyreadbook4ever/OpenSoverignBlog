@@ -1,26 +1,161 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
   acceptedEditorState,
   aiSummarySourceHash,
   editorFingerprint,
+  firstPartyAssetMarkdownUrl,
   homeCurationCandidates,
   homeCurationRows,
   homePinTargetKey,
   homePinTargets,
+  insertMarkdownBlock,
   isAiSummarySourceCurrent,
+  markdownImageSource,
   normalizeSavePayload,
+  normalizedEditorSubtitle,
   normalizedEditorTitle,
   payloadFingerprint,
   revisionSavePayload,
   reviewAiSummaryCandidate,
+  selectStudioImageBatch,
+  uploadStudioImageQueue,
 } from "../src/studio-state.ts";
 
 test("Studio uses one normalized title for preview, AI binding, and saves", () => {
   assert.equal(normalizedEditorTitle("  제목의 의미  "), "제목의 의미");
   assert.equal(normalizedEditorTitle(" \n\t "), "");
+});
+
+test("Studio canonicalizes optional subtitles and includes them in save identity", () => {
+  assert.equal(normalizedEditorSubtitle("  제목 아래 한 문장  "), "제목 아래 한 문장");
+  assert.equal(normalizedEditorSubtitle(" \t "), undefined);
+  const normalized = normalizeSavePayload({
+    title: "글",
+    subtitle: "  소개 문장  ",
+    slug: "post",
+    sourceMarkdown: "body",
+  });
+  assert.equal(normalized.subtitle, "소개 문장");
+  assert.notEqual(
+    payloadFingerprint(normalized),
+    payloadFingerprint({ ...normalized, subtitle: "다른 소개" }),
+  );
+});
+
+test("Studio create and edit surfaces expose the subtitle field and preview", async () => {
+  const source = await readFile(new URL("../src/studio.tsx", import.meta.url), "utf8");
+  assert.match(source, /id="post-subtitle"/);
+  assert.match(source, /maxLength=\{500\}/);
+  assert.match(source, /revision\.subtitle/);
+  assert.match(source, /normalizedEditorSubtitle\(draft\.subtitle\)/);
+  assert.match(source, /className="article-deck"/);
+});
+
+test("Studio accepts only bounded passive-image batches", () => {
+  const anonymousClipboardImage = { name: "", type: "", size: 1024 };
+  assert.deepEqual(
+    selectStudioImageBatch([anonymousClipboardImage]),
+    { accepted: [anonymousClipboardImage], rejected: [] },
+  );
+
+  const png = { name: "screenshot.png", type: "image/png", size: 1024 };
+  const extensionOnly = { name: "붙여넣기.webp", type: "", size: 1024 };
+  const svg = { name: "active.svg", type: "image/svg+xml", size: 1024 };
+  const oversized = {
+    name: "large.jpg",
+    type: "image/jpeg",
+    size: 10 * 1024 * 1024 + 1,
+  };
+  const extras = Array.from({ length: 8 }, (_, index) => ({
+    name: `${index}.avif`,
+    type: "image/avif",
+    size: 1,
+  }));
+
+  const selected = selectStudioImageBatch([png, extensionOnly, svg, oversized, ...extras]);
+
+  assert.deepEqual(selected.accepted.map(({ name }) => name), [
+    "screenshot.png",
+    "붙여넣기.webp",
+    "0.avif",
+    "1.avif",
+    "2.avif",
+    "3.avif",
+    "4.avif",
+    "5.avif",
+  ]);
+  assert.deepEqual(
+    selected.rejected.map(({ file, reason }) => [file.name, reason]),
+    [
+      ["active.svg", "unsupported"],
+      ["large.jpg", "too_large"],
+      ["6.avif", "batch_limit"],
+      ["7.avif", "batch_limit"],
+    ],
+  );
+});
+
+test("Studio uploads image batches sequentially and preserves successful selection order", async () => {
+  const active = [];
+  const calls = [];
+  const queue = await uploadStudioImageQueue(["first", "broken", "third"], async (name) => {
+    assert.equal(active.length, 0);
+    active.push(name);
+    calls.push(name);
+    await Promise.resolve();
+    active.pop();
+    if (name === "broken") throw new Error("upload failed");
+    return `${name}-url`;
+  });
+
+  assert.deepEqual(calls, ["first", "broken", "third"]);
+  assert.deepEqual(queue.completed, [
+    { file: "first", result: "first-url" },
+    { file: "third", result: "third-url" },
+  ]);
+  assert.equal(queue.failed.length, 1);
+  assert.equal(queue.failed[0].file, "broken");
+});
+
+test("Studio inserts only same-origin content-addressed media paths into Markdown", () => {
+  const digest = "b".repeat(64);
+  assert.equal(
+    firstPartyAssetMarkdownUrl(
+      `https://blog.example/base/media/${digest}?variant=original#image`,
+      "https://blog.example/base/studio/write",
+    ),
+    `/base/media/${digest}?variant=original#image`,
+  );
+  assert.equal(
+    markdownImageSource("대괄호[1]\\줄\n바꿈.png", `/media/${digest}`),
+    `![대괄호\\[1\\]\\\\줄 바꿈.png](/media/${digest})`,
+  );
+  assert.throws(
+    () => firstPartyAssetMarkdownUrl(
+      `https://tracker.example/media/${digest}`,
+      "https://blog.example/studio/write",
+    ),
+    TypeError,
+  );
+  assert.throws(
+    () => firstPartyAssetMarkdownUrl(
+      "https://blog.example/media/not-a-digest",
+      "https://blog.example/studio/write",
+    ),
+    TypeError,
+  );
+
+  assert.deepEqual(
+    insertMarkdownBlock("before selected after", 7, 15, `![image](/media/${digest})`),
+    {
+      sourceMarkdown: `before \n\n![image](/media/${digest})\n\n after`,
+      caret: `before \n\n![image](/media/${digest})\n\n`.length,
+    },
+  );
 });
 
 test("an accepted AI revision immediately matches the normalized editor draft", () => {

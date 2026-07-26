@@ -25,7 +25,7 @@ use osb_feature_comments::{
 use osb_kernel::{
     AiSummary, CONTENT_SCHEMA_VERSION, ContentRepository, DocumentSnapshot, EmbedReference,
     IntentLayer, NewDocument, OntologySidecar, ProposedRevision, PublicAuthorship, RepositoryError,
-    RevisionActor, RevisionActorKind, RevisionSnapshot, content_hash_with_ai_summary,
+    RevisionActor, RevisionActorKind, RevisionSnapshot, content_hash_with_subtitle_and_ai_summary,
 };
 use osb_renderer::{PublishArtifact, ViewMode, render_revision, summarize_markdown};
 use osb_storage_sqlite::{
@@ -821,7 +821,7 @@ async fn home(
             .into_iter()
             .map(|unit| match unit {
                 HomeUnitRecords::Post(document) => Ok(HomeUnit::Post {
-                    post: feed_item(&repository, document, primary_site_id)?,
+                    post: Box::new(feed_item(&repository, *document, primary_site_id)?),
                 }),
                 HomeUnitRecords::Series(section) => Ok(HomeUnit::Series {
                     series: series_summary(section.series),
@@ -1272,6 +1272,7 @@ fn feed_item(
     Ok(FeedPostSummary {
         id: document.id,
         title: document.revision.title.clone(),
+        subtitle: document.revision.subtitle.clone(),
         slug: document.revision.slug.clone(),
         excerpt: summarize_markdown(&document.revision.source_markdown, 220),
         published_at,
@@ -1336,6 +1337,7 @@ async fn get_primary_category_post(
     let response = BlogPostView {
         id: document.id,
         title: document.revision.title.clone(),
+        subtitle: document.revision.subtitle.clone(),
         canonical_slug: document.revision.slug.clone(),
         requested_slug: slug,
         revision_id: document.revision.id,
@@ -1391,6 +1393,7 @@ async fn blog_post_at_path(
     let response = BlogPostView {
         id: document.id,
         title: document.revision.title.clone(),
+        subtitle: document.revision.subtitle.clone(),
         canonical_slug: document.revision.slug.clone(),
         requested_slug,
         revision_id: document.revision.id,
@@ -1743,6 +1746,7 @@ async fn create_studio_revision(
         document_id,
         base_revision_id: input.base_revision_id,
         title: input.title,
+        subtitle: input.subtitle,
         slug: input.slug,
         source_markdown: input.source_markdown,
         embeds: input.embeds,
@@ -1818,6 +1822,7 @@ async fn preview_studio(
         revision_number: 1,
         parent_revision_id: None,
         title: input.title,
+        subtitle: input.subtitle,
         slug: input.slug,
         source_markdown: input.source_markdown,
         embeds: input.embeds,
@@ -1830,8 +1835,9 @@ async fn preview_studio(
         created_at: Utc::now(),
     };
     let mut revision = revision;
-    revision.content_hash = content_hash_with_ai_summary(
+    revision.content_hash = content_hash_with_subtitle_and_ai_summary(
         &revision.title,
+        revision.subtitle.as_deref(),
         &revision.slug,
         &revision.source_markdown,
         &revision.embeds,
@@ -2151,6 +2157,7 @@ fn new_document(site_id: Uuid, user: &UserRecord, input: StudioDocumentInput) ->
     NewDocument {
         site_id,
         title: input.title,
+        subtitle: input.subtitle,
         slug: input.slug,
         source_markdown: input.source_markdown,
         embeds: input.embeds,
@@ -2720,6 +2727,8 @@ impl<'de> Deserialize<'de> for CssUpdate {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StudioDocumentInput {
     title: String,
+    #[serde(default)]
+    subtitle: Option<String>,
     slug: String,
     source_markdown: String,
     #[serde(default)]
@@ -2795,6 +2804,8 @@ struct ReplaceStudioSeriesOrderRequest {
 struct StudioRevisionInput {
     base_revision_id: Uuid,
     title: String,
+    #[serde(default)]
+    subtitle: Option<String>,
     slug: String,
     source_markdown: String,
     #[serde(default)]
@@ -2981,7 +2992,7 @@ struct HomeSeriesSection {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum HomeUnit {
     Post {
-        post: FeedPostSummary,
+        post: Box<FeedPostSummary>,
     },
     Series {
         series: SeriesSummary,
@@ -3028,6 +3039,8 @@ enum HomePinsInput {
 struct FeedPostSummary {
     id: Uuid,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtitle: Option<String>,
     slug: String,
     excerpt: String,
     published_at: DateTime<Utc>,
@@ -3049,6 +3062,8 @@ struct FeedPostSummary {
 struct BlogPostView {
     id: Uuid,
     title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtitle: Option<String>,
     canonical_slug: String,
     requested_slug: String,
     revision_id: Uuid,
@@ -3479,6 +3494,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Published standalone".into(),
+                    subtitle: None,
                     slug: "published-standalone".into(),
                     source_markdown: "# Published standalone".into(),
                     embeds: Vec::new(),
@@ -3507,6 +3523,7 @@ mod tests {
                     document_id: standalone.id,
                     base_revision_id: standalone.current_revision_id,
                     title: "Draft in series".into(),
+                    subtitle: None,
                     slug: "draft-in-series".into(),
                     source_markdown: "# Draft in series".into(),
                     embeds: Vec::new(),
@@ -3543,6 +3560,7 @@ mod tests {
                 NewDocument {
                     site_id: site.id,
                     title: "Published in series".into(),
+                    subtitle: None,
                     slug: "published-in-series".into(),
                     source_markdown: "# Published in series".into(),
                     embeds: Vec::new(),
@@ -3571,6 +3589,7 @@ mod tests {
                     document_id: categorized.id,
                     base_revision_id: categorized.current_revision_id,
                     title: "Draft standalone".into(),
+                    subtitle: None,
                     slug: "draft-standalone".into(),
                     source_markdown: "# Draft standalone".into(),
                     embeds: Vec::new(),

@@ -131,6 +131,10 @@ test("home chrome omits operational counters and the generic publishing hero", a
   assert.doesNotMatch(component, /<dt>\{text\("운영 모드", "Mode"\)/);
   assert.doesNotMatch(component, /className="wiki-welcome"/);
   assert.doesNotMatch(component, /Markdown 원문과 서버를 작성자가 직접 소유/);
+  assert.match(component, /AI와 인간이 함께 사는 웹사이트입니다/);
+  assert.match(component, /A website where AI and humans live together\./);
+  assert.match(component, /post\.subtitle \?\? post\.excerpt/);
+  assert.match(component, /const articleDeck = post\.subtitle \?\? post\.excerpt/);
   assert.doesNotMatch(component, /\$\{items\.length\} posts/);
   assert.doesNotMatch(styles, /\.wiki-sidebar dl/);
   assert.doesNotMatch(styles, /\.wiki-welcome/);

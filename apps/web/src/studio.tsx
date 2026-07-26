@@ -5,6 +5,7 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -29,23 +30,29 @@ import type {
 import { AdminAccessKeyForm } from "./admin-access";
 import { useSession } from "./app";
 import { adminAuthChoices, studioAccessFor } from "./auth-policy";
-import { socialEmbedFromUrl } from "./social-embeds";
+import { socialEmbedDirective, socialEmbedFromInput } from "./social-embeds";
 import {
   acceptedEditorState,
   aiSummarySourceHash,
   editorFingerprint,
+  firstPartyAssetMarkdownUrl,
   homeCurationCandidates,
   homeCurationRows,
   homePinTargetKey,
   homePinTargets,
+  insertMarkdownBlock,
+  markdownImageSource,
   publishedSeriesMembership,
   type HomeCurationCandidate,
   isAiSummarySourceCurrent,
   normalizeSavePayload,
+  normalizedEditorSubtitle,
   normalizedEditorTitle,
   payloadFingerprint,
   revisionSavePayload,
   reviewAiSummaryCandidate,
+  selectStudioImageBatch,
+  uploadStudioImageQueue,
 } from "./studio-state";
 import {
   AppLink,
@@ -78,7 +85,7 @@ interface DraftMemoryScopes {
 
 interface PasteReceipt {
   occurredAt: string;
-  field: "title" | "slug" | "markdown" | "intent" | "embeds" | "ontology";
+  field: "title" | "subtitle" | "slug" | "markdown" | "intent" | "embeds" | "ontology";
   characters: number;
   mediaTypes: string[];
 }
@@ -372,6 +379,9 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
                   <time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time>
                 </div>
                 <h3><AppLink href={`/studio/write/${document.id}`}>{document.revision.title || text("제목 없는 글", "Untitled post")}</AppLink></h3>
+                {document.revision.subtitle
+                  ? <p className="document-subtitle">{document.revision.subtitle}</p>
+                  : null}
                 <p className="document-slug">{document.categoryId && categoryById.get(document.categoryId)
                   ? `${session.instanceAdministrator ? "" : `/@${blogHandle}`}/${categoryById.get(document.categoryId)!.slug}/${document.revision.slug || "untitled"}`
                   : `/@${session?.state === "authenticated" && session.blog ? session.blog.handle : "blog"}/${document.revision.slug || "untitled"}`}</p>
@@ -893,6 +903,8 @@ export function StudioEditor({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [imageUploadPending, setImageUploadPending] = useState(false);
+  const [imageDragActive, setImageDragActive] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<EditorTab>("write");
   const [slugTouched, setSlugTouched] = useState(Boolean(draft.slug));
@@ -1050,7 +1062,7 @@ export function StudioEditor({
     };
     // Sidecar parsing is intentionally deferred until save; source preview remains responsive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit, loadingDocument, loadError, draft.title, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, draft.aiSummary, currentAiSummarySourceHash, embedText]);
+  }, [canEdit, loadingDocument, loadError, draft.title, draft.subtitle, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, draft.aiSummary, currentAiSummarySourceHash, embedText]);
 
   function update<K extends keyof CreatePostInput>(key: K, value: CreatePostInput[K]) {
     setStatus(undefined);
@@ -1070,6 +1082,7 @@ export function StudioEditor({
     const revision = document.revision;
     const post: CreatePostInput = {
       title: revision.title,
+      ...(revision.subtitle ? { subtitle: revision.subtitle } : {}),
       slug: revision.slug,
       sourceMarkdown: revision.sourceMarkdown,
       embeds: revision.embeds,
@@ -1103,6 +1116,7 @@ export function StudioEditor({
       const now = new Date();
       const post: CreatePostInput = {
         title: memoryScopes.core ? draft.title : "",
+        ...(memoryScopes.core && draft.subtitle ? { subtitle: draft.subtitle } : {}),
         slug: memoryScopes.core ? draft.slug : "",
         sourceMarkdown: memoryScopes.core ? draft.sourceMarkdown : "",
         ...(memoryScopes.core && draft.authorship ? { authorship: draft.authorship } : {}),
@@ -1132,11 +1146,11 @@ export function StudioEditor({
     }
   }
 
-  function handlePaste(field: PasteReceipt["field"], event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+  function handlePaste(field: PasteReceipt["field"], event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>): boolean {
     if (pastePolicy === "block") {
       event.preventDefault();
       setStatus(text(`${field} 붙여넣기를 현재 초안 정책이 차단했습니다.`, `The current draft policy blocked pasting into ${field}.`));
-      return;
+      return false;
     }
     const characters = event.clipboardData.getData("text/plain").length;
     if (memoryScopes.pasteReceipts) {
@@ -1147,6 +1161,7 @@ export function StudioEditor({
         mediaTypes: Array.from(event.clipboardData.types).slice(0, 16),
       }]);
     }
+    return true;
   }
 
   function parsePayload(): CreatePostInput | undefined {
@@ -1175,8 +1190,10 @@ export function StudioEditor({
       setStatus(text("AI 지식 연결 정보의 JSON 형식을 확인해 주세요.", "Check the JSON format of the AI knowledge connection data."));
       return;
     }
+    const subtitle = normalizedEditorSubtitle(draft.subtitle);
     return normalizeSavePayload({
       title: normalizedEditorTitle(draft.title),
+      ...(subtitle ? { subtitle } : {}),
       slug: draft.slug.trim(),
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
@@ -1196,8 +1213,10 @@ export function StudioEditor({
     } catch {
       // Keep the writing preview responsive; save surfaces malformed JSON.
     }
+    const subtitle = normalizedEditorSubtitle(draft.subtitle);
     return {
       title: normalizedEditorTitle(draft.title) || text("제목 없는 글", "Untitled post"),
+      ...(subtitle ? { subtitle } : {}),
       slug: draft.slug || "untitled",
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
@@ -1211,6 +1230,10 @@ export function StudioEditor({
   }
 
   async function saveRevision() {
+    if (imageUploadPending) {
+      setStatus(text("이미지 업로드가 끝난 뒤 글을 저장해 주세요.", "Wait for image uploads to finish before saving."));
+      return;
+    }
     if (!draft.title.trim() || !draft.slug.trim() || !draft.sourceMarkdown.trim()) {
       setStatus(text("제목과 본문을 입력해 주세요. 글 주소는 제목에서 자동으로 만들어집니다.", "Enter a title and body. The post address is generated automatically from the title."));
       return;
@@ -1245,6 +1268,10 @@ export function StudioEditor({
   }
 
   async function publishAccepted() {
+    if (imageUploadPending) {
+      setStatus(text("이미지 업로드가 끝난 뒤 글을 공개해 주세요.", "Wait for image uploads to finish before publishing."));
+      return;
+    }
     if (!canPublish) {
       setStatus(text("초안은 저장됐습니다. 공개 발행은 블로그 소유자만 할 수 있습니다.", "The draft is saved. Only the blog owner can publish."));
       return;
@@ -1296,26 +1323,124 @@ export function StudioEditor({
     window.requestAnimationFrame(() => textarea.focus());
   }
 
-  async function uploadImage(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setStatus(text(`${file.name} 업로드 중…`, `Uploading ${file.name}…`));
-    try {
-      const uploaded = await client.uploadStudioAsset(file, file.name);
-      const markdown = `![${uploaded.record.originalFilename}](${uploaded.url})`;
-      const textarea = textareaRef.current;
-      if (textarea) {
-        const index = textarea.selectionStart;
-        update("sourceMarkdown", `${draft.sourceMarkdown.slice(0, index)}\n${markdown}\n${draft.sourceMarkdown.slice(index)}`);
-      } else {
-        update("sourceMarkdown", `${draft.sourceMarkdown.replace(/\s*$/, "")}\n\n${markdown}\n`);
-      }
-      setStatus(text("이미지를 저장하고 본문에 넣었습니다.", "Saved the image and inserted it into the body."));
-    } catch (reason) {
-      setStatus(asMessage(reason));
-    } finally {
-      event.target.value = "";
+  async function uploadImages(
+    files: readonly File[],
+    selectionStart: number,
+    selectionEnd: number,
+  ) {
+    if (imageUploadPending) {
+      setStatus(text("진행 중인 이미지 업로드가 끝난 뒤 다시 시도해 주세요.", "Wait for the current image upload to finish, then try again."));
+      return;
     }
+    const selected = selectStudioImageBatch(files);
+    if (!selected.accepted.length) {
+      setStatus(imageSelectionError(selected.rejected.map(({ reason }) => reason)));
+      return;
+    }
+
+    setImageUploadPending(true);
+    setImageDragActive(false);
+    let current = 0;
+    try {
+      const uploaded = await uploadStudioImageQueue(selected.accepted, async (file) => {
+        current += 1;
+        const displayName = imageDisplayName(file, current);
+        setStatus(text(
+          `이미지 ${current}/${selected.accepted.length} · ${displayName} 업로드 중…`,
+          `Uploading image ${current}/${selected.accepted.length} · ${displayName}…`,
+        ));
+        const response = await client.uploadStudioAsset(file, displayName);
+        const url = firstPartyAssetMarkdownUrl(response.url, window.location.href);
+        return markdownImageSource(displayName, url);
+      });
+
+      if (uploaded.completed.length) {
+        const block = uploaded.completed.map(({ result }) => result).join("\n\n");
+        let caret = selectionStart;
+        setDraft((value) => {
+          const insertion = insertMarkdownBlock(
+            value.sourceMarkdown,
+            selectionStart,
+            selectionEnd,
+            block,
+          );
+          caret = insertion.caret;
+          return { ...value, sourceMarkdown: insertion.sourceMarkdown };
+        });
+        window.requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(caret, caret);
+        });
+      }
+
+      const rejectedCount = selected.rejected.length;
+      const failedCount = uploaded.failed.length;
+      if (failedCount || rejectedCount) {
+        setStatus(text(
+          `이미지 ${uploaded.completed.length}개를 넣었습니다. ${failedCount + rejectedCount}개는 형식·크기 또는 업로드 응답을 확인해 주세요.`,
+          `Inserted ${uploaded.completed.length} image(s). Check the format, size, or upload response for ${failedCount + rejectedCount} image(s).`,
+        ));
+      } else {
+        setStatus(text(
+          `이미지 ${uploaded.completed.length}개를 저장하고 본문에 넣었습니다.`,
+          `Saved and inserted ${uploaded.completed.length} image(s).`,
+        ));
+      }
+    } finally {
+      setImageUploadPending(false);
+    }
+  }
+
+  function uploadSelectedImages(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? draft.sourceMarkdown.length;
+    const end = textarea?.selectionEnd ?? start;
+    event.target.value = "";
+    void uploadImages(files, start, end);
+  }
+
+  function handleMarkdownPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!handlePaste("markdown", event)) return;
+    const files = transferFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void uploadImages(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  }
+
+  function handleImageDrag(event: DragEvent<HTMLTextAreaElement>) {
+    if (!transferContainsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setImageDragActive(true);
+  }
+
+  function handleImageDragLeave(event: DragEvent<HTMLTextAreaElement>) {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    setImageDragActive(false);
+  }
+
+  function handleImageDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const files = transferFiles(event.dataTransfer);
+    setImageDragActive(false);
+    if (!files.length) return;
+    event.preventDefault();
+    void uploadImages(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  }
+
+  function insertSemanticEmbed(directive: string): boolean {
+    if (draft.sourceMarkdown.includes(directive)) return false;
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? draft.sourceMarkdown.length;
+    const end = textarea?.selectionEnd ?? start;
+    const insertion = insertMarkdownBlock(draft.sourceMarkdown, start, end, directive);
+    update("sourceMarkdown", insertion.sourceMarkdown);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(insertion.caret, insertion.caret);
+    });
+    return true;
   }
 
   const sanitizedPreview = useMemo(
@@ -1360,12 +1485,12 @@ export function StudioEditor({
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
       if (event.key.toLowerCase() === "s") {
         event.preventDefault();
-        if (!saving && !publishing && !revisionMatchesDraft) void saveRevision();
+        if (!saving && !publishing && !imageUploadPending && !revisionMatchesDraft) void saveRevision();
         return;
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        if (canPublish && !publishing && !publishOpen) setPublishOpen(true);
+        if (canPublish && !publishing && !imageUploadPending && !publishOpen) setPublishOpen(true);
       }
     }
     window.addEventListener("keydown", handleEditorShortcut);
@@ -1410,7 +1535,7 @@ export function StudioEditor({
           <button
             aria-keyshortcuts="Control+S Meta+S"
             className="button button-save-draft"
-            disabled={saving || publishing || revisionMatchesDraft}
+            disabled={saving || publishing || imageUploadPending || revisionMatchesDraft}
             onClick={() => void saveRevision()}
             title={text("현재 내용 저장 (Ctrl/⌘ + S)", "Save current content (Ctrl/⌘ + S)")}
             type="button"
@@ -1421,7 +1546,7 @@ export function StudioEditor({
           <button
             aria-keyshortcuts="Control+Enter Meta+Enter"
             className="button button-publish"
-            disabled={publishing || !canPublish}
+            disabled={publishing || imageUploadPending || !canPublish}
             onClick={() => setPublishOpen(true)}
             title={canPublish ? text("출간 화면 열기 (Ctrl/⌘ + Enter)", "Open publish panel (Ctrl/⌘ + Enter)") : text("공개 발행은 블로그 소유자만 할 수 있습니다", "Only the blog owner can publish")}
             type="button"
@@ -1451,6 +1576,29 @@ export function StudioEditor({
               rows={1}
               value={draft.title}
             />
+            <label className="subtitle-editor-field" htmlFor="post-subtitle">
+              <span>
+                {text("소제목", "Subtitle")}
+                <small>{text("선택", "optional")}</small>
+              </span>
+              <input
+                className="subtitle-editor"
+                id="post-subtitle"
+                maxLength={500}
+                onChange={(event) => update("subtitle", event.target.value)}
+                onPaste={(event) => handlePaste("subtitle", event)}
+                placeholder={text(
+                  "제목 바로 아래에서 글을 소개하는 한 문장",
+                  "One line that introduces the post below its title",
+                )}
+                type="text"
+                value={draft.subtitle ?? ""}
+              />
+              <span className="subtitle-editor-meta">
+                <span>{text("공개 글의 제목 아래에 표시됩니다.", "Shown directly below the public post title.")}</span>
+                <span>{draft.subtitle?.length ?? 0} / 500</span>
+              </span>
+            </label>
             <span className="title-rule" aria-hidden="true" />
             <CategorySelector
               categories={categories}
@@ -1469,6 +1617,7 @@ export function StudioEditor({
               />
             ) : null}
             <MarkdownToolbar
+              disabled={imageUploadPending}
               onCommand={(command) => {
                 if (command === "heading") prefixLines("## ", text("제목", "Heading"));
                 if (command === "bold") applyFormat("**", "**", text("굵은 텍스트", "bold text"));
@@ -1484,13 +1633,13 @@ export function StudioEditor({
             {capabilities?.features.includes("social_embeds") ? (
               <SocialEmbedComposer
                 embedText={embedText}
-                setDraft={setDraft}
+                insertDirective={insertSemanticEmbed}
                 setEmbedText={setEmbedText}
                 setStatus={setStatus}
               />
             ) : null}
             <div className="editor-writing-meta">
-              <span className="writing-help">{text("서식 버튼으로 본문을 쉽게 꾸밀 수 있어요.", "Use the formatting buttons to style the body easily.")}</span>
+              <span className="writing-help">{text("이미지는 선택하거나 본문에 붙여넣고, 끌어다 놓을 수도 있어요.", "Choose, paste, or drag images directly into the body.")}</span>
               <span className="writing-stats">{text(`공백 포함 ${bodyCharacterCount.toLocaleString("ko-KR")}자 · 예상 ${readingMinutes ? `${readingMinutes}분` : "1분 미만"}`, `${bodyCharacterCount.toLocaleString("en-US")} characters including spaces · about ${readingMinutes ? `${readingMinutes} min` : "under 1 min"}`)}</span>
               <span className={`revision-state ${revisionMatchesDraft ? "is-saved" : "is-dirty"}`}>
                 {saving ? text("서버 저장 중", "Saving to server") : revisionMatchesDraft ? currentRevisionPublished ? text("현재 글 공개됨", "Post is public") : canPublish ? text("출간 준비됨", "Ready to publish") : text("소유자 검토 대기", "Awaiting owner review") : accepted ? text("변경 내용 저장 필요", "Changes need saving") : text("첫 저장 전", "Not yet saved")}
@@ -1498,21 +1647,34 @@ export function StudioEditor({
             </div>
             {status ? <p className="editor-notice" role="status">{status}</p> : null}
             <label className="sr-only" htmlFor="markdown-source">{text("Markdown 본문", "Markdown body")}</label>
-            <textarea
-              className="markdown-editor"
-              id="markdown-source"
-              onChange={(event) => update("sourceMarkdown", event.target.value)}
-              onPaste={(event) => handlePaste("markdown", event)}
-              placeholder={text("이야기를 시작해 보세요.\n\nMarkdown을 몰라도 위의 서식 버튼을 누르면 됩니다.", "Start your story.\n\nYou can use the formatting buttons above even if you do not know Markdown.")}
-              ref={textareaRef}
-              spellCheck="true"
-              value={draft.sourceMarkdown}
-            />
+            <div
+              aria-busy={imageUploadPending}
+              className={`markdown-editor-dropzone${imageDragActive ? " is-dragging" : ""}${imageUploadPending ? " is-uploading" : ""}`}
+            >
+              <textarea
+                className="markdown-editor"
+                id="markdown-source"
+                onChange={(event) => update("sourceMarkdown", event.target.value)}
+                onDragEnter={handleImageDrag}
+                onDragLeave={handleImageDragLeave}
+                onDragOver={handleImageDrag}
+                onDrop={handleImageDrop}
+                onPaste={handleMarkdownPaste}
+                placeholder={text("이야기를 시작해 보세요.\n\nMarkdown을 몰라도 위의 서식 버튼을 누르면 됩니다.", "Start your story.\n\nYou can use the formatting buttons above even if you do not know Markdown.")}
+                readOnly={imageUploadPending}
+                ref={textareaRef}
+                spellCheck="true"
+                value={draft.sourceMarkdown}
+              />
+              {imageDragActive ? <span className="image-drop-overlay">{text("여기에 놓아 이미지 넣기", "Drop to insert images")}</span> : null}
+            </div>
             <input
               accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
               aria-label={text("이미지 파일 선택", "Choose image file")}
               className="visually-hidden-input"
-              onChange={(event) => void uploadImage(event)}
+              disabled={imageUploadPending}
+              multiple
+              onChange={uploadSelectedImages}
               ref={fileInputRef}
               tabIndex={-1}
               type="file"
@@ -1549,6 +1711,9 @@ export function StudioEditor({
             <div className="preview-label"><span>{text("미리보기", "Preview")}</span><span>{previewState === "loading" ? text("최종 화면 확인 중…", "Checking final view…") : previewState === "ready" ? text("실제 공개 화면 기준", "Matches public view") : text("간단 미리보기", "Basic preview")}</span></div>
             <article className="editor-preview-article">
               <h1>{draft.title || text("제목 없는 글", "Untitled post")}</h1>
+              {normalizedEditorSubtitle(draft.subtitle)
+                ? <p className="article-deck">{normalizedEditorSubtitle(draft.subtitle)}</p>
+                : null}
               <div className="preview-byline"><span>{session?.state === "authenticated" ? session.user.displayName : text("작성자", "Author")}</span><span>·</span><span>{formatDate(new Date().toISOString())}</span></div>
               {previewArtifact ? (
                 <div className="article-content" dangerouslySetInnerHTML={{ __html: sanitizedPreview }} />
@@ -1915,21 +2080,24 @@ function AiSummaryPreview({ summary }: { summary: AiSummary }) {
 
 function SocialEmbedComposer({
   embedText,
-  setDraft,
+  insertDirective,
   setEmbedText,
   setStatus,
 }: {
   embedText: string;
-  setDraft: React.Dispatch<React.SetStateAction<CreatePostInput>>;
+  insertDirective: (directive: string) => boolean;
   setEmbedText: (value: string) => void;
   setStatus: (value: string | undefined) => void;
 }) {
   const [url, setUrl] = useState("");
-  const preview = useMemo(() => socialEmbedFromUrl(url, uiLanguage), [url]);
+  const preview = useMemo(() => socialEmbedFromInput(url, uiLanguage), [url]);
 
   function insert() {
     if (!preview) {
-      setStatus(text("지원하는 YouTube 또는 X 게시물의 https 주소를 확인해 주세요.", "Enter a supported HTTPS URL for a YouTube video or X post."));
+      setStatus(text(
+        "지원하는 YouTube·X 주소 또는 YouTube iframe 코드를 확인해 주세요.",
+        "Enter a supported YouTube or X URL, or a YouTube iframe snippet.",
+      ));
       return;
     }
     let current: EmbedReference[] = [];
@@ -1942,28 +2110,44 @@ function SocialEmbedComposer({
     }
     const next = [...current.filter((embed) => embed.id !== preview.id), preview];
     setEmbedText(JSON.stringify(next, null, 2));
-    setDraft((draft) => {
-      const directive = `::osb-embed ${preview.id}`;
-      if (draft.sourceMarkdown.includes(directive)) return draft;
-      const separator = draft.sourceMarkdown.trimEnd() ? "\n\n" : "";
-      return { ...draft, sourceMarkdown: `${draft.sourceMarkdown.trimEnd()}${separator}${directive}\n` };
-    });
+    const inserted = insertDirective(socialEmbedDirective(preview));
     setUrl("");
-    setStatus(text(`${preview.title} 연결과 본문 블록을 추가했습니다.`, `Added the ${preview.title} reference and body block.`));
+    setStatus(inserted
+      ? text(
+        `${preview.title}을 현재 커서 위치에 안전한 블록으로 넣었습니다.`,
+        `Inserted the ${preview.title} as a safe block at the cursor.`,
+      )
+      : text(
+        `${preview.title} 연결 정보는 갱신했고, 본문 블록은 이미 있어 그대로 두었습니다.`,
+        `Updated the ${preview.title} reference; its body block was already present.`,
+      ));
   }
 
   return (
-    <details className="social-embed-composer">
-      <summary>{text("동영상·X 게시물 넣기", "Insert video or X post")} <small>{text("URL만 붙여넣으세요", "Just paste a URL")}</small></summary>
+    <details className="social-embed-composer" open>
+      <summary>{text("웹 콘텐츠 넣기", "Insert web content")} <small>{text("YouTube · X", "YouTube · X")}</small></summary>
+      <p className="social-embed-help" id="social-embed-help">
+        {text(
+          "주소나 YouTube iframe 코드를 붙여넣으면 실행 코드는 버리고, 현재 커서 위치에 안전한 시맨틱 블록으로 바꿉니다.",
+          "Paste a URL or YouTube iframe snippet. OSB discards executable markup and inserts a safe semantic block at the cursor.",
+        )}
+      </p>
       <div className="social-embed-input-row">
-        <label htmlFor="social-embed-url">{text("YouTube 또는 X 주소", "YouTube or X URL")}</label>
+        <label htmlFor="social-embed-url">{text("주소 또는 iframe 코드", "URL or iframe snippet")}</label>
         <div>
           <input
+            aria-describedby="social-embed-help"
             id="social-embed-url"
             inputMode="url"
             onChange={(event) => setUrl(event.target.value)}
-            placeholder={text("https://youtu.be/… 또는 https://x.com/…/status/…", "https://youtu.be/… or https://x.com/…/status/…")}
-            type="url"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && preview) {
+                event.preventDefault();
+                insert();
+              }
+            }}
+            placeholder={text("YouTube·X 주소 또는 <iframe …>", "YouTube/X URL or <iframe …>")}
+            type="text"
             value={url}
           />
           <button className="button button-primary" disabled={!preview} onClick={insert} type="button">{text("본문에 넣기", "Insert into body")}</button>
@@ -1984,7 +2168,13 @@ function SocialEmbedComposer({
 
 type ToolbarCommand = "heading" | "bold" | "italic" | "strike" | "quote" | "link" | "image" | "code" | "codeblock";
 
-function MarkdownToolbar({ onCommand }: { onCommand: (command: ToolbarCommand) => void }) {
+function MarkdownToolbar({
+  disabled = false,
+  onCommand,
+}: {
+  disabled?: boolean;
+  onCommand: (command: ToolbarCommand) => void;
+}) {
   const tools: Array<{ command: ToolbarCommand; label: string; glyph: ReactNode }> = [
     { command: "heading", label: text("제목 2", "Heading 2"), glyph: "H₂" },
     { command: "bold", label: text("굵게", "Bold"), glyph: <strong>B</strong> },
@@ -1999,7 +2189,7 @@ function MarkdownToolbar({ onCommand }: { onCommand: (command: ToolbarCommand) =
   return (
     <div className="markdown-toolbar" role="toolbar" aria-label={text("Markdown 서식", "Markdown formatting")}>
       {tools.map((tool, index) => (
-        <button className={index === 4 || index === 7 ? "toolbar-separator" : ""} key={tool.command} onClick={() => onCommand(tool.command)} title={tool.label} type="button"><span aria-hidden="true">{tool.glyph}</span><span className="sr-only">{tool.label}</span></button>
+        <button className={index === 4 || index === 7 ? "toolbar-separator" : ""} disabled={disabled} key={tool.command} onClick={() => onCommand(tool.command)} title={tool.label} type="button"><span aria-hidden="true">{tool.glyph}</span><span className="sr-only">{tool.label}</span></button>
       ))}
     </div>
   );
@@ -2075,7 +2265,7 @@ function AdvancedEditorOptions({
           <p>{text("브라우저에 보관할 항목", "Items to store in browser")}</p>
           <div className="memory-checks">
             {([
-              ["core", text("기본 글(제목·주소·본문)", "Basic post (title, address, body)")],
+              ["core", text("기본 글(제목·소제목·주소·본문)", "Basic post (title, subtitle, address, body)")],
               ["intent", text("별도 HTML 화면", "Separate HTML view")],
               ["embeds", text("외부 콘텐츠 연결 정보", "External content references")],
               ["ontology", text("AI 지식 연결 정보", "AI knowledge connections")],
@@ -2131,7 +2321,7 @@ function PublishPanel({
     <dialog aria-labelledby="publish-dialog-title" className="publish-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} ref={dialogRef}>
       <div className="publish-panel-heading"><div><p className="eyebrow">{text("공개 전 확인", "Before publishing")}</p><h2 id="publish-dialog-title">{text("글을 블로그에 공개할까요?", "Publish this post to the blog?")}</h2></div><button aria-label={text("출간 패널 닫기", "Close publish panel")} className="dialog-close" onClick={onClose} type="button">×</button></div>
       <div className="publish-summary"><span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span><div><strong>{draft.title || text("제목 없는 글", "Untitled post")}</strong><code>/{draft.slug || "untitled"}</code></div></div>
-      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목과 본문을 안전한 새 버전으로 보관합니다.", "Store the title and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
+      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목·소제목·본문을 안전한 새 버전으로 보관합니다.", "Store the title, subtitle, and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
       {accepted && exactRevisionReady ? <p className="revision-proof">{text("현재 내용이 저장되어 출간할 준비가 됐습니다.", "The current content is saved and ready to publish.")} <code>{accepted.currentRevisionId.slice(0, 8)}</code></p> : <p className="revision-proof warning">{accepted ? text("저장 뒤 바뀐 내용이 있습니다. 현재 내용을 한 번 더 저장해 주세요.", "Content changed after the last save. Save the current content once more.") : text("아직 서버에 저장되지 않았습니다. 먼저 현재 내용을 저장해 주세요.", "This content has not been saved to the server yet. Save it first.")}</p>}
       {status ? <p className="inline-status" role="status">{status}</p> : null}
       <div className="publish-actions"><button className="button button-ghost" disabled={saving || publishing || exactRevisionReady} onClick={onSave} type="button">{saving ? text("저장 중…", "Saving…") : exactRevisionReady ? text("현재 내용 저장됨", "Current content saved") : text("현재 내용 저장", "Save current content")}</button><button className="button button-primary" disabled={!exactRevisionReady || saving || publishing || currentRevisionPublished} onClick={onPublish} type="button">{publishing ? text("공개 중…", "Publishing…") : currentRevisionPublished ? text("이미 공개된 글", "Already published") : text("블로그에 공개", "Publish to blog")}</button></div>
@@ -2276,6 +2466,50 @@ function capabilityModeLabel(capabilities: Capabilities): string {
   if (access === "disabled") return text("읽기 전용", "Read only");
   if (access === "admin_only") return text("관리자 전용", "Administrator only");
   return text("계정별 블로그", "Per-account blogs");
+}
+
+function transferContainsFiles(transfer: DataTransfer): boolean {
+  return Array.from(transfer.items).some((item) => item.kind === "file")
+    || transfer.files.length > 0;
+}
+
+function transferFiles(transfer: DataTransfer): File[] {
+  const itemFiles = Array.from(transfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  return itemFiles.length ? itemFiles : Array.from(transfer.files);
+}
+
+function imageDisplayName(file: File, position: number): string {
+  if (file.name.trim()) return file.name;
+  const extension = ({
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/avif": "avif",
+  } as Record<string, string>)[file.type.toLowerCase()] ?? "png";
+  return `pasted-image-${position}.${extension}`;
+}
+
+function imageSelectionError(reasons: readonly string[]): string {
+  if (reasons.includes("too_large")) {
+    return text(
+      "이미지는 파일당 10 MiB 이하여야 합니다.",
+      "Each image must be no larger than 10 MiB.",
+    );
+  }
+  if (reasons.includes("batch_limit")) {
+    return text(
+      "이미지는 한 번에 최대 8개까지 넣을 수 있습니다.",
+      "You can insert up to 8 images at a time.",
+    );
+  }
+  return text(
+    "PNG, JPEG, GIF, WebP 또는 AVIF 이미지 파일을 선택해 주세요. SVG와 HTML은 안전을 위해 지원하지 않습니다.",
+    "Choose a PNG, JPEG, GIF, WebP, or AVIF image. SVG and HTML are not supported for safety.",
+  );
 }
 
 function estimateReadingMinutes(markdown: string): number {

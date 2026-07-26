@@ -103,6 +103,8 @@ export interface PublishArtifact {
 export interface PostSummary {
   id: string;
   title: string;
+  /** Optional author-written deck shown with the post title. */
+  subtitle?: string;
   /** Leaf slug retained for backwards-compatible display and routing logic. */
   slug: string;
   /** Published lookup path; category posts use `category/slug`. */
@@ -341,6 +343,8 @@ export interface CreateBlogInput {
 export interface FeedPostSummary {
   id: string;
   title: string;
+  /** Optional author-written deck; excerpt remains an automatic body summary. */
+  subtitle?: string;
   slug: string;
   excerpt: string;
   publishedAt: string;
@@ -415,6 +419,8 @@ export interface HomePinsResponse {
 export interface PostView {
   id: string;
   title: string;
+  /** Optional author-written deck stored on this immutable revision. */
+  subtitle?: string;
   canonicalSlug: string;
   requestedSlug: string;
   revisionId: string;
@@ -713,6 +719,8 @@ export type CodeRunResponse =
 
 export interface CreatePostInput {
   title: string;
+  /** Omit to publish no subtitle; values are validated as one canonical line. */
+  subtitle?: string;
   slug: string;
   sourceMarkdown: string;
   embeds?: EmbedReference[];
@@ -746,6 +754,8 @@ export interface RevisionSnapshot {
   revisionNumber: number;
   parentRevisionId?: string;
   title: string;
+  /** Optional author-written deck stored on this immutable revision. */
+  subtitle?: string;
   slug: string;
   sourceMarkdown: string;
   embeds: EmbedReference[];
@@ -836,6 +846,89 @@ export interface Health {
 export interface ClientOptions {
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
+}
+
+const ASSET_MEDIA_EXTENSIONS: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+};
+
+const ASSET_FILENAME_MEDIA_TYPES: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+};
+
+/**
+ * Produces the display-only ASCII filename sent in an HTTP header.
+ *
+ * Fetch header values are ByteStrings, so passing a user's Unicode filename
+ * directly throws before any request is sent. The source filename remains
+ * available to callers for Markdown alt text; this transport label is never
+ * used as a storage path.
+ */
+export function assetUploadTransportFilename(filename: string, mediaType: string): string {
+  const basename = filename.split(/[\\/]/).at(-1) ?? "";
+  const rawStem = basename.replace(/\.[^.]*$/, "");
+  const sanitizedStem = rawStem
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160);
+  const stem = /[A-Za-z0-9]/.test(sanitizedStem) ? sanitizedStem : "image";
+  const claimedExtension = ASSET_MEDIA_EXTENSIONS[mediaType.toLowerCase()];
+  const sourceExtension = basename.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+  const extension = claimedExtension ?? sourceExtension;
+  return extension ? `${stem}.${extension}` : stem;
+}
+
+async function assetUploadMediaType(bytes: Blob, filename: string): Promise<string> {
+  const claimed = bytes.type.split(";", 1)[0]?.trim().toLowerCase();
+  const prefix = new Uint8Array(await bytes.slice(0, 32).arrayBuffer());
+  if (
+    prefix.length >= 8
+    && prefix[0] === 0x89
+    && prefix[1] === 0x50
+    && prefix[2] === 0x4e
+    && prefix[3] === 0x47
+    && prefix[4] === 0x0d
+    && prefix[5] === 0x0a
+    && prefix[6] === 0x1a
+    && prefix[7] === 0x0a
+  ) return "image/png";
+  if (prefix.length >= 3 && prefix[0] === 0xff && prefix[1] === 0xd8 && prefix[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const ascii = new TextDecoder("latin1").decode(prefix);
+  if (ascii.startsWith("GIF87a") || ascii.startsWith("GIF89a")) return "image/gif";
+  if (
+    ascii.startsWith("RIFF")
+    && ascii.slice(8, 12) === "WEBP"
+    && ["VP8 ", "VP8L", "VP8X"].includes(ascii.slice(12, 16))
+  ) return "image/webp";
+  if (
+    prefix.length >= 16
+    && ascii.slice(4, 8) === "ftyp"
+    && (
+      ["avif", "avis"].includes(ascii.slice(8, 12))
+      || ascii.slice(16).includes("avif")
+      || ascii.slice(16).includes("avis")
+    )
+  ) return "image/avif";
+
+  if (claimed) return claimed;
+  const extension = filename.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+  if (extension && ASSET_FILENAME_MEDIA_TYPES[extension]) {
+    return ASSET_FILENAME_MEDIA_TYPES[extension];
+  }
+  return "application/octet-stream";
 }
 
 export class OpenSoverignBlogError extends Error {
@@ -1432,12 +1525,13 @@ export class OpenSoverignBlogClient {
     filename: string,
     signal?: AbortSignal,
   ): Promise<AssetUploadResponse> {
+    const mediaType = await assetUploadMediaType(bytes, filename);
     return this.#request("/api/v1/studio/assets", {
       method: "POST",
       body: bytes,
       headers: {
-        "Content-Type": bytes.type || "application/octet-stream",
-        "X-OSB-Filename": filename,
+        "Content-Type": mediaType,
+        "X-OSB-Filename": assetUploadTransportFilename(filename, mediaType),
       },
       ...withSignal(signal),
     });
@@ -1605,14 +1699,15 @@ export class OpenSoverignBlogClient {
     filename: string,
     signal?: AbortSignal,
   ): Promise<AssetUploadResponse> {
+    const mediaType = await assetUploadMediaType(bytes, filename);
     return this.#request(
       "/api/v1/assets",
       {
         method: "POST",
         body: bytes,
         headers: {
-          "Content-Type": bytes.type || "application/octet-stream",
-          "X-OSB-Filename": filename,
+          "Content-Type": mediaType,
+          "X-OSB-Filename": assetUploadTransportFilename(filename, mediaType),
         },
         ...withSignal(signal),
       },

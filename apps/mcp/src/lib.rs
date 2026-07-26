@@ -781,6 +781,13 @@ fn tool_definitions(mode: AccessMode) -> Vec<Value> {
 fn content_schema_properties() -> Value {
     json!({
         "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "subtitle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "pattern": r"^[^\s\u0000-\u001F\u007F-\u009F\u2028\u2029](?:[^\u0000-\u001F\u007F-\u009F\u2028\u2029]*[^\s\u0000-\u001F\u007F-\u009F\u2028\u2029])?$",
+            "description": "Optional author-written canonical one-line deck."
+        },
         "slug": { "type": "string", "minLength": 1, "maxLength": 240 },
         "sourceMarkdown": { "type": "string", "maxLength": MAX_MARKDOWN_BYTES },
         "embeds": {
@@ -882,6 +889,7 @@ fn parse_command(
                 arguments,
                 &[
                     "title",
+                    "subtitle",
                     "slug",
                     "sourceMarkdown",
                     "embeds",
@@ -903,6 +911,7 @@ fn parse_command(
                     "baseRevisionId",
                     "idempotencyKey",
                     "title",
+                    "subtitle",
                     "slug",
                     "sourceMarkdown",
                     "embeds",
@@ -959,6 +968,18 @@ fn content_body(arguments: &Map<String, Value>) -> Result<Value, String> {
         ("slug".into(), Value::String(slug.to_owned())),
         ("sourceMarkdown".into(), Value::String(markdown.to_owned())),
     ]);
+    if let Some(subtitle) = optional_string(arguments, "subtitle")? {
+        let length = subtitle.chars().count();
+        if subtitle != subtitle.trim()
+            || !(1..=500).contains(&length)
+            || subtitle.chars().any(|character| {
+                character.is_control() || character == '\u{2028}' || character == '\u{2029}'
+            })
+        {
+            return Err("subtitle must contain 1..=500 canonical one-line characters".into());
+        }
+        body.insert("subtitle".into(), Value::String(subtitle.to_owned()));
+    }
     let authorship = arguments
         .get("authorship")
         .ok_or_else(|| "authorship is required for MCP create and revise operations".to_owned())?;
@@ -1141,6 +1162,7 @@ fn compact_items(value: Value, documents: bool) -> Vec<Value> {
                             "currentRevisionId": item.get("currentRevisionId"),
                             "publishedRevisionId": item.get("publishedRevisionId"),
                             "title": item.pointer("/revision/title"),
+                            "subtitle": item.pointer("/revision/subtitle"),
                             "slug": item.pointer("/revision/slug"),
                             "updatedAt": item.get("updatedAt")
                         })
@@ -1157,6 +1179,7 @@ fn compact_published(value: Value) -> Value {
     json!({
         "id": value.get("id"),
         "title": value.get("title"),
+        "subtitle": value.get("subtitle"),
         "canonicalSlug": value.get("canonicalSlug"),
         "requestedSlug": value.get("requestedSlug"),
         "revisionId": value.get("revisionId"),
@@ -1314,6 +1337,7 @@ mod tests {
                 "osb_content_create",
                 json!({
                     "title": "Draft",
+                    "subtitle": "A portable draft deck",
                     "slug": "draft",
                     "sourceMarkdown": "# Draft",
                     "authorship": {
@@ -1331,6 +1355,7 @@ mod tests {
                     "baseRevisionId": base_revision_id,
                     "idempotencyKey": "agent-revision-1",
                     "title": "Revised",
+                    "subtitle": "A revised portable deck",
                     "slug": "draft",
                     "sourceMarkdown": "# Revised",
                     "authorship": {
@@ -1374,6 +1399,7 @@ mod tests {
                 "humanReviewed": false
             }))
         );
+        assert_eq!(body.get("subtitle"), Some(&json!("A portable draft deck")));
         let ApiCommand::Revise { body, .. } = &calls[1] else {
             panic!("second call must append a revision");
         };
@@ -1384,6 +1410,10 @@ mod tests {
                 "generator": "local/model-v1",
                 "humanReviewed": true
             }))
+        );
+        assert_eq!(
+            body.get("subtitle"),
+            Some(&json!("A revised portable deck")),
         );
         assert_eq!(
             calls[2],
@@ -1494,6 +1524,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn write_tools_reject_noncanonical_or_multiline_subtitles_before_http() {
+        let mut adapter = initialized_adapter(AccessMode::Write, json!({ "ok": true })).await;
+        for (request_id, subtitle) in [
+            (1, " padded deck".to_owned()),
+            (2, "padded deck ".to_owned()),
+            (3, "two\nlines".to_owned()),
+            (4, "x".repeat(501)),
+        ] {
+            let response = adapter
+                .handle_message(json!({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "osb_content_create",
+                        "arguments": {
+                            "title": "Draft",
+                            "subtitle": subtitle,
+                            "slug": "draft",
+                            "sourceMarkdown": "# Draft",
+                            "authorship": {
+                                "kind": "human",
+                                "humanReviewed": false
+                            }
+                        }
+                    }
+                }))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.pointer("/result/isError"),
+                Some(&Value::Bool(true)),
+            );
+        }
+        assert!(adapter.api.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn tool_validation_is_a_recoverable_execution_error() {
         let mut adapter = initialized_adapter(AccessMode::Read, json!([])).await;
         let response = adapter
@@ -1528,6 +1596,7 @@ mod tests {
             json!({
                 "id": Uuid::now_v7(),
                 "title": "Rendered post",
+                "subtitle": "A public author-written deck",
                 "canonicalSlug": "rendered-post",
                 "requestedSlug": "rendered-post",
                 "revisionId": Uuid::now_v7(),
@@ -1559,6 +1628,10 @@ mod tests {
         assert_eq!(
             response.pointer("/result/structuredContent/item/markdown"),
             Some(&json!("# Portable source"))
+        );
+        assert_eq!(
+            response.pointer("/result/structuredContent/item/subtitle"),
+            Some(&json!("A public author-written deck")),
         );
         assert!(matches!(
             adapter.api.calls.lock().unwrap().as_slice(),

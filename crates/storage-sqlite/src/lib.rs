@@ -18,7 +18,7 @@ use osb_kernel::{
     AI_PROPOSAL_AUDIT_SCHEMA_VERSION, Ai2AiEnvelope, AiProposalAuditRecord, CONTENT_SCHEMA_VERSION,
     ContentRepository, DocumentSnapshot, DocumentStatus, NewDocument, ProposedRevision,
     PublicAuthorship, PublicAuthorshipKind, RepositoryError, RevisionActor, RevisionActorKind,
-    RevisionSnapshot, content_hash_with_ai_summary,
+    RevisionSnapshot, content_hash_with_subtitle_and_ai_summary,
 };
 use rusqlite::{
     Connection, MAIN_DB, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
@@ -251,7 +251,7 @@ pub struct HomeSeriesSectionRecords {
 /// standalone post remains a single, directly-readable card.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HomeUnitRecords {
-    Post(DocumentSnapshot),
+    Post(Box<DocumentSnapshot>),
     Series(HomeSeriesSectionRecords),
 }
 
@@ -3488,8 +3488,7 @@ impl SqliteRepository {
             let later_series = series_count.saturating_sub(index + 1);
             let item_limit = remaining
                 .saturating_sub(later_series)
-                .max(1)
-                .min(HOME_FEED_MAX_SECTION_ITEMS);
+                .clamp(1, HOME_FEED_MAX_SECTION_ITEMS);
             let items = list_published_in_series_with_connection(
                 &connection,
                 primary_site_id,
@@ -3512,7 +3511,7 @@ impl SqliteRepository {
                         Ok(document) if document.status != DocumentStatus::Archived => {
                             pinned_ids.insert(document.id);
                             pinned.push(document.clone());
-                            units.push(HomeUnitRecords::Post(document));
+                            units.push(HomeUnitRecords::Post(Box::new(document)));
                         }
                         Ok(_) | Err(RepositoryError::NotFound) => {}
                         Err(error) => return Err(error),
@@ -3601,7 +3600,7 @@ impl SqliteRepository {
             if active_home_series_for_published_document(&connection, primary_site_id, document.id)?
                 .is_none()
             {
-                units.push(HomeUnitRecords::Post(document.clone()));
+                units.push(HomeUnitRecords::Post(Box::new(document.clone())));
             }
         }
         Ok(HomeFeedRecords {
@@ -4197,6 +4196,7 @@ fn create_document_in_transaction(
         revision_number: 1,
         parent_revision_id: None,
         title: input.title,
+        subtitle: input.subtitle,
         slug: input.slug,
         source_markdown: input.source_markdown,
         embeds: input.embeds,
@@ -4478,6 +4478,7 @@ fn append_revision_in_transaction_with_category(
         document_id,
         base_revision_id,
         title,
+        subtitle,
         slug,
         source_markdown,
         embeds,
@@ -4512,6 +4513,7 @@ fn append_revision_in_transaction_with_category(
         revision_number: (revision_number + 1) as u64,
         parent_revision_id: Some(base_revision_id),
         title,
+        subtitle,
         slug,
         source_markdown,
         embeds,
@@ -4588,8 +4590,9 @@ fn append_revision_in_transaction_with_category(
 }
 
 fn with_computed_hash(mut revision: RevisionSnapshot) -> RevisionSnapshot {
-    revision.content_hash = content_hash_with_ai_summary(
+    revision.content_hash = content_hash_with_subtitle_and_ai_summary(
         &revision.title,
+        revision.subtitle.as_deref(),
         &revision.slug,
         &revision.source_markdown,
         &revision.embeds,
@@ -6362,6 +6365,7 @@ fn offline_import_document(site_id: Uuid, source: &str, post: &OfflineImportPost
     NewDocument {
         site_id,
         title: post.title.clone(),
+        subtitle: None,
         slug: post.slug.clone(),
         source_markdown: post.source_markdown.clone(),
         embeds: Vec::new(),
@@ -7872,6 +7876,7 @@ mod tests {
                 document_id,
                 base_revision_id,
                 title: "AI revised post".into(),
+                subtitle: None,
                 slug: "ai-revised-post".into(),
                 source_markdown: "# AI revised post\n\nReviewed text.".into(),
                 embeds: vec![],
@@ -7950,6 +7955,7 @@ mod tests {
         NewDocument {
             site_id,
             title: title.into(),
+            subtitle: None,
             slug: slug.into(),
             source_markdown: format!("# {title}"),
             embeds: vec![],
@@ -8006,6 +8012,7 @@ mod tests {
             revision_number: 1,
             parent_revision_id: None,
             title: "Legacy published post".into(),
+            subtitle: None,
             slug: "legacy-published-post".into(),
             source_markdown: "still visible after migration".into(),
             embeds: vec![],
@@ -8120,6 +8127,7 @@ mod tests {
             revision_number: 1,
             parent_revision_id: None,
             title: "Version seven post".into(),
+            subtitle: None,
             slug: "version-seven-post".into(),
             source_markdown: "Still readable after migration.".into(),
             embeds: vec![],
@@ -8202,6 +8210,7 @@ mod tests {
                     document_id,
                     base_revision_id: revision_id,
                     title: "Version eight draft".into(),
+                    subtitle: None,
                     slug: "version-eight-draft".into(),
                     source_markdown: "The trigger creates this placement.".into(),
                     embeds: vec![],
@@ -8691,6 +8700,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: document.current_revision_id,
                     title: "Moved policy".into(),
+                    subtitle: None,
                     slug: "moved-policy".into(),
                     source_markdown: "# Moved policy".into(),
                     embeds: vec![],
@@ -8988,6 +8998,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: document.current_revision_id,
                     title: "Inherited draft".into(),
+                    subtitle: None,
                     slug: "hello".into(),
                     source_markdown: "The category is inherited.".into(),
                     embeds: vec![],
@@ -9017,6 +9028,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: inherited.id,
                     title: "Moved draft".into(),
+                    subtitle: None,
                     slug: "hello".into(),
                     source_markdown: "Only the draft moves to Lab.".into(),
                     embeds: vec![],
@@ -9138,6 +9150,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: moved.id,
                     title: "Archived category draft".into(),
+                    subtitle: None,
                     slug: "hello-next".into(),
                     source_markdown: "Drafting remains possible before moving it elsewhere.".into(),
                     embeds: vec![],
@@ -9521,6 +9534,7 @@ mod tests {
                     document_id: moving.id,
                     base_revision_id: moving.current_revision_id,
                     title: "Moved document".into(),
+                    subtitle: None,
                     slug: "target".into(),
                     source_markdown: "The final route is new/target.".into(),
                     embeds: vec![],
@@ -9599,6 +9613,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: document.current_revision_id,
                     title: "Moved to root".into(),
+                    subtitle: None,
                     slug: "entry-root".into(),
                     source_markdown: "Placement history remains portable.".into(),
                     embeds: vec![],
@@ -10455,6 +10470,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: document.current_revision_id,
                     title: "Editor revision".into(),
+                    subtitle: None,
                     slug: "editor-revision".into(),
                     source_markdown: "Collaborative draft only.".into(),
                     embeds: vec![],
@@ -10532,6 +10548,7 @@ mod tests {
             document_id: document.id,
             base_revision_id: document.current_revision_id,
             title: "Stolen".into(),
+            subtitle: None,
             slug: "stolen".into(),
             source_markdown: "must not persist".into(),
             embeds: vec![],
@@ -10665,6 +10682,7 @@ mod tests {
                     document_id: document.id,
                     base_revision_id: document.current_revision_id,
                     title: "Unpublished rewrite".into(),
+                    subtitle: None,
                     slug: "unpublished-rewrite".into(),
                     source_markdown: "This is still private".into(),
                     embeds: vec![],
@@ -11078,6 +11096,7 @@ mod tests {
                     document_id: draft.id,
                     base_revision_id: draft.current_revision_id,
                     title: "Series post moved".into(),
+                    subtitle: None,
                     slug: "series-post".into(),
                     source_markdown: "A private move must not affect readers.".into(),
                     embeds: vec![],
@@ -11440,6 +11459,7 @@ mod tests {
                     document_id: moving.id,
                     base_revision_id: moving.current_revision_id,
                     title: moving.revision.title.clone(),
+                    subtitle: None,
                     slug: moving.revision.slug.clone(),
                     source_markdown: "Now part of the ordered research Series.".into(),
                     embeds: vec![],
@@ -11770,6 +11790,7 @@ mod tests {
                     document_id: earliest_tied.id,
                     base_revision_id: earliest_tied.current_revision_id,
                     title: format!("{} republished", earliest_tied.revision.title),
+                    subtitle: None,
                     slug: earliest_tied.revision.slug.clone(),
                     source_markdown: "A later publication must not change first-written order."
                         .into(),
@@ -11882,6 +11903,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id,
                 title: "First".into(),
+                subtitle: Some("The first author-written deck".into()),
                 slug: "first".into(),
                 source_markdown: "# First".into(),
                 embeds: vec![],
@@ -11901,6 +11923,7 @@ mod tests {
                 document_id: document.id,
                 base_revision_id: document.current_revision_id,
                 title: "Renamed".into(),
+                subtitle: Some("A revised author-written deck".into()),
                 slug: "renamed".into(),
                 source_markdown: "# Renamed".into(),
                 embeds: vec![],
@@ -11938,6 +11961,14 @@ mod tests {
         let export = repository.export_site(site_id).unwrap();
         assert_eq!(export.documents.len(), 1);
         assert_eq!(export.documents[0].revisions.len(), 2);
+        assert_eq!(
+            export.documents[0].revisions[0].subtitle.as_deref(),
+            Some("The first author-written deck"),
+        );
+        assert_eq!(
+            export.documents[0].revisions[1].subtitle.as_deref(),
+            Some("A revised author-written deck"),
+        );
         assert_eq!(export.documents[0].routes.len(), 2);
         assert!(
             export.documents[0]
@@ -11951,6 +11982,14 @@ mod tests {
         let history = repository.list_revisions(document.id, 10).unwrap();
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].id, revision.id);
+        assert_eq!(
+            history[0].subtitle.as_deref(),
+            Some("A revised author-written deck"),
+        );
+        assert_eq!(
+            history[1].subtitle.as_deref(),
+            Some("The first author-written deck"),
+        );
         assert_eq!(history[1].revision_number, 1);
     }
 
@@ -11961,6 +12000,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: Uuid::now_v7(),
                 title: "Post".into(),
+                subtitle: None,
                 slug: "post".into(),
                 source_markdown: "one".into(),
                 embeds: vec![],
@@ -11975,6 +12015,7 @@ mod tests {
             document_id: document.id,
             base_revision_id: document.current_revision_id,
             title: "Post".into(),
+            subtitle: None,
             slug: "post".into(),
             source_markdown: "two".into(),
             embeds: vec![],
@@ -12013,6 +12054,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id,
                 title: "Original".into(),
+                subtitle: None,
                 slug: "original".into(),
                 source_markdown: "# Original".into(),
                 embeds: vec![],
@@ -12057,6 +12099,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: Uuid::now_v7(),
                 title: "Original".into(),
+                subtitle: None,
                 slug: "original".into(),
                 source_markdown: "# Original".into(),
                 embeds: vec![],
@@ -12104,6 +12147,7 @@ mod tests {
             .create_document(NewDocument {
                 site_id: Uuid::now_v7(),
                 title: "Original".into(),
+                subtitle: None,
                 slug: "original".into(),
                 source_markdown: "# Original".into(),
                 embeds: vec![],
@@ -12147,6 +12191,7 @@ mod tests {
                 .create_document(NewDocument {
                     site_id,
                     title: "Backup".into(),
+                    subtitle: None,
                     slug: "backup".into(),
                     source_markdown: "durable".into(),
                     embeds: vec![],

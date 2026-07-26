@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub const CONTENT_SCHEMA_VERSION: &str = "1.0";
 pub const AI_SUMMARY_SOURCE_HASH_VERSION: &str = "osb-ai-summary-source/1";
 pub const AI_SUMMARY_MAX_CHARACTERS: usize = 2_000;
+pub const SUBTITLE_MAX_CHARACTERS: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -167,6 +168,8 @@ pub struct RevisionSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_revision_id: Option<Uuid>,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
     pub slug: String,
     pub source_markdown: String,
     #[serde(default)]
@@ -204,6 +207,8 @@ pub struct DocumentSnapshot {
 pub struct NewDocument {
     pub site_id: Uuid,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
     pub slug: String,
     pub source_markdown: String,
     #[serde(default)]
@@ -225,6 +230,8 @@ pub struct ProposedRevision {
     pub document_id: Uuid,
     pub base_revision_id: Uuid,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
     pub slug: String,
     pub source_markdown: String,
     #[serde(default)]
@@ -245,6 +252,7 @@ pub struct ProposedRevision {
 impl NewDocument {
     pub fn validate(&self) -> Result<(), ContentValidationError> {
         validate_title(&self.title)?;
+        validate_subtitle(self.subtitle.as_deref())?;
         validate_slug(&self.slug)?;
         validate_markdown(&self.source_markdown)?;
         validate_embeds(&self.embeds)?;
@@ -260,6 +268,7 @@ impl NewDocument {
 impl ProposedRevision {
     pub fn validate(&self) -> Result<(), ContentValidationError> {
         validate_title(&self.title)?;
+        validate_subtitle(self.subtitle.as_deref())?;
         validate_slug(&self.slug)?;
         validate_markdown(&self.source_markdown)?;
         validate_embeds(&self.embeds)?;
@@ -299,6 +308,28 @@ pub fn content_hash_with_ai_summary(
     ontology: Option<&OntologySidecar>,
     ai_summary: Option<&AiSummary>,
 ) -> String {
+    content_hash_with_subtitle_and_ai_summary(
+        title, None, slug, markdown, embeds, intent, ontology, ai_summary,
+    )
+}
+
+/// Computes the immutable revision hash including an optional author-written
+/// subtitle.
+///
+/// The subtitle extension is deliberately appended after the legacy payload.
+/// Revisions without a subtitle therefore retain their exact historical hash,
+/// including revisions that already carry an AI summary.
+#[allow(clippy::too_many_arguments)]
+pub fn content_hash_with_subtitle_and_ai_summary(
+    title: &str,
+    subtitle: Option<&str>,
+    slug: &str,
+    markdown: &str,
+    embeds: &[EmbedReference],
+    intent: Option<&IntentLayer>,
+    ontology: Option<&OntologySidecar>,
+    ai_summary: Option<&AiSummary>,
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(CONTENT_SCHEMA_VERSION.as_bytes());
     hasher.update([0]);
@@ -322,6 +353,12 @@ pub fn content_hash_with_ai_summary(
         hasher.update(b"ai-summary-v1");
         hasher.update([0]);
         hasher.update(serde_json::to_vec(value).expect("AI summary serialization is infallible"));
+    }
+    if let Some(value) = subtitle {
+        hasher.update([0]);
+        hasher.update(b"subtitle-v1");
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
     }
     format!("sha256:{:x}", hasher.finalize())
 }
@@ -407,6 +444,22 @@ fn validate_title(value: &str) -> Result<(), ContentValidationError> {
     let length = value.trim().chars().count();
     if !(1..=300).contains(&length) || value.contains('\0') {
         return Err(ContentValidationError::InvalidTitle);
+    }
+    Ok(())
+}
+
+fn validate_subtitle(value: Option<&str>) -> Result<(), ContentValidationError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let length = value.trim().chars().count();
+    if value != value.trim()
+        || !(1..=SUBTITLE_MAX_CHARACTERS).contains(&length)
+        || value.chars().any(|character| {
+            character.is_control() || character == '\u{2028}' || character == '\u{2029}'
+        })
+    {
+        return Err(ContentValidationError::InvalidSubtitle);
     }
     Ok(())
 }
@@ -563,6 +616,8 @@ fn validate_embeds(values: &[EmbedReference]) -> Result<(), ContentValidationErr
 pub enum ContentValidationError {
     #[error("title must be 1 to 300 characters and contain no null bytes")]
     InvalidTitle,
+    #[error("subtitle must be 1 to 500 characters on one line and contain no control characters")]
+    InvalidSubtitle,
     #[error("slug is not a safe single path segment")]
     InvalidSlug,
     #[error("Markdown exceeds the size limit or contains a null byte")]
@@ -611,6 +666,7 @@ mod tests {
             document_id: Uuid::now_v7(),
             base_revision_id: Uuid::now_v7(),
             title: "Portable first".into(),
+            subtitle: None,
             slug: "portable-first".into(),
             source_markdown: "# Portable first\n".into(),
             embeds: vec![],
@@ -683,10 +739,36 @@ mod tests {
             legacy,
             content_hash_with_ai_summary("T", "t", "text", &[], None, None, None)
         );
+        assert_eq!(
+            legacy,
+            content_hash_with_subtitle_and_ai_summary(
+                "T",
+                None,
+                "t",
+                "text",
+                &[],
+                None,
+                None,
+                None,
+            )
+        );
 
         let summary = reviewed_summary("T", "text");
         let summarized =
             content_hash_with_ai_summary("T", "t", "text", &[], None, None, Some(&summary));
+        assert_eq!(
+            summarized,
+            content_hash_with_subtitle_and_ai_summary(
+                "T",
+                None,
+                "t",
+                "text",
+                &[],
+                None,
+                None,
+                Some(&summary),
+            )
+        );
         assert_ne!(legacy, summarized);
 
         let mut different_provenance = summary;
@@ -702,6 +784,58 @@ mod tests {
                 None,
                 Some(&different_provenance)
             )
+        );
+    }
+
+    #[test]
+    fn subtitle_is_validated_and_covered_without_changing_legacy_hashes() {
+        validate_subtitle(None).unwrap();
+        validate_subtitle(Some("An author-written deck")).unwrap();
+        for invalid in [
+            "",
+            " \t ",
+            " leading",
+            "trailing ",
+            "two\nlines",
+            "two\r\nlines",
+            "contains\u{0085}control",
+            "contains\u{2028}separator",
+        ] {
+            assert_eq!(
+                validate_subtitle(Some(invalid)),
+                Err(ContentValidationError::InvalidSubtitle),
+            );
+        }
+        let too_long = "가".repeat(SUBTITLE_MAX_CHARACTERS + 1);
+        assert_eq!(
+            validate_subtitle(Some(&too_long)),
+            Err(ContentValidationError::InvalidSubtitle),
+        );
+
+        let legacy = content_hash("T", "t", "text", &[], None, None);
+        let with_subtitle = content_hash_with_subtitle_and_ai_summary(
+            "T",
+            Some("An author-written deck"),
+            "t",
+            "text",
+            &[],
+            None,
+            None,
+            None,
+        );
+        assert_ne!(legacy, with_subtitle);
+        assert_ne!(
+            with_subtitle,
+            content_hash_with_subtitle_and_ai_summary(
+                "T",
+                Some("A different deck"),
+                "t",
+                "text",
+                &[],
+                None,
+                None,
+                None,
+            ),
         );
     }
 
@@ -777,6 +911,7 @@ mod tests {
             document_id: Uuid::now_v7(),
             base_revision_id: Uuid::now_v7(),
             title: "Bounded".into(),
+            subtitle: None,
             slug: "bounded".into(),
             source_markdown: "text".into(),
             embeds: vec![EmbedReference {

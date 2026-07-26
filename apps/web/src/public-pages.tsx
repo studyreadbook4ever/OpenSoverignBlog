@@ -112,6 +112,10 @@ export function FeedPage() {
       <aside className="wiki-sidebar" aria-label={text("홈 안내", "Home guide")}>
         <section>
           <h2>OpenSoverignBlog</h2>
+          <p>{text(
+            "AI와 인간이 함께 사는 웹사이트입니다",
+            "A website where AI and humans live together.",
+          )}</p>
         </section>
         <nav aria-label={text("빠른 이동", "Quick navigation")}>
           <strong>{text("빠른 이동", "Quick navigation")}</strong>
@@ -289,7 +293,7 @@ function DensePostContent({ post }: { post: FeedPostSummary }) {
     <>
       <div className="wiki-post-copy">
         <h3><AppLink href={href}>{post.title}</AppLink></h3>
-        <p>{post.excerpt}</p>
+        <p>{post.subtitle ?? post.excerpt}</p>
         <div className="wiki-post-meta">
           <AppLink href={`/@${encodeURIComponent(post.blog.handle)}`}>@{post.blog.handle}</AppLink>
           <span>{post.author.displayName}</span>
@@ -330,6 +334,7 @@ function legacyFeedPost(post: PostSummary): FeedPostSummary {
   return {
     id: post.id,
     title: post.title,
+    ...(post.subtitle ? { subtitle: post.subtitle } : {}),
     slug: post.slug,
     excerpt: post.hasIntentView
       ? text("작성자의 의도와 portable Markdown을 함께 보존한 글입니다.", "This post preserves the author's intent alongside portable Markdown.")
@@ -413,7 +418,7 @@ export function BlogPage({ handle }: { handle: string }) {
                     <AuthorshipBadge value={post.authorship} />
                   </div>
                   <h3><AppLink href={publicFeedPostPath(post)}>{post.title}</AppLink></h3>
-                  <p>{post.excerpt}</p>
+                  <p>{post.subtitle ?? post.excerpt}</p>
                 </div>
                 <span className="list-arrow" aria-hidden="true">↗</span>
               </article>
@@ -446,6 +451,7 @@ export function ArticlePage({
 }) {
   const [view, setView] = useState<ViewMode>(() => articleViewFromSearch(window.location.search));
   const [post, setPost] = useState<BlogPostView>();
+  const [seriesNavigation, setSeriesNavigation] = useState<SeriesPostNavigationState>();
   const [error, setError] = useState<string>();
   usePublicReaderContentStatus(error ? "error" : post ? "ready" : "pending");
   const legacyArticle = legacy;
@@ -460,6 +466,7 @@ export function ArticlePage({
   useEffect(() => {
     const controller = new AbortController();
     setPost(undefined);
+    setSeriesNavigation(undefined);
     setError(undefined);
     void loadArticle(
       handle,
@@ -489,6 +496,15 @@ export function ArticlePage({
           return;
         }
         setPost(value);
+        void loadSeriesPostNavigation(value, controller.signal)
+          .then((navigation) => {
+            if (!controller.signal.aborted) setSeriesNavigation(navigation);
+          })
+          .catch(() => {
+            // Series context is progressive navigation. A transient collection
+            // failure must never make the already-loaded article unreadable.
+            if (!controller.signal.aborted) setSeriesNavigation(undefined);
+          });
       })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) setError(asMessage(reason));
@@ -505,6 +521,7 @@ export function ArticlePage({
     ? storedAiSummary
     : undefined;
   const articleTheme = post.category?.themePreset ?? post.blog.theme.presetId;
+  const articleDeck = post.subtitle ?? post.excerpt;
   const selectView = (nextView: ViewMode) => {
     if (nextView === view && articleViewFromSearch(window.location.search) === nextView) return;
     navigate(articleHref({
@@ -541,7 +558,7 @@ export function ArticlePage({
             <AuthorshipBadge value={post.authorship} />
           </div>
           <h1>{post.title}</h1>
-          {post.excerpt ? <p className="article-deck">{post.excerpt}</p> : null}
+          {articleDeck ? <p className="article-deck">{articleDeck}</p> : null}
           <div className="article-author-row">
             <span className="avatar" aria-hidden="true">{initials(post.author.displayName)}</span>
             <div><strong>{post.author.displayName}</strong><span>{text("글쓴이", "Author")}</span></div>
@@ -564,6 +581,13 @@ export function ArticlePage({
           </section>
         ) : null}
         <ArticleBody capabilities={capabilities} html={post.artifact.html} />
+        {seriesNavigation ? (
+          <SeriesPostNavigation
+            navigation={seriesNavigation}
+            post={post}
+            view={view}
+          />
+        ) : null}
         <details className="artifact-proof">
           <summary>{text("문서 무결성 정보", "Document integrity")}</summary>
           <div><span>{post.artifact.rendererVersion}</span><code>{post.artifact.artifactHash}</code></div>
@@ -574,6 +598,128 @@ export function ArticlePage({
       </div>
     </>
   );
+}
+
+interface SeriesPostNavigationState {
+  seriesSlug: string;
+  seriesTitle: string;
+  position: number;
+  total: number;
+  previous?: FeedPostSummary;
+  next?: FeedPostSummary;
+}
+
+async function loadSeriesPostNavigation(
+  post: BlogPostView,
+  signal: AbortSignal,
+): Promise<SeriesPostNavigationState | undefined> {
+  if (!post.category) return undefined;
+  try {
+    const response = post.blog.isPrimary
+      ? await client.getPrimarySeriesPosts(post.category.slug, signal)
+      : await client.getBlogSeriesPosts(post.blog.handle, post.category.slug, signal);
+    const position = response.items.findIndex((candidate) => candidate.id === post.id);
+    if (position < 0 || response.items.length < 2) return undefined;
+    return {
+      seriesSlug: post.category.slug,
+      seriesTitle: post.category.title,
+      position: position + 1,
+      total: response.items.length,
+      ...(position > 0 ? { previous: response.items[position - 1] } : {}),
+      ...(position + 1 < response.items.length ? { next: response.items[position + 1] } : {}),
+    };
+  } catch (reason) {
+    // A category that is not backed by a first-class Series returns 404.
+    if (isNotFound(reason)) return undefined;
+    throw reason;
+  }
+}
+
+function SeriesPostNavigation({
+  navigation,
+  post,
+  view,
+}: {
+  navigation: SeriesPostNavigationState;
+  post: BlogPostView;
+  view: ViewMode;
+}) {
+  const seriesHref = publicCategoryPath({
+    handle: post.blog.handle,
+    categorySlug: navigation.seriesSlug,
+    primary: post.blog.isPrimary,
+  });
+  return (
+    <nav
+      aria-labelledby="series-post-navigation-title"
+      className="series-post-navigation"
+    >
+      <div className="series-post-navigation-heading">
+        <div>
+          <p className="eyebrow">Series</p>
+          <h2 id="series-post-navigation-title">
+            <AppLink href={seriesHref}>{navigation.seriesTitle}</AppLink>
+          </h2>
+        </div>
+        <p
+          aria-label={text(
+            `시리즈 전체 ${navigation.total}편 중 ${navigation.position}번째 글`,
+            `Post ${navigation.position} of ${navigation.total} in this series`,
+          )}
+          className="series-post-navigation-position"
+        >
+          {navigation.position} / {navigation.total}
+        </p>
+      </div>
+      <div className="series-post-navigation-links">
+        {navigation.previous ? (
+          <AppLink
+            aria-label={text(
+              `이전 글: ${navigation.previous.title}`,
+              `Previous post: ${navigation.previous.title}`,
+            )}
+            className="series-post-navigation-link series-post-navigation-previous"
+            href={seriesPostHref(navigation.previous, view)}
+            rel="prev"
+          >
+            <span className="series-post-navigation-direction">
+              <span aria-hidden="true" className="series-post-navigation-arrow">←</span>
+              {text("이전 글", "Previous post")}
+            </span>
+            <strong>{navigation.previous.title}</strong>
+          </AppLink>
+        ) : <span aria-hidden="true" className="series-post-navigation-spacer" />}
+        {navigation.next ? (
+          <AppLink
+            aria-label={text(
+              `다음 글: ${navigation.next.title}`,
+              `Next post: ${navigation.next.title}`,
+            )}
+            className="series-post-navigation-link series-post-navigation-next"
+            href={seriesPostHref(navigation.next, view)}
+            rel="next"
+          >
+            <span className="series-post-navigation-direction">
+              {text("다음 글", "Next post")}
+              <span aria-hidden="true" className="series-post-navigation-arrow">→</span>
+            </span>
+            <strong>{navigation.next.title}</strong>
+          </AppLink>
+        ) : <span aria-hidden="true" className="series-post-navigation-spacer" />}
+      </div>
+    </nav>
+  );
+}
+
+function seriesPostHref(post: FeedPostSummary, view: ViewMode): string {
+  return articleHref({
+    handle: post.blog.handle,
+    slug: post.slug,
+    legacy: false,
+    view,
+    ...(post.category ? { categorySlug: post.category.slug } : {}),
+    primary: Boolean(post.category && post.blog.isPrimary),
+  });
 }
 
 function publicAiProviderLabel(provider: AiSummary["provenance"]["provider"]): string {

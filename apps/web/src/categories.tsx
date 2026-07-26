@@ -242,7 +242,7 @@ function CategoryPostRow({
           <span>{post.author.displayName}</span>
         </div>
         <h3><AppLink href={href}>{post.title}</AppLink></h3>
-        <p>{post.excerpt}</p>
+        <p>{post.subtitle ?? post.excerpt}</p>
       </div>
       <span className="list-arrow" aria-hidden="true">↗</span>
     </article>

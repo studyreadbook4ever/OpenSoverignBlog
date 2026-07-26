@@ -48,7 +48,7 @@ CONTROL_REQUIRED = (
     "osb.install.toml",
     "osb.lock.json",
 )
-CONTROL_OPTIONAL = ("osb.intent.json", "admin-access-key.txt")
+CONTROL_OPTIONAL = ("osb.intent.json", "references.md", "admin-access-key.txt")
 MAX_CHANNEL_BYTES = 64 * 1024
 MAX_CONTROL_BYTES = 16 * 1024 * 1024
 
@@ -521,12 +521,20 @@ def command_compose_plan_verify(args: argparse.Namespace) -> None:
     if blog.get("privileged") is True:
         abort("candidate blog service must not be privileged")
 
+    handoff_source = args.control_root / "osb.intent.json"
+    if not handoff_source.is_file():
+        handoff_source = args.source_root / "osb.intent.example.json"
+    references_source = args.control_root / "references.md"
+    if not references_source.is_file():
+        references_source = args.source_root / "deploy" / "references.md"
     expected_binds = {
         "/backups": (str(args.backup_root), False),
         "/config/config.toml": (str(args.control_root / "config.toml"), True),
+        "/config/osb.intent.json": (str(handoff_source), True),
         "/config/custom.css": (str(args.control_root / "custom.css"), True),
         "/config/osb.install.toml": (str(args.control_root / "osb.install.toml"), True),
         "/config/osb.lock.json": (str(args.control_root / "osb.lock.json"), True),
+        "/config/references.md": (str(references_source), True),
     }
     mounts = blog["volumes"]
     expected_blog_targets = {"/data", *expected_binds}
@@ -979,7 +987,7 @@ def command_self_test(_: argparse.Namespace) -> None:
     repository_example = Path(__file__).resolve().parent.parent / "osb.lock.example.json"
     if repository_example.is_file():
         example_lock = load_lock(repository_example)
-        assert example_lock["engine"]["version"] == "0.1.2"
+        assert example_lock["engine"]["version"] == "0.1.3"
         assert example_lock["selection"]["cache"] == "redis_managed"
     with tempfile.TemporaryDirectory(prefix="osb-update-support-test-") as raw:
         root = Path(raw)
@@ -995,6 +1003,8 @@ def command_self_test(_: argparse.Namespace) -> None:
             )
 
             retained_lock = json.loads(json.dumps(example_lock))
+            # Keep the retained-DLC promotion fixture as the historical 0.1.2 -> 0.2.0 transition.
+            retained_lock["engine"]["version"] = "0.1.2"
             removed = retained_lock["dlcs"].pop()
             retained_lock["retainedDlcs"] = [
                 {
@@ -1182,10 +1192,19 @@ def command_self_test(_: argparse.Namespace) -> None:
         assert "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT=DAN-TEST-MOBILE-BOTTOM-0001" in rendered
         assert "OSB_IMAGE=sha256:abc" in rendered
         assert "OSB_DATA_VOLUME=v2" in rendered
+        (root / "deploy").mkdir()
+        (root / "osb.intent.example.json").write_text("{}\n", encoding="utf-8")
+        (root / "deploy" / "references.md").write_text(
+            "# Default references\n", encoding="utf-8"
+        )
         deployment = root / "deployment"
         deployment.mkdir()
         for name in CONTROL_REQUIRED:
             (deployment / name).write_text(f"original-{name}\n", encoding="utf-8")
+        (deployment / "osb.intent.json").write_text("{}\n", encoding="utf-8")
+        (deployment / "references.md").write_text(
+            "# Deployment references\n", encoding="utf-8"
+        )
         backup_root = deployment / ".osb-backups"
         backup_root.mkdir()
         (deployment / ".env").write_text(
@@ -1221,9 +1240,11 @@ def command_self_test(_: argparse.Namespace) -> None:
                             }
                             for source_name, target in (
                                 ("config.toml", "/config/config.toml"),
+                                ("osb.intent.json", "/config/osb.intent.json"),
                                 ("custom.css", "/config/custom.css"),
                                 ("osb.install.toml", "/config/osb.install.toml"),
                                 ("osb.lock.json", "/config/osb.lock.json"),
+                                ("references.md", "/config/references.md"),
                             )
                         ],
                     ],
@@ -1271,7 +1292,6 @@ def command_self_test(_: argparse.Namespace) -> None:
             pass
         else:
             raise AssertionError("candidate Compose verifier accepted a bind-aliased named volume")
-        (deployment / "osb.intent.json").write_text("{}\n", encoding="utf-8")
         state = deployment / ".osb-update"
         state.mkdir(mode=0o700)
         snapshot = state / "test-snapshot"
