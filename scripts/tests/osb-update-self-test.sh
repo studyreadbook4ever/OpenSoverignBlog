@@ -92,7 +92,7 @@ trap cleanup EXIT HUP INT TERM
 python3 "$SUPPORT" lock-info \
     --file "$REPOSITORY_ROOT/osb.lock.example.json" \
     --output "$TEST_TEMP/example-lock"
-grep -Fx '0.1.4' "$TEST_TEMP/example-lock/version" >/dev/null
+grep -Fx '0.1.5' "$TEST_TEMP/example-lock/version" >/dev/null
 grep -Fx 'redis_managed' "$TEST_TEMP/example-lock/cache" >/dev/null
 
 "$UPDATER" --offline --check > "$TEST_TEMP/check.log"

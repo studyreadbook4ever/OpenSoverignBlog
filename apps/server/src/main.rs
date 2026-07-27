@@ -3847,6 +3847,12 @@ async fn public_post(
     let content_js = absolute_public_url(&state.seo_policy, "/assets/osb-content.js")?;
     let intent_label = ui_text(state.language, "작성자 보기", "Author intent");
     let markdown_label = ui_text(state.language, "Markdown 원문", "Markdown source");
+    let subtitle_html = document
+        .revision
+        .subtitle
+        .as_deref()
+        .map(|subtitle| format!("<p class=\"article-deck\">{}</p>", escape_xml(subtitle)))
+        .unwrap_or_default();
     let body = format!(
         "<!doctype html><html lang=\"{language}\"><head><meta charset=\"utf-8\">\
          <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
@@ -3859,8 +3865,10 @@ async fn public_post(
          <body>{authorship}<header class=\"osb-view-switcher\">\
          <a href=\"?view=intent\"{intent_selected}>{intent_label}</a>\
          <a href=\"?view=markdown_source\"{markdown_selected}>{markdown_label}</a></header>\
-         <main><article data-revision=\"{}\">{}</article></main></body></html>",
+         <main><article data-revision=\"{}\"><header class=\"article-header\"><h1>{}</h1>\
+         {subtitle_html}</header>{}</article></main></body></html>",
         document.revision.id,
+        escape_xml(&document.revision.title),
         artifact.html,
         authorship = authorship_badge(&document.revision.authorship, state.language),
         language = state.language.as_str(),
@@ -8195,6 +8203,82 @@ mod tests {
         let fallback_article = text(fallback_article).await;
         assert!(fallback_article.contains(
             "<meta name=\"description\" content=\"Fallback sentence for readers. More detail.\">"
+        ));
+        assert!(!fallback_article.contains("<p class=\"article-deck\">"));
+    }
+
+    #[tokio::test]
+    async fn legacy_ssr_keeps_escaped_authored_subtitles_separate_from_meta_fallbacks() {
+        let state = test_state(None);
+        let site = state.repository.ensure_legacy_site(state.site_id).unwrap();
+        let owner = state.repository.get_user_by_id(site.owner_user_id).unwrap();
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            None,
+            "Legacy <Title> & \"quoted\"",
+            Some("Legacy deck <script>alert(1)</script> & \"quoted\""),
+            "legacy-with-deck",
+            "Generated fallback must not replace the author deck.",
+        );
+        publish_owned_test_document(
+            &state.repository,
+            &owner,
+            site.id,
+            None,
+            "Legacy post without a deck",
+            None,
+            "legacy-without-deck",
+            "Fallback sentence for search engines.\n\nMore detail.",
+        );
+        let router = app(state);
+
+        let deck_article = router
+            .clone()
+            .oneshot(
+                Request::get("/blog/legacy-with-deck")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(deck_article.status(), StatusCode::OK);
+        let deck_article = text(deck_article).await;
+        let escaped_deck =
+            "Legacy deck &lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;quoted&quot;";
+        assert!(deck_article.contains(&format!(
+            "<meta name=\"description\" content=\"{escaped_deck}\">"
+        )));
+        assert!(deck_article.contains(&format!("<p class=\"article-deck\">{escaped_deck}</p>")));
+        assert_eq!(
+            deck_article.matches("<p class=\"article-deck\">").count(),
+            1
+        );
+        assert!(deck_article.contains(
+            "<header class=\"article-header\"><h1>Legacy &lt;Title&gt; &amp; &quot;quoted&quot;</h1>"
+        ));
+        assert_eq!(deck_article.matches("<h1>").count(), 1);
+        assert!(!deck_article.contains("<h1>Legacy <Title>"));
+        assert!(!deck_article.contains("<script>alert(1)</script>"));
+        assert!(!deck_article.contains(
+            "<p class=\"article-deck\">Generated fallback must not replace the author deck.</p>"
+        ));
+
+        let fallback_article = router
+            .oneshot(
+                Request::get("/blog/legacy-without-deck")
+                    .header(header::ACCEPT, "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fallback_article.status(), StatusCode::OK);
+        let fallback_article = text(fallback_article).await;
+        assert!(fallback_article.contains(
+            "<meta name=\"description\" content=\"Fallback sentence for search engines. More detail.\">"
         ));
         assert!(!fallback_article.contains("<p class=\"article-deck\">"));
     }

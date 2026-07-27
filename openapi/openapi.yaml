@@ -2,7 +2,7 @@ openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: OpenSoverignBlog HTTP API
-  version: 0.1.4
+  version: 0.1.5
   description: |
     Contract for the routes mounted by the reference Rust server. This describes
     implemented wire behavior, not every capability that a future plugin may add.
