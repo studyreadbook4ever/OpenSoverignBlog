@@ -166,7 +166,7 @@ function CreateSeriesForm({ onCreated }: { onCreated: (series: SeriesSummary) =>
                 setTitle(value);
                 if (!slugTouched) setSlug(slugify(value));
               }}
-              placeholder={text("양자 컴퓨팅", "Quantum computing")}
+              placeholder={text("연구 노트", "Research notes")}
               required
               value={title}
             />
@@ -183,7 +183,7 @@ function CreateSeriesForm({ onCreated }: { onCreated: (series: SeriesSummary) =>
                 setSlug(event.target.value.toLowerCase());
               }}
               pattern="[a-z0-9]+(?:-[a-z0-9]+)*"
-              placeholder="yangja"
+              placeholder="research-notes"
               required
               value={slug}
             /></span>

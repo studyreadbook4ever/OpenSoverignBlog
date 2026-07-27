@@ -95,7 +95,8 @@
     "collaboration": false,
     "customCss": true,
     "agentDiscovery": true,
-    "deliveryOnly": false
+    "deliveryOnly": false,
+    "advertising": false
   },
   "dependencies": {
     "cache": {

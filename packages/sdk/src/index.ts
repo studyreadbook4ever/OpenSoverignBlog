@@ -103,6 +103,8 @@ export interface PublishArtifact {
 export interface PostSummary {
   id: string;
   title: string;
+  /** Optional author-written deck shown with the post title. */
+  subtitle?: string;
   /** Leaf slug retained for backwards-compatible display and routing logic. */
   slug: string;
   /** Published lookup path; category posts use `category/slug`. */
@@ -341,6 +343,8 @@ export interface CreateBlogInput {
 export interface FeedPostSummary {
   id: string;
   title: string;
+  /** Optional author-written deck; excerpt remains an automatic body summary. */
+  subtitle?: string;
   slug: string;
   excerpt: string;
   publishedAt: string;
@@ -369,22 +373,54 @@ export interface HomeSeriesSection {
   items: FeedPostSummary[];
 }
 
+export interface HomePostUnit {
+  kind: "post";
+  post: FeedPostSummary;
+}
+
+export interface HomeSeriesUnit {
+  kind: "series";
+  series: SeriesSummary;
+  items: FeedPostSummary[];
+}
+
+export type HomeUnit = HomePostUnit | HomeSeriesUnit;
+
+export type HomePinTarget =
+  | { kind: "post"; id: string }
+  | { kind: "series"; id: string };
+
 export interface HomeResponse {
+  /**
+   * Authoritative ordered home units. Optional only while a newer SDK may
+   * encounter a pre-schema-10 server during a rolling upgrade.
+   */
+  units?: HomeUnit[];
+  /** @deprecated Use units. */
   pinnedItems: FeedPostSummary[];
+  /** @deprecated Use units. */
   recentItems: FeedPostSummary[];
-  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  /** @deprecated Use units. */
   categorySections?: HomeCategorySection[];
-  /** Optional so a newer SDK can tolerate a rolling upgrade from an older server. */
+  /** @deprecated Use units. */
   seriesSections?: HomeSeriesSection[];
 }
 
 export interface HomePinsResponse {
+  /**
+   * Authoritative combined post/series pin order. Optional only while a newer
+   * SDK may encounter a pre-schema-10 server during a rolling upgrade.
+   */
+  targets?: HomePinTarget[];
+  /** @deprecated Document-only compatibility projection. */
   documentIds: string[];
 }
 
 export interface PostView {
   id: string;
   title: string;
+  /** Optional author-written deck stored on this immutable revision. */
+  subtitle?: string;
   canonicalSlug: string;
   requestedSlug: string;
   revisionId: string;
@@ -452,11 +488,62 @@ export interface Capabilities {
   auth?: AdminAuthCapabilities;
   /** Optional instance-wide attribution, licensing, privacy, and policy page. */
   references?: ReferencesDescriptor;
+  /**
+   * Optional, public advertising configuration. Unit IDs are browser-facing
+   * placement identifiers; administrator credentials are never exposed here.
+   */
+  advertising?: AdvertisingCapabilities;
 }
 
 export interface ReferencesDescriptor {
   href: "/references";
   label: string;
+}
+
+export type AdvertisingPlacement = "top" | "bottom";
+export type AdvertisingViewport = "pc" | "mobile";
+export type AdvertisingConsentDecision = "unknown" | "granted" | "denied";
+
+export interface AdvertisingUnitDescriptor {
+  unitId: string;
+  width: number;
+  height: number;
+}
+
+export interface AdvertisingPlacementDescriptor {
+  pc: AdvertisingUnitDescriptor;
+  mobile: AdvertisingUnitDescriptor;
+}
+
+export interface AdvertisingConsentDescriptor {
+  required: true;
+  statusHref: string;
+  actionHref: string;
+  purposeIds: string[];
+  privacyHref: string;
+  policyHref: string;
+}
+
+/**
+ * A capability-gated Kakao AdFit configuration. Clients must wait for an
+ * explicit `granted` decision before creating provider markup or loading the
+ * advertised script.
+ */
+export interface AdvertisingCapabilities {
+  provider: "kakao-adfit";
+  scriptUrl: "https://t1.kakaocdn.net/kas/static/ba.min.js";
+  policyVersion: string;
+  consent: AdvertisingConsentDescriptor;
+  placements: Record<AdvertisingPlacement, AdvertisingPlacementDescriptor>;
+}
+
+export interface AdvertisingConsentStatus {
+  decision: AdvertisingConsentDecision;
+  policyVersion?: string;
+}
+
+export interface SetAdvertisingConsentInput {
+  decision: Exclude<AdvertisingConsentDecision, "unknown">;
 }
 
 export interface ReferencesPage {
@@ -557,6 +644,8 @@ export interface DiscoveryDocument {
     customCss: boolean;
     agentDiscovery: boolean;
     deliveryOnly: boolean;
+    /** Optional while clients may encounter a pre-advertising discovery document. */
+    advertising?: boolean;
   };
   dependencies: {
     cache: DiscoveryCacheDependency;
@@ -630,6 +719,8 @@ export type CodeRunResponse =
 
 export interface CreatePostInput {
   title: string;
+  /** Omit to publish no subtitle; values are validated as one canonical line. */
+  subtitle?: string;
   slug: string;
   sourceMarkdown: string;
   embeds?: EmbedReference[];
@@ -663,6 +754,8 @@ export interface RevisionSnapshot {
   revisionNumber: number;
   parentRevisionId?: string;
   title: string;
+  /** Optional author-written deck stored on this immutable revision. */
+  subtitle?: string;
   slug: string;
   sourceMarkdown: string;
   embeds: EmbedReference[];
@@ -684,6 +777,12 @@ export interface DocumentSnapshot {
   publishedRevisionId?: string;
   revision: RevisionSnapshot;
   categoryId?: string;
+  /**
+   * Category placement of the published revision in Studio responses.
+   * New servers always send either a UUID or null; the property stays optional
+   * so rolling-upgrade clients can still consume responses from older servers.
+   */
+  publishedCategoryId?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -749,6 +848,89 @@ export interface ClientOptions {
   fetch?: typeof globalThis.fetch;
 }
 
+const ASSET_MEDIA_EXTENSIONS: Readonly<Record<string, string>> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/avif": "avif",
+};
+
+const ASSET_FILENAME_MEDIA_TYPES: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  avif: "image/avif",
+};
+
+/**
+ * Produces the display-only ASCII filename sent in an HTTP header.
+ *
+ * Fetch header values are ByteStrings, so passing a user's Unicode filename
+ * directly throws before any request is sent. The source filename remains
+ * available to callers for Markdown alt text; this transport label is never
+ * used as a storage path.
+ */
+export function assetUploadTransportFilename(filename: string, mediaType: string): string {
+  const basename = filename.split(/[\\/]/).at(-1) ?? "";
+  const rawStem = basename.replace(/\.[^.]*$/, "");
+  const sanitizedStem = rawStem
+    .normalize("NFKD")
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160);
+  const stem = /[A-Za-z0-9]/.test(sanitizedStem) ? sanitizedStem : "image";
+  const claimedExtension = ASSET_MEDIA_EXTENSIONS[mediaType.toLowerCase()];
+  const sourceExtension = basename.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+  const extension = claimedExtension ?? sourceExtension;
+  return extension ? `${stem}.${extension}` : stem;
+}
+
+async function assetUploadMediaType(bytes: Blob, filename: string): Promise<string> {
+  const claimed = bytes.type.split(";", 1)[0]?.trim().toLowerCase();
+  const prefix = new Uint8Array(await bytes.slice(0, 32).arrayBuffer());
+  if (
+    prefix.length >= 8
+    && prefix[0] === 0x89
+    && prefix[1] === 0x50
+    && prefix[2] === 0x4e
+    && prefix[3] === 0x47
+    && prefix[4] === 0x0d
+    && prefix[5] === 0x0a
+    && prefix[6] === 0x1a
+    && prefix[7] === 0x0a
+  ) return "image/png";
+  if (prefix.length >= 3 && prefix[0] === 0xff && prefix[1] === 0xd8 && prefix[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const ascii = new TextDecoder("latin1").decode(prefix);
+  if (ascii.startsWith("GIF87a") || ascii.startsWith("GIF89a")) return "image/gif";
+  if (
+    ascii.startsWith("RIFF")
+    && ascii.slice(8, 12) === "WEBP"
+    && ["VP8 ", "VP8L", "VP8X"].includes(ascii.slice(12, 16))
+  ) return "image/webp";
+  if (
+    prefix.length >= 16
+    && ascii.slice(4, 8) === "ftyp"
+    && (
+      ["avif", "avis"].includes(ascii.slice(8, 12))
+      || ascii.slice(16).includes("avif")
+      || ascii.slice(16).includes("avis")
+    )
+  ) return "image/avif";
+
+  if (claimed) return claimed;
+  const extension = filename.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+  if (extension && ASSET_FILENAME_MEDIA_TYPES[extension]) {
+    return ASSET_FILENAME_MEDIA_TYPES[extension];
+  }
+  return "application/octet-stream";
+}
+
 export class OpenSoverignBlogError extends Error {
   readonly status: number;
 
@@ -789,6 +971,35 @@ export class OpenSoverignBlogClient {
 
   async capabilities(signal?: AbortSignal): Promise<Capabilities> {
     return this.#request("/api/v1/capabilities", withSignal(signal));
+  }
+
+  async advertisingConsent(
+    statusHref = "/api/v1/advertising/consent",
+    signal?: AbortSignal,
+  ): Promise<AdvertisingConsentStatus> {
+    return this.#request(validateAdvertisingConsentHref(statusHref), {
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
+  }
+
+  async setAdvertisingConsent(
+    input: SetAdvertisingConsentInput,
+    actionHref = "/api/v1/advertising/consent",
+    signal?: AbortSignal,
+  ): Promise<AdvertisingConsentStatus> {
+    return this.#request(validateAdvertisingConsentHref(actionHref), {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: {
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+      },
+      ...withSignal(signal),
+    });
   }
 
   async references(signal?: AbortSignal): Promise<ReferencesPage> {
@@ -902,6 +1113,17 @@ export class OpenSoverignBlogClient {
     return this.#request("/api/v1/admin/home/pins", {
       method: "PUT",
       body: JSON.stringify({ documentIds }),
+      ...withSignal(signal),
+    });
+  }
+
+  async replaceHomePinTargets(
+    targets: HomePinTarget[],
+    signal?: AbortSignal,
+  ): Promise<HomePinsResponse> {
+    return this.#request("/api/v1/admin/home/pins", {
+      method: "PUT",
+      body: JSON.stringify({ targets }),
       ...withSignal(signal),
     });
   }
@@ -1303,12 +1525,13 @@ export class OpenSoverignBlogClient {
     filename: string,
     signal?: AbortSignal,
   ): Promise<AssetUploadResponse> {
+    const mediaType = await assetUploadMediaType(bytes, filename);
     return this.#request("/api/v1/studio/assets", {
       method: "POST",
       body: bytes,
       headers: {
-        "Content-Type": bytes.type || "application/octet-stream",
-        "X-OSB-Filename": filename,
+        "Content-Type": mediaType,
+        "X-OSB-Filename": assetUploadTransportFilename(filename, mediaType),
       },
       ...withSignal(signal),
     });
@@ -1476,14 +1699,15 @@ export class OpenSoverignBlogClient {
     filename: string,
     signal?: AbortSignal,
   ): Promise<AssetUploadResponse> {
+    const mediaType = await assetUploadMediaType(bytes, filename);
     return this.#request(
       "/api/v1/assets",
       {
         method: "POST",
         body: bytes,
         headers: {
-          "Content-Type": bytes.type || "application/octet-stream",
-          "X-OSB-Filename": filename,
+          "Content-Type": mediaType,
+          "X-OSB-Filename": assetUploadTransportFilename(filename, mediaType),
         },
         ...withSignal(signal),
       },
@@ -1697,4 +1921,16 @@ function validateAdminAuthActionHref(value: string): string {
     throw new TypeError("administrator authentication action must target /api/v1/auth/");
   }
   return `${parsed.pathname}${parsed.search}`;
+}
+
+function validateAdvertisingConsentHref(value: string): string {
+  if (
+    typeof value !== "string"
+    || value !== "/api/v1/advertising/consent"
+  ) {
+    throw new TypeError(
+      "advertising consent action must target /api/v1/advertising/consent",
+    );
+  }
+  return value;
 }

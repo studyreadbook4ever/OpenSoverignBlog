@@ -269,6 +269,7 @@ pub(crate) fn run(database: PathBuf, args: LocalArgs) -> Result<()> {
                             document_id,
                             base_revision_id: current.current_revision_id,
                             title: title.unwrap_or(current.revision.title),
+                            subtitle: current.revision.subtitle,
                             slug: slug.unwrap_or(current.revision.slug),
                             source_markdown: markdown,
                             embeds: current.revision.embeds,
@@ -299,6 +300,7 @@ pub(crate) fn run(database: PathBuf, args: LocalArgs) -> Result<()> {
                         NewDocument {
                             site_id: control.primary_site_id,
                             title,
+                            subtitle: None,
                             slug,
                             source_markdown: markdown,
                             embeds: Vec::new(),
@@ -895,6 +897,7 @@ delivery_only = false
                     document_id: first.id,
                     base_revision_id: first.current_revision_id,
                     title: first.revision.title.clone(),
+                    subtitle: first.revision.subtitle.clone(),
                     slug: first.revision.slug.clone(),
                     source_markdown: first.revision.source_markdown.clone(),
                     embeds: preserved_embeds.clone(),

@@ -392,6 +392,7 @@ mod tests {
             revision_number: 1,
             parent_revision_id: None,
             title: title.into(),
+            subtitle: None,
             slug: "summary-safety".into(),
             source_markdown: markdown.into(),
             embeds: vec![],

@@ -4,10 +4,15 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 mod first_party_ad;
+mod kakao_adfit;
 
 pub use first_party_ad::{
     AuthorizedFirstPartyAd, DisclosureLabel, FirstPartyAd, FirstPartyAdKind, FirstPartyImage,
     NamedAdSlot, StaticAdRenderPlan, StaticDeliveryPolicy,
+};
+pub use kakao_adfit::{
+    KAKAO_ADFIT_CONSENT_PURPOSE_IDS, KAKAO_ADFIT_POLICY_VERSION, KAKAO_ADFIT_SCRIPT_URL,
+    KakaoAdFitPlacement, KakaoAdFitUnitId, KakaoAdFitUnits, KakaoAdFitViewport,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,6 +149,8 @@ pub enum GateError {
     InvalidStaticAd(&'static str),
     #[error("static first-party ad requested a restricted capability: {0}")]
     RestrictedStaticDelivery(&'static str),
+    #[error("Kakao AdFit configuration is invalid: {0}")]
+    InvalidKakaoAdFit(&'static str),
 }
 
 #[cfg(test)]

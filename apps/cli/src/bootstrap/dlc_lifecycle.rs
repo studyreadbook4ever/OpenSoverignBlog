@@ -23,6 +23,7 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use super::{
     CONFIG_SCHEMA, INSTALL_LOCK, INSTALL_MANIFEST, OfficialDlc, find_official_dlc,
     verify_bundled_official_manifest_bytes, verify_intent_lock_pair,
+    verify_intent_lock_pair_structure,
 };
 
 const INTENT_LIMIT: u64 = 512 * 1024;
@@ -218,7 +219,7 @@ pub(super) fn run(args: DlcArgs) -> Result<()> {
             source,
             artifact_sha256,
         } => reconcile(
-            load_deployment(&args)?,
+            load_reconcile_deployment(&args, from)?,
             from,
             to,
             source.clone(),
@@ -292,6 +293,28 @@ fn list(intent_path: &Path, lock_path: &Path, available: bool, json: bool) -> Re
 }
 
 fn load_deployment(args: &DlcArgs) -> Result<Deployment> {
+    load_deployment_with(args, |intent, lock| {
+        verify_intent_lock_pair(intent, lock)?;
+        ensure_bundled_official_records(lock)
+    })
+}
+
+fn load_reconcile_deployment(args: &DlcArgs, from: &str) -> Result<Deployment> {
+    load_deployment_with(args, |intent, lock| {
+        verify_intent_lock_pair_structure(intent, lock)?;
+        ensure!(
+            lock.engine.version == from,
+            "engine reconciliation source differs from the current lock: expected {}, received {from}",
+            lock.engine.version
+        );
+        ensure_candidate_reconcile_source_records(lock)
+    })
+}
+
+fn load_deployment_with(
+    args: &DlcArgs,
+    validate_contract: impl FnOnce(&InstallationIntent, &InstallationLock) -> Result<()>,
+) -> Result<Deployment> {
     let env_path = args.env_file.clone().unwrap_or_else(|| {
         args.intent
             .parent()
@@ -311,8 +334,7 @@ fn load_deployment(args: &DlcArgs) -> Result<Deployment> {
         .map_err(anyhow::Error::msg)?;
     let lock = InstallationLock::from_json(as_utf8(&lock_original, "installation lock")?)
         .map_err(anyhow::Error::msg)?;
-    verify_intent_lock_pair(&intent, &lock)?;
-    ensure_bundled_official_records(&lock)?;
+    validate_contract(&intent, &lock)?;
     let env_values = project_environment(&env_original)?;
     verify_environment_projection(&lock, &env_values)?;
     Ok(Deployment {
@@ -739,17 +761,21 @@ fn official_manifest_digest(official: OfficialDlc) -> String {
 
 fn ensure_bundled_official_records(lock: &InstallationLock) -> Result<()> {
     verify_bundled_official_manifest_bytes(lock)?;
+    ensure_candidate_reconcile_source_records(lock)
+}
+
+fn ensure_candidate_reconcile_source_records(lock: &InstallationLock) -> Result<()> {
     for installed in &lock.dlcs {
         let official = find_official_dlc(&installed.id).with_context(|| {
             format!(
-                "DLC {} is not in this CLI's bundled official catalog; lifecycle commands never load remote arbitrary code",
+                "DLC {} is not in this CLI's bundled official catalog; candidate reconciliation never loads remote arbitrary code",
                 installed.id
             )
         })?;
         ensure!(
             installed.source_kind == InstalledDlcSourceKind::Bundled
                 && installed.source == official.source,
-            "DLC {} is not locked to its bundled official manifest; file/HTTPS code is rejected",
+            "DLC {} is not locked to its known bundled official source; file/HTTPS or source-path substitutions are rejected",
             installed.id
         );
     }
@@ -1392,6 +1418,89 @@ mod tests {
         .unwrap()
     }
 
+    fn write_deployment_fixture(deployment: &mut Deployment) {
+        deployment.lock.refresh_digest().unwrap();
+        deployment.intent_original = deployment.intent.to_toml_pretty().unwrap().into_bytes();
+        deployment.lock_original = deployment.lock.to_pretty_json().unwrap().into_bytes();
+        deployment.env_original = replace_environment_values(
+            &deployment.env_original,
+            &BTreeMap::from([
+                (
+                    "OSB_DLC_IDS",
+                    deployment
+                        .lock
+                        .dlcs
+                        .iter()
+                        .filter(|dlc| dlc.enabled)
+                        .map(|dlc| dlc.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                (
+                    "OSB_FEATURES",
+                    enabled_composition(&deployment.lock).unwrap().1,
+                ),
+                (
+                    "OSB_INSTALL_LOCK_DIGEST",
+                    deployment.lock.lock_digest.clone(),
+                ),
+            ]),
+        )
+        .unwrap();
+        fs::write(&deployment.intent_path, &deployment.intent_original).unwrap();
+        fs::write(&deployment.lock_path, &deployment.lock_original).unwrap();
+        fs::write(&deployment.env_path, &deployment.env_original).unwrap();
+        deployment.env_values = project_environment(&deployment.env_original).unwrap();
+    }
+
+    fn previous_home_curation_fixture(root: &Path) -> Deployment {
+        let mut deployment = fixture(root);
+        let source_engine = "0.1.1";
+        let request = "^0.1.0";
+        let official = find_official_dlc("home-curation").unwrap();
+        let mut installed = resolve_official(official, request, true, source_engine).unwrap();
+        installed.version = "0.1.0".into();
+        installed.manifest_sha256 =
+            "7e013273f9e65bb51fee3642d423585c99d46757f73566c2e3324ee0009186a3".into();
+        installed.applied_migrations = vec!["home-curation.state.v1".into()];
+
+        deployment.intent.created_with = source_engine.into();
+        deployment.intent.dlcs = vec![RequestedDlc {
+            id: official.id.into(),
+            version: request.into(),
+            enabled: true,
+        }];
+        deployment.lock.engine.version = source_engine.into();
+        deployment.lock.engine.config_schema_version = "open-soverign-blog/1".into();
+        deployment.lock.engine.database_schema_version = 9;
+        deployment.lock.engine.source = "previous-release".into();
+        deployment.lock.dlcs = vec![installed];
+        deployment.lock.history = vec![DlcHistoryRecord {
+            sequence: 1,
+            action: DlcHistoryAction::Installed,
+            dlc_id: official.id.into(),
+            from_version: None,
+            to_version: Some("0.1.0".into()),
+            engine_version: source_engine.into(),
+        }];
+        write_deployment_fixture(&mut deployment);
+        deployment
+    }
+
+    fn candidate_reconcile_args(deployment: &Deployment) -> DlcArgs {
+        DlcArgs {
+            intent: deployment.intent_path.clone(),
+            lock: deployment.lock_path.clone(),
+            env_file: Some(deployment.env_path.clone()),
+            action: DlcAction::Reconcile {
+                from: "0.1.1".into(),
+                to: current_engine().into(),
+                source: "candidate-release".into(),
+                artifact_sha256: Some("c".repeat(64)),
+            },
+        }
+    }
+
     #[test]
     fn remove_and_readd_preserve_the_host_owned_migration_ledger() {
         let root = tempdir().unwrap();
@@ -1559,6 +1668,179 @@ mod tests {
                 .map(String::as_str),
             Some(deployment.lock.lock_digest.as_str())
         );
+    }
+
+    #[test]
+    fn candidate_reconcile_run_upgrades_previous_home_curation_contract_and_files() {
+        let root = tempdir().unwrap();
+        let deployment = previous_home_curation_fixture(root.path());
+        let source_lock = fs::read(&deployment.lock_path).unwrap();
+        let source_env = fs::read(&deployment.env_path).unwrap();
+
+        let ordinary_error =
+            list(&deployment.intent_path, &deployment.lock_path, false, true).unwrap_err();
+        assert!(
+            ordinary_error
+                .to_string()
+                .contains("does not match the manifest bytes compiled into this CLI")
+        );
+
+        run(DlcArgs {
+            intent: deployment.intent_path.clone(),
+            lock: deployment.lock_path.clone(),
+            env_file: Some(deployment.env_path.clone()),
+            action: DlcAction::Reconcile {
+                from: "0.1.1".into(),
+                to: current_engine().into(),
+                source: "candidate-release".into(),
+                artifact_sha256: Some("c".repeat(64)),
+            },
+        })
+        .unwrap();
+
+        assert_ne!(fs::read(&deployment.lock_path).unwrap(), source_lock);
+        assert_ne!(fs::read(&deployment.env_path).unwrap(), source_env);
+        let persisted = load_deployment(&DlcArgs {
+            intent: deployment.intent_path,
+            lock: deployment.lock_path,
+            env_file: Some(deployment.env_path),
+            action: DlcAction::List {
+                available: false,
+                json: false,
+            },
+        })
+        .unwrap();
+        assert_eq!(persisted.lock.engine.version, current_engine());
+        assert_eq!(persisted.lock.engine.config_schema_version, CONFIG_SCHEMA);
+        assert_eq!(
+            persisted.lock.engine.database_schema_version,
+            DATABASE_SCHEMA_VERSION
+        );
+        assert_eq!(persisted.lock.engine.plugin_api, PLUGIN_API_VERSION);
+        assert_eq!(persisted.lock.engine.source, "candidate-release");
+        assert_eq!(persisted.lock.engine.artifact_sha256, Some("c".repeat(64)));
+        assert_eq!(persisted.lock.dlcs[0].version, "0.1.1");
+        assert_eq!(
+            persisted.lock.dlcs[0].manifest_sha256,
+            official_manifest_digest(find_official_dlc("home-curation").unwrap())
+        );
+        assert_eq!(
+            persisted.lock.dlcs[0].applied_migrations,
+            ["home-curation.state.v1"]
+        );
+        assert_eq!(
+            persisted
+                .env_values
+                .get("OSB_INSTALL_LOCK_DIGEST")
+                .map(String::as_str),
+            Some(persisted.lock.lock_digest.as_str())
+        );
+        assert_eq!(
+            persisted.env_values.get("OSB_FEATURES").map(String::as_str),
+            Some("home_curation")
+        );
+        assert!(
+            as_utf8(&persisted.env_original, ".env")
+                .unwrap()
+                .contains("SECRET='do not reformat this = value'\n")
+        );
+        assert_eq!(persisted.lock.history.len(), 2);
+        assert_eq!(persisted.lock.history[1].action, DlcHistoryAction::Upgraded);
+        assert_eq!(
+            persisted.lock.history[1].from_version.as_deref(),
+            Some("0.1.0")
+        );
+        assert_eq!(
+            persisted.lock.history[1].to_version.as_deref(),
+            Some("0.1.1")
+        );
+        assert_eq!(persisted.lock.history[1].engine_version, current_engine());
+    }
+
+    #[test]
+    fn candidate_reconcile_preflight_and_resolution_remain_fail_closed() {
+        let untrusted_root = tempdir().unwrap();
+        let mut untrusted = previous_home_curation_fixture(untrusted_root.path());
+        untrusted.lock.dlcs[0].source_kind = InstalledDlcSourceKind::File;
+        untrusted.lock.dlcs[0].artifact_sha256 = Some("a".repeat(64));
+        write_deployment_fixture(&mut untrusted);
+        let untrusted_lock = fs::read(&untrusted.lock_path).unwrap();
+        let error = run(candidate_reconcile_args(&untrusted)).unwrap_err();
+        assert!(error.to_string().contains("known bundled official source"));
+        assert_eq!(fs::read(&untrusted.lock_path).unwrap(), untrusted_lock);
+
+        let unknown_root = tempdir().unwrap();
+        let unknown = previous_home_curation_fixture(unknown_root.path());
+        let mut unknown_lock = unknown.lock.clone();
+        unknown_lock.dlcs[0].id = "org.example.unknown".into();
+        unknown_lock.dlcs[0].source = "plugins/official/unknown/plugin.toml".into();
+        assert!(
+            ensure_candidate_reconcile_source_records(&unknown_lock)
+                .unwrap_err()
+                .to_string()
+                .contains("not in this CLI's bundled official catalog")
+        );
+
+        let digest_root = tempdir().unwrap();
+        let digest = previous_home_curation_fixture(digest_root.path());
+        let mut invalid_digest = digest.lock.clone();
+        invalid_digest.lock_digest = "d".repeat(64);
+        let mut encoded = serde_json::to_string_pretty(&invalid_digest).unwrap();
+        encoded.push('\n');
+        fs::write(&digest.lock_path, encoded).unwrap();
+        let error = run(candidate_reconcile_args(&digest)).unwrap_err();
+        assert!(error.to_string().to_ascii_lowercase().contains("digest"));
+
+        let intent_root = tempdir().unwrap();
+        let intent_mismatch = previous_home_curation_fixture(intent_root.path());
+        let mut invalid_intent = intent_mismatch.intent.clone();
+        invalid_intent.dlcs[0].version = "=0.1.0".into();
+        fs::write(
+            &intent_mismatch.intent_path,
+            invalid_intent.to_toml_pretty().unwrap(),
+        )
+        .unwrap();
+        let error = run(candidate_reconcile_args(&intent_mismatch)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requested DLC set differs from exact installed records")
+        );
+
+        let env_root = tempdir().unwrap();
+        let env_mismatch = previous_home_curation_fixture(env_root.path());
+        let invalid_env = replace_environment_values(
+            &env_mismatch.env_original,
+            &BTreeMap::from([("OSB_INSTALL_LOCK_DIGEST", "e".repeat(64))]),
+        )
+        .unwrap();
+        fs::write(&env_mismatch.env_path, invalid_env).unwrap();
+        let error = run(candidate_reconcile_args(&env_mismatch)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("deployment environment OSB_INSTALL_LOCK_DIGEST differs")
+        );
+
+        let immutable_root = tempdir().unwrap();
+        let mut immutable = previous_home_curation_fixture(immutable_root.path());
+        immutable.lock.dlcs[0].version = "0.1.1".into();
+        immutable.lock.history[0].to_version = Some("0.1.1".into());
+        write_deployment_fixture(&mut immutable);
+        let error = run(candidate_reconcile_args(&immutable)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("published versions are immutable")
+        );
+
+        let downgrade_root = tempdir().unwrap();
+        let mut downgrade = previous_home_curation_fixture(downgrade_root.path());
+        downgrade.lock.dlcs[0].version = "0.1.2".into();
+        downgrade.lock.history[0].to_version = Some("0.1.2".into());
+        write_deployment_fixture(&mut downgrade);
+        let error = run(candidate_reconcile_args(&downgrade)).unwrap_err();
+        assert!(error.to_string().contains("would downgrade DLC"));
     }
 
     #[test]

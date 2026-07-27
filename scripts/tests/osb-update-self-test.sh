@@ -59,6 +59,13 @@ if source.count('compose-plan-verify') != 2:
     raise SystemExit("candidate and promoted Compose plans must both be isolated before start")
 if source.count("COMPOSE_PROFILES=") != 3:
     raise SystemExit("every Compose path must clear inherited profiles before selecting the lock profile")
+for protected_source in ("OSB_HANDOFF_SOURCE=", "OSB_REFERENCES_SOURCE="):
+    if source.count(protected_source) != 3:
+        raise SystemExit(
+            f"every Compose path must pin the staged protected source: {protected_source}"
+        )
+if "for control_name in osb.intent.json references.md; do" not in source:
+    raise SystemExit("candidate controls must retain optional handoff and references files")
 if 'exec 9> "$STATE_DIRECTORY/update.lock"' in source or 'exec 9< "$STATE_DIRECTORY"' not in source:
     raise SystemExit("updater must flock the validated state-directory inode without truncating a path")
 for verifier_setting in ("gpg.format=openpgp", "gpg.program=$GPG_PROGRAM", "gpg.openpgp.program=$GPG_PROGRAM"):
@@ -85,7 +92,7 @@ trap cleanup EXIT HUP INT TERM
 python3 "$SUPPORT" lock-info \
     --file "$REPOSITORY_ROOT/osb.lock.example.json" \
     --output "$TEST_TEMP/example-lock"
-grep -Fx '0.1.1' "$TEST_TEMP/example-lock/version" >/dev/null
+grep -Fx '0.1.5' "$TEST_TEMP/example-lock/version" >/dev/null
 grep -Fx 'redis_managed' "$TEST_TEMP/example-lock/cache" >/dev/null
 
 "$UPDATER" --offline --check > "$TEST_TEMP/check.log"

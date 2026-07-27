@@ -561,15 +561,15 @@ mod tests {
     }
 
     #[test]
-    fn home_curation_manifest_remains_compatible_with_deployed_0_1_0_locks() {
+    fn home_curation_manifest_matches_the_typed_home_unit_release() {
         let (_, _, manifest) = BUNDLED_OFFICIAL_MANIFESTS
             .iter()
             .find(|(id, _, _)| *id == "org.open-soverign-blog.home-curation")
             .expect("bundled home-curation manifest");
         assert_eq!(
             format!("{:x}", Sha256::digest(manifest.as_bytes())),
-            "7e013273f9e65bb51fee3642d423585c99d46757f73566c2e3324ee0009186a3",
-            "changing bundled 0.1.0 manifest bytes invalidates existing installation locks; add an explicit lock migration before changing them",
+            "9df91842aa773f250edf84deb3deaeeb17ad82dde873de4503763e7b3680c23c",
+            "changing bundled 0.1.1 manifest bytes invalidates installation locks; add an explicit lock migration before changing them",
         );
     }
 }

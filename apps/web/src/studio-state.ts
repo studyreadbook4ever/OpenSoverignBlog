@@ -3,7 +3,10 @@ import type {
   CreatePostInput,
   DocumentSnapshot,
   FeedPostSummary,
+  HomePinsResponse,
+  HomePinTarget,
   HomeResponse,
+  SeriesSummary,
 } from "@opensoverignblog/sdk";
 
 const AI_SUMMARY_SOURCE_HASH_VERSION = "osb-ai-summary-source/1";
@@ -13,14 +16,152 @@ export function normalizedEditorTitle(title: string): string {
   return title.trim();
 }
 
-export function normalizeSavePayload(post: CreatePostInput): CreatePostInput {
-  if (!post.authorship || post.authorship.kind === "human" || post.authorship.humanReviewed) {
-    return post;
+/** Empty editor subtitles are omitted instead of becoming meaningless fields. */
+export function normalizedEditorSubtitle(subtitle: string | undefined): string | undefined {
+  const normalized = subtitle?.trim();
+  return normalized ? normalized : undefined;
+}
+
+/** Matches Rust `str::chars()` so Studio and the server enforce one limit. */
+export function subtitleCharacterCount(subtitle: string | undefined): number {
+  return Array.from(subtitle ?? "").length;
+}
+
+export const STUDIO_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+export const STUDIO_IMAGE_BATCH_LIMIT = 8;
+
+const STUDIO_IMAGE_MEDIA_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+]);
+
+const STUDIO_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif"]);
+
+export interface StudioImageCandidate {
+  name: string;
+  size: number;
+  type: string;
+}
+
+export type StudioImageRejectionReason = "unsupported" | "too_large" | "batch_limit";
+
+export function selectStudioImageBatch<T extends StudioImageCandidate>(
+  files: readonly T[],
+): {
+  accepted: T[];
+  rejected: Array<{ file: T; reason: StudioImageRejectionReason }>;
+} {
+  const accepted: T[] = [];
+  const rejected: Array<{ file: T; reason: StudioImageRejectionReason }> = [];
+  for (const file of files) {
+    const mediaType = file.type.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const extension = file.name.match(/\.([A-Za-z0-9]{1,8})$/)?.[1]?.toLowerCase();
+    const supported = STUDIO_IMAGE_MEDIA_TYPES.has(mediaType)
+      || (
+        !mediaType
+        && (
+          !file.name.trim()
+          || Boolean(extension && STUDIO_IMAGE_EXTENSIONS.has(extension))
+        )
+      );
+    if (!supported) {
+      rejected.push({ file, reason: "unsupported" });
+    } else if (file.size > STUDIO_IMAGE_MAX_BYTES) {
+      rejected.push({ file, reason: "too_large" });
+    } else if (accepted.length >= STUDIO_IMAGE_BATCH_LIMIT) {
+      rejected.push({ file, reason: "batch_limit" });
+    } else {
+      accepted.push(file);
+    }
   }
+  return { accepted, rejected };
+}
+
+/**
+ * Runs a bounded batch in selection order. Sequential uploads avoid turning a
+ * multi-image paste into a burst of 10 MiB requests, while one failed image
+ * does not prevent later valid images from being attempted.
+ */
+export async function uploadStudioImageQueue<T, R>(
+  files: readonly T[],
+  upload: (file: T) => Promise<R>,
+): Promise<{
+  completed: Array<{ file: T; result: R }>;
+  failed: Array<{ file: T; reason: unknown }>;
+}> {
+  const completed: Array<{ file: T; result: R }> = [];
+  const failed: Array<{ file: T; reason: unknown }> = [];
+  for (const file of files) {
+    try {
+      completed.push({ file, result: await upload(file) });
+    } catch (reason) {
+      failed.push({ file, reason });
+    }
+  }
+  return { completed, failed };
+}
+
+export function firstPartyAssetMarkdownUrl(uploadedUrl: string, pageUrl: string): string {
+  const page = new URL(pageUrl);
+  const uploaded = new URL(uploadedUrl, page);
+  if (
+    uploaded.origin !== page.origin
+    || uploaded.username
+    || uploaded.password
+    || !/\/media\/[a-f0-9]{64}$/.test(uploaded.pathname)
+  ) {
+    throw new TypeError("asset upload response is not a same-origin media URL");
+  }
+  return `${uploaded.pathname}${uploaded.search}${uploaded.hash}`;
+}
+
+export function markdownImageSource(filename: string, url: string): string {
+  const alt = filename
+    .replace(/[\r\n]+/g, " ")
+    .replace(/([\\\[\]])/g, "\\$1")
+    .trim() || "image";
+  return `![${alt}](${url})`;
+}
+
+export function insertMarkdownBlock(
+  source: string,
+  selectionStart: number,
+  selectionEnd: number,
+  block: string,
+): { sourceMarkdown: string; caret: number } {
+  const start = Math.max(0, Math.min(source.length, selectionStart));
+  const end = Math.max(start, Math.min(source.length, selectionEnd));
+  const left = source.slice(0, start);
+  const right = source.slice(end);
+  const before = left && !left.endsWith("\n\n")
+    ? left.endsWith("\n") ? "\n" : "\n\n"
+    : "";
+  const after = right && !right.startsWith("\n\n")
+    ? right.startsWith("\n") ? "\n" : "\n\n"
+    : "";
+  const insertion = `${before}${block}${after}`;
   return {
-    ...post,
-    authorship: { ...post.authorship, humanReviewed: true },
+    sourceMarkdown: `${left}${insertion}${right}`,
+    caret: left.length + insertion.length,
   };
+}
+
+export function normalizeSavePayload(post: CreatePostInput): CreatePostInput {
+  const normalized = { ...post };
+  delete normalized.subtitle;
+  const subtitle = normalizedEditorSubtitle(post.subtitle);
+  if (subtitle) normalized.subtitle = subtitle;
+  if (
+    normalized.authorship
+    && normalized.authorship.kind !== "human"
+    && !normalized.authorship.humanReviewed
+  ) {
+    normalized.authorship = { ...normalized.authorship, humanReviewed: true };
+  }
+  return normalized;
 }
 
 /**
@@ -57,6 +198,7 @@ export function acceptedEditorState(payload: CreatePostInput): {
 export function payloadFingerprint(post: CreatePostInput): string {
   return JSON.stringify({
     title: post.title.trim(),
+    subtitle: normalizedEditorSubtitle(post.subtitle) ?? null,
     slug: post.slug.trim(),
     sourceMarkdown: post.sourceMarkdown,
     embeds: post.embeds ?? [],
@@ -78,6 +220,7 @@ export function editorFingerprint(
     const ontology = ontologyText.trim() ? JSON.parse(ontologyText) as unknown : null;
     return JSON.stringify({
       title: post.title.trim(),
+      subtitle: normalizedEditorSubtitle(post.subtitle) ?? null,
       slug: post.slug.trim(),
       sourceMarkdown: post.sourceMarkdown,
       embeds,
@@ -90,6 +233,7 @@ export function editorFingerprint(
   } catch {
     return `invalid-sidecar:${JSON.stringify({
       title: post.title,
+      subtitle: post.subtitle ?? null,
       slug: post.slug,
       sourceMarkdown: post.sourceMarkdown,
       embedText,
@@ -215,44 +359,218 @@ export function reviewAiSummaryCandidate(candidate: AiSummary): AiSummary {
 }
 
 export interface HomeCurationCandidate {
+  kind: HomePinTarget["kind"];
   id: string;
+  target: HomePinTarget;
   title: string;
   slug: string;
   locationLabel: string;
 }
 
-export function homeCurationCandidates(
-  home: HomeResponse,
-  studioDocuments: DocumentSnapshot[] = [],
-  language: "ko" | "en" = "ko",
-): HomeCurationCandidate[] {
-  const seen = new Set<string>();
-  const publicCandidates: FeedPostSummary[] = [
-    ...home.pinnedItems,
-    ...(home.seriesSections ?? []).flatMap((section) => section.items),
-    ...(home.categorySections ?? []).flatMap((section) => section.items),
-    ...home.recentItems,
-  ];
-  const candidates = publicCandidates.map((post) => ({
-    id: post.id,
-    title: post.title,
-    slug: post.slug,
-    locationLabel: `@${post.blog.handle} · /${post.slug}`,
-  }));
+export interface HomeCurationOptions {
+  studioDocuments?: DocumentSnapshot[];
+  studioSeries?: SeriesSummary[];
+  language?: "ko" | "en";
+}
+
+export interface PublishedSeriesMembership {
+  documentIds: ReadonlySet<string>;
+  seriesIdsWithPublishedItems: ReadonlySet<string>;
+}
+
+export function publishedSeriesMembership(
+  studioDocuments: DocumentSnapshot[],
+  studioSeries: SeriesSummary[],
+): PublishedSeriesMembership {
+  const activeSeriesByCategoryId = new Map(
+    studioSeries
+      .filter((series) => series.status === "active")
+      .map((series) => [series.categoryId, series]),
+  );
+  const documentIds = new Set<string>();
+  const seriesIdsWithPublishedItems = new Set<string>();
   for (const document of studioDocuments) {
     if (!document.publishedRevisionId || document.status === "archived") continue;
+    const categoryId = publishedDocumentCategoryId(document);
+    const series = categoryId ? activeSeriesByCategoryId.get(categoryId) : undefined;
+    if (!series) continue;
+    documentIds.add(document.id);
+    seriesIdsWithPublishedItems.add(series.id);
+  }
+  return { documentIds, seriesIdsWithPublishedItems };
+}
+
+export function homePinTargetKey(target: HomePinTarget): string {
+  return `${target.kind}:${target.id}`;
+}
+
+export function homePinTargets(response: HomePinsResponse): HomePinTarget[] {
+  const targets = response.targets
+    ?? response.documentIds.map((id) => ({ kind: "post" as const, id }));
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const key = homePinTargetKey(target);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 3);
+}
+
+export function homeCurationRows(
+  candidates: HomeCurationCandidate[],
+  selectedTargets: HomePinTarget[],
+  language: "ko" | "en" = "ko",
+): HomeCurationCandidate[] {
+  const candidateByKey = new Map(
+    candidates.map((candidate) => [homePinTargetKey(candidate.target), candidate]),
+  );
+  const selectedKeys = new Set(selectedTargets.map(homePinTargetKey));
+  const selected = selectedTargets.map((target) => {
+    const candidate = candidateByKey.get(homePinTargetKey(target));
+    if (candidate) return candidate;
+    const kindLabel = target.kind === "series" ? "Series" : "Post";
+    return {
+      kind: target.kind,
+      id: target.id,
+      target,
+      title: `${kindLabel} ${target.id.slice(0, 8)}`,
+      slug: "",
+      locationLabel: language === "en"
+        ? "Pinned · unavailable in the current publication list"
+        : "고정됨 · 현재 발행 후보 목록에 없음",
+    };
+  });
+  return [
+    ...selected,
+    ...candidates.filter((candidate) => !selectedKeys.has(homePinTargetKey(candidate.target))),
+  ];
+}
+
+export function homeCurationCandidates(
+  home: HomeResponse,
+  {
+    studioDocuments = [],
+    studioSeries = [],
+    language = "ko",
+  }: HomeCurationOptions = {},
+): HomeCurationCandidate[] {
+  const seen = new Set<string>();
+  const candidates: HomeCurationCandidate[] = [];
+  const publicSeries = [
+    ...(home.units ?? []).flatMap((unit) => unit.kind === "series" ? [unit.series] : []),
+    ...(home.seriesSections ?? []).map((section) => section.series),
+  ];
+  const documentMembership = publishedSeriesMembership(
+    studioDocuments,
+    [...publicSeries, ...studioSeries],
+  );
+  const publishedMemberIds = new Set(documentMembership.documentIds);
+  const publishedSeriesIds = new Set(documentMembership.seriesIdsWithPublishedItems);
+
+  for (const unit of home.units ?? []) {
+    if (unit.kind !== "series" || unit.series.status !== "active") continue;
+    if (unit.items.length) publishedSeriesIds.add(unit.series.id);
+    unit.items.forEach((post) => publishedMemberIds.add(post.id));
+  }
+  for (const section of home.seriesSections ?? []) {
+    if (section.series.status !== "active") continue;
+    if (section.items.length) publishedSeriesIds.add(section.series.id);
+    section.items.forEach((post) => publishedMemberIds.add(post.id));
+  }
+
+  const addSeries = (series: SeriesSummary, hasPublishedItems = true) => {
+    if (series.status !== "active" || !hasPublishedItems) return;
+    const target: HomePinTarget = { kind: "series", id: series.id };
+    const key = homePinTargetKey(target);
+    if (seen.has(key)) return;
+    seen.add(key);
     candidates.push({
+      kind: "series",
+      id: series.id,
+      target,
+      title: series.title,
+      slug: series.slug,
+      locationLabel: language === "en"
+        ? `Series · /${series.slug}`
+        : `시리즈 · /${series.slug}`,
+    });
+  };
+
+  const addPost = (post: FeedPostSummary) => {
+    if (publishedMemberIds.has(post.id)) return;
+    const target: HomePinTarget = { kind: "post", id: post.id };
+    const key = homePinTargetKey(target);
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      kind: "post",
+      id: post.id,
+      target,
+      title: post.title,
+      slug: post.slug,
+      locationLabel: language === "en"
+        ? `Post · ${publicPostLocation(post)}`
+        : `일반 글 · ${publicPostLocation(post)}`,
+    });
+  };
+
+  if (home.units) {
+    for (const unit of home.units) {
+      if (unit.kind === "series") addSeries(unit.series, unit.items.length > 0);
+      else addPost(unit.post);
+    }
+  } else {
+    (home.seriesSections ?? []).forEach((section) => {
+      addSeries(section.series, section.items.length > 0);
+    });
+    [
+      ...home.pinnedItems,
+      ...(home.categorySections ?? []).flatMap((section) => section.items),
+      ...home.recentItems,
+    ].forEach(addPost);
+  }
+
+  studioSeries.forEach((series) => {
+    addSeries(series, publishedSeriesIds.has(series.id));
+  });
+  for (const document of studioDocuments) {
+    if (!document.publishedRevisionId || document.status === "archived") continue;
+    if (publishedMemberIds.has(document.id)) continue;
+    const target: HomePinTarget = { kind: "post", id: document.id };
+    const key = homePinTargetKey(target);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      kind: "post",
       id: document.id,
+      target,
       title: document.revision.title || (language === "en" ? "Untitled post" : "제목 없는 글"),
       slug: document.revision.slug,
       locationLabel: language === "en"
-        ? `My published post · /${document.revision.slug}`
-        : `내 발행 문서 · /${document.revision.slug}`,
+        ? "Published standalone post"
+        : "발행된 일반 글",
     });
   }
-  return candidates.filter((post) => {
-    if (seen.has(post.id)) return false;
-    seen.add(post.id);
-    return true;
-  });
+  return candidates;
+}
+
+function publicPostLocation(post: FeedPostSummary): string {
+  const slug = encodeURIComponent(post.slug);
+  const category = post.category ? encodeURIComponent(post.category.slug) : undefined;
+  if (post.blog.isPrimary && category) return `/${category}/${slug}`;
+  const blogRoot = `/@${encodeURIComponent(post.blog.handle)}`;
+  return category ? `${blogRoot}/${category}/${slug}` : `${blogRoot}/${slug}`;
+}
+
+/**
+ * New servers explicitly return null for a published standalone revision.
+ * Only payloads that omit the field entirely are old enough to require the
+ * current-draft category fallback.
+ */
+function publishedDocumentCategoryId(
+  document: DocumentSnapshot,
+): string | null | undefined {
+  return Object.hasOwn(document, "publishedCategoryId")
+    ? document.publishedCategoryId
+    : document.categoryId;
 }

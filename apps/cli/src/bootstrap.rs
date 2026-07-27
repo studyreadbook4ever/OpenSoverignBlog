@@ -2038,7 +2038,7 @@ fn render_env(args: &BootstrapArgs, environment: &EnvironmentRender<'_>) -> Stri
         CacheChoice::RedisManaged => "sentinel",
     };
     format!(
-        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_HANDOFF_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_REFERENCES_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_LANGUAGE={}\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
+        "COMPOSE_PROJECT_NAME={}\nOSB_DATA_VOLUME={}\nOSB_CONFIG=/config/config.toml\nOSB_CONFIG_SOURCE='{}'\nOSB_HANDOFF_SOURCE='{}'\nOSB_CUSTOM_CSS_SOURCE='{}'\nOSB_REFERENCES_SOURCE='{}'\nOSB_INSTALL_MANIFEST=/config/osb.install.toml\nOSB_INSTALL_LOCK=/config/osb.lock.json\nOSB_INSTALL_SOURCE='{}'\nOSB_LOCK_SOURCE='{}'\nOSB_INSTALL_LOCK_DIGEST={}\nOSB_ALLOW_UNTRACKED_INSTALLATION=false\nOSB_STYLE={}\nOSB_CACHE={}\nOSB_DLC_IDS={}\nOSB_PUBLIC_URL='{}'\nOSB_LANGUAGE={}\nOSB_INTENT={}\nOSB_AUTH_MODE={}\nOSB_ADMIN_AUTH={}\nOSB_ADMIN_ACCESS_KEY_PHC_B64={}\nOSB_ADMIN_AUTH_ROTATE=false\nOSB_EXTERNAL_CLIENT_SECRET=\nOSB_REGISTRATION_OPEN={}\nOSB_COMMENTS={}\nOSB_COLLABORATION={}\nOSB_CUSTOM_CSS={}\nOSB_AGENT_DISCOVERY={}\nOSB_DELIVERY_ONLY={}\nOSB_FEATURES={}\nOSB_KAKAO_ADFIT_PC_TOP_UNIT=\nOSB_KAKAO_ADFIT_PC_BOTTOM_UNIT=\nOSB_KAKAO_ADFIT_MOBILE_TOP_UNIT=\nOSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT=\nOSB_REDIS_ENABLED={}\nOSB_REDIS_TOPOLOGY={}\nOSB_REDIS_REQUIRED={}\nOSB_REDIS_PASSWORD={}\nOSB_CACHE_SIGNING_KEY={}\nOSB_MANAGED_BACKUPS={}\nOSB_BACKUP_VOLUME='{}'\nRUST_LOG=info\n",
         environment.compose_project,
         environment.data_volume,
         environment.deployment_root.join("config.toml").display(),
@@ -2142,9 +2142,17 @@ fn read_installation_pair(
 }
 
 fn verify_intent_lock_pair(intent: &InstallationIntent, lock: &InstallationLock) -> Result<()> {
+    verify_intent_lock_pair_structure(intent, lock)?;
+    verify_bundled_official_manifest_bytes(lock)?;
+    Ok(())
+}
+
+fn verify_intent_lock_pair_structure(
+    intent: &InstallationIntent,
+    lock: &InstallationLock,
+) -> Result<()> {
     intent.validate().map_err(anyhow::Error::msg)?;
     lock.validate().map_err(anyhow::Error::msg)?;
-    verify_bundled_official_manifest_bytes(lock)?;
     ensure!(
         intent.installation_id == lock.installation_id,
         "installation id differs between intent and lock"
@@ -4337,6 +4345,32 @@ mod tests {
             root.path().join("references.md").display()
         )));
         assert!(environment.contains("OSB_LANGUAGE=ko\n"));
+        for name in [
+            "OSB_KAKAO_ADFIT_PC_TOP_UNIT",
+            "OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT",
+            "OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT",
+            "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT",
+        ] {
+            assert!(
+                environment.contains(&format!("{name}=\n")),
+                "bootstrap must reserve an empty operator-owned {name} entry"
+            );
+        }
+        let compose = fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../compose.yaml"),
+        )
+        .unwrap();
+        for name in [
+            "OSB_KAKAO_ADFIT_PC_TOP_UNIT",
+            "OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT",
+            "OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT",
+            "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT",
+        ] {
+            assert!(
+                compose.contains(&format!("{name}: \"${{{name}:-}}\"")),
+                "Compose must forward {name} into the blog container"
+            );
+        }
         assert_eq!(
             fs::read(root.path().join("references.md")).unwrap(),
             include_bytes!("../../../deploy/references.md")

@@ -23,6 +23,7 @@
       "oneOf": [{ "$ref": "#/$defs/uuid" }, { "type": "null" }]
     },
     "title": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "subtitle": { "$ref": "#/$defs/subtitle" },
     "slug": {
       "type": "string",
       "minLength": 1,
@@ -60,6 +61,13 @@
     "digest": {
       "type": "string",
       "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "subtitle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500,
+      "pattern": "^[^\\s\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029](?:[^\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029]*[^\\s\\u0000-\\u001F\\u007F-\\u009F\\u2028\\u2029])?$",
+      "description": "Optional author-written canonical one-line deck."
     },
     "intent": {
       "type": "object",

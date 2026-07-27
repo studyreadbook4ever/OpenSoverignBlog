@@ -1,0 +1,107 @@
+schemaVersion: "1.0"
+id: kakao.adfit
+displayName: Kakao AdFit
+homepage: https://adfit.kakao.com/info
+categories: [network]
+integrationModes: [third-party-script]
+supportedRegions:
+  - provider-approved media; complete region list unknown
+eligibility:
+  independentDevelopers: conditional
+  minimumTraffic: null
+  kycRequired: yes
+  notes: A Kakao account holder aged 14 or older may apply, but account and media approval are required. Personal accounts require identity verification; business accounts require valid business documentation. Media review considers ownership, content, traffic, placement, and a working ad request rather than a published numeric traffic minimum.
+payoutSummary: The operating policy states that confirmed earnings can be requested once they reach KRW 50,000; identity, tax, bank-account, review, and timing rules vary by account type and can change.
+authFields:
+  - pcTopUnitId
+  - pcBottomUnitId
+  - mobileTopUnitId
+  - mobileBottomUnitId
+requiredDomains:
+  - aem-kakao-collector.onkakao.net
+  - analytics.ad.daum.net
+  - display.ad.daum.net
+  - kaat.daum.net
+  - serv.ds.kakao.com
+  - t1.daumcdn.net
+  - t1.kakaocdn.net
+cookiesAndStorage:
+  - kind: cookie
+    purpose: Remember the visitor's first-party OpenSoverignBlog grant or refusal before any AdFit resource is requested.
+    retention: One year, or until the visitor changes the choice.
+    firstParty: true
+  - kind: unknown
+    purpose: Ad delivery, measurement, quality and fraud controls, and possible personalization by the Kakao-operated SDK. Kakao's terms require the publisher to disclose that anonymous internet-use information, including cookies, may be collected or used.
+    retention: Exact provider cookie names, storage mechanisms, and retention were not established by the cited public documentation.
+    firstParty: false
+dataAccessed:
+  - ad unit, page, referrer, and browser request context
+  - ad requests, impressions, viewability, clicks, errors, and related performance or fraud-control events
+  - anonymous internet-use information, including cookies, as described by the provider terms
+consentPurposeIds: [ads.delivery, ads.measurement, ads.personalization]
+personalizationSupported: unknown
+adsTxtRequirements: null
+cspRequirements:
+  script-src:
+    - https://t1.kakaocdn.net
+  connect-src:
+    - https://aem-kakao-collector.onkakao.net
+    - https://display.ad.daum.net
+    - https://kaat.daum.net
+    - https://serv.ds.kakao.com
+  img-src:
+    - https://analytics.ad.daum.net
+    - https://kaat.daum.net
+    - https://t1.kakaocdn.net
+  frame-src:
+    - https://t1.daumcdn.net
+    - https://t1.kakaocdn.net
+webhooks: []
+contentRestrictions:
+  - Install only the latest provider-generated web code, without changing its ad-unit attributes or SDK.
+  - Show AdFit only on the approved registered media and on publicly readable content pages that comply with the current content policy.
+  - The OpenSoverignBlog adapter reserves fixed top and bottom spaces and renders at most two AdFit units per page, below the provider limit of four.
+  - Keep ads away from navigation, buttons, downloads, forms, identity checks, and other placements that can cause accidental clicks; never ask, reward, or pressure a visitor to click.
+  - Do not call AdFit from a publisher-created iframe, popup, email, PDF, or unapproved redirected site.
+adapterStatus: core-maintained
+adapterPackage: org.open-soverign-blog.monetization-policy
+selfHostedComponents:
+  - default-deny consent choice and withdrawal control
+  - public-reader route and named-slot policy
+  - fixed-size responsive top and bottom slot controller
+lastVerified: 2026-07-24
+maintainers: [OpenSoverignBlog maintainers]
+sources:
+  - title: Kakao AdFit product overview and media review flow
+    url: https://adfit.kakao.com/info
+    checkedAt: 2026-07-24
+  - title: Official Kakao AdFit Web SDK guide
+    url: https://adfit.github.io/wiki/web-guide/
+    checkedAt: 2026-07-24
+  - title: Official AdFit Web SDK repository guide
+    url: https://github.com/adfit/adfit-web-sdk
+    checkedAt: 2026-07-24
+  - title: Kakao AdFit service operating policy
+    url: https://adfit.kakao.com/web/html/use_kakao.html
+    checkedAt: 2026-07-24
+  - title: Kakao AdFit terms of service
+    url: https://adfit.kakao.com/web/html/stipulation_kakao.html
+    checkedAt: 2026-07-24
+  - title: Kakao Business privacy policy
+    url: https://business.kakao.com/policy/privacy/
+    checkedAt: 2026-07-24
+evidenceGaps:
+  - field: cookiesAndStorage and personalizationSupported
+    note: The public terms mention anonymous internet-use information including cookies, but do not provide one web-SDK-specific cookie, storage, retention, profiling, or personalization inventory. Keep all three declared purposes behind the optional gate until the operator completes its own assessment.
+  - field: requiredDomains and cspRequirements
+    note: The listed Kakao-operated and legacy Daum hosts were present in the live official loader on 2026-07-24. Creative assets, click destinations, redirects, and future mutable SDK releases can add hosts; verify an approved unit with a clean-browser trace before production and fail closed on undeclared resource requests.
+  - field: supportedRegions
+    note: The cited pages describe Korean account, identity, business, tax, and settlement procedures but do not publish a complete applicant-residence or audience-country matrix.
+  - field: adsTxtRequirements
+    note: No ads.txt requirement was established from the cited official pages. The adapter deliberately does not create or modify ads.txt; re-check the operator dashboard before changing that state.
+knownRisks:
+  - The official loader URL is mutable and unpinned. A provider change can alter domains, storage, data access, or CSP needs without an OpenSoverignBlog release.
+  - The provider requires direct page installation and prohibits publisher-created iframe calls. After consent, its third-party script runs in the public reader document and can observe document and browser context allowed by the page.
+  - Although the only explicit SDK loader used by this adapter is https://t1.kakaocdn.net/kas/static/ba.min.js, the Kakao-operated SDK currently calls legacy daum.net and daumcdn.net hosts. Replacing, proxying, or rewriting those SDK internals would violate the provider-code integrity rule.
+  - Ad-unit IDs are intentionally exposed to browsers and are not API credentials, but committing deployment-specific IDs can still reveal media configuration and invite misuse.
+  - Provider approval, policy compliance, payout eligibility, legal basis, disclosures, and clean-browser verification remain the operator's responsibility; core-maintained describes adapter ownership, not provider approval or legal certification.

@@ -8,6 +8,7 @@ use base64::{
 use osb_feature_code_runner_client::{
     BearerToken, OutputMode, ProfileRegistry, RemoteRunnerConfig, RunLimits, RunnerProfile,
 };
+use osb_feature_monetization_policy::KakaoAdFitUnits;
 use serde::Deserialize;
 use url::Url;
 use uuid::Uuid;
@@ -47,6 +48,9 @@ pub struct RuntimeConfig {
     pub redis: Option<RedisSettings>,
     pub operations: OperationsSettings,
     pub runner: Option<RunnerSettings>,
+    /// Browser-visible Kakao AdFit unit identifiers. These are accepted only
+    /// as one complete, environment-only placement set.
+    pub kakao_adfit: Option<KakaoAdFitUnits>,
 }
 
 #[derive(Debug, Clone)]
@@ -499,6 +503,12 @@ impl RuntimeConfig {
             .runner
             .map(|runner| runner.into_runtime())
             .transpose()?;
+        let kakao_adfit = resolve_kakao_adfit([
+            env_value("OSB_KAKAO_ADFIT_PC_TOP_UNIT"),
+            env_value("OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT"),
+            env_value("OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT"),
+            env_value("OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT"),
+        ])?;
 
         if let Some(path) = source {
             tracing::info!(path = %path.display(), "loaded configuration file");
@@ -531,8 +541,39 @@ impl RuntimeConfig {
             redis,
             operations,
             runner,
+            kakao_adfit,
         })
     }
+}
+
+const KAKAO_ADFIT_ENV_NAMES: [&str; 4] = [
+    "OSB_KAKAO_ADFIT_PC_TOP_UNIT",
+    "OSB_KAKAO_ADFIT_PC_BOTTOM_UNIT",
+    "OSB_KAKAO_ADFIT_MOBILE_TOP_UNIT",
+    "OSB_KAKAO_ADFIT_MOBILE_BOTTOM_UNIT",
+];
+
+fn resolve_kakao_adfit(values: [Option<String>; 4]) -> Result<Option<KakaoAdFitUnits>> {
+    let configured = values.iter().filter(|value| value.is_some()).count();
+    if configured == 0 {
+        return Ok(None);
+    }
+    if configured != values.len() {
+        anyhow::bail!(
+            "Kakao AdFit requires all four environment variables together: {}",
+            KAKAO_ADFIT_ENV_NAMES.join(", ")
+        );
+    }
+    let [pc_top, pc_bottom, mobile_top, mobile_bottom] = values;
+    KakaoAdFitUnits::new(
+        pc_top.expect("complete Kakao AdFit environment"),
+        pc_bottom.expect("complete Kakao AdFit environment"),
+        mobile_top.expect("complete Kakao AdFit environment"),
+        mobile_bottom.expect("complete Kakao AdFit environment"),
+    )
+    .map(Some)
+    .map_err(anyhow::Error::msg)
+    .context("Kakao AdFit environment configuration is invalid")
 }
 
 fn validate_mcp_token_policy(
@@ -1482,6 +1523,41 @@ mod tests {
     fn feature_flags_become_a_deterministic_registry_request() {
         let config: FileConfig = toml::from_str("[features]\nseo = true\ncomments = true").unwrap();
         assert_eq!(config.features.unwrap().enabled_csv(), "comments,seo");
+    }
+
+    #[test]
+    fn kakao_adfit_units_are_all_or_none_and_distinct() {
+        assert!(
+            resolve_kakao_adfit([None, None, None, None])
+                .unwrap()
+                .is_none()
+        );
+
+        let partial =
+            resolve_kakao_adfit([Some("DAN-PcTop1234".into()), None, None, None]).unwrap_err();
+        assert!(
+            partial
+                .to_string()
+                .contains("all four environment variables")
+        );
+
+        let complete = resolve_kakao_adfit([
+            Some("DAN-PcTop1234".into()),
+            Some("DAN-PcBottom1234".into()),
+            Some("DAN-MobileTop1234".into()),
+            Some("DAN-MobileBottom1234".into()),
+        ])
+        .unwrap();
+        assert!(complete.is_some());
+
+        let duplicate = resolve_kakao_adfit([
+            Some("DAN-Reused1234".into()),
+            Some("DAN-Reused1234".into()),
+            Some("DAN-MobileTop1234".into()),
+            Some("DAN-MobileBottom1234".into()),
+        ])
+        .unwrap_err();
+        assert!(format!("{duplicate:#}").contains("four distinct unit ids"));
     }
 
     #[test]

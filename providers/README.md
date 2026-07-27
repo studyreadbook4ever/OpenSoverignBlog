@@ -13,10 +13,12 @@ scripts, cookies, and policies change frequently. Every claim needs an official
 source and `lastVerified`; stale entries stay visible but must be marked stale.
 Do not turn missing information into a guess or a sovereignty score.
 
-The seed catalog contains eight real providers verified against provider-owned
-documentation on 2026-07-18, plus one fictional first-party sponsorship
-template. All eight real entries are `catalog-only`: the repository ships no
-provider adapter, credentials, endorsement, or promise that an operator is
+The seed catalog contains nine real providers, plus one fictional first-party
+sponsorship template. Eight real entries were last verified against
+provider-owned documentation on 2026-07-18 and remain `catalog-only`.
+`kakao.adfit` was last verified on 2026-07-24 and has a narrowly scoped
+core-maintained adapter. An adapter is not an endorsement, a provider account,
+approval of a particular media property, or a promise that an operator is
 eligible.
 
 The machine index is [`index.json`](index.json), validated by
@@ -46,6 +48,13 @@ the cited source and `evidenceGaps` before proposing an integration.
 An adapter manifest must request the same domains and secrets declared by its
 catalog entry. CI rejects undeclared network access. Catalog data and adapter
 code have independent licenses and provenance.
+
+Provider-issued browser identifiers are not automatically secrets. The Kakao
+AdFit adapter accepts four `DAN-…` ad-unit IDs through local environment
+configuration so deployments do not need to publish them, but those IDs are
+necessarily sent to and visible in every consenting reader's browser. The
+adapter therefore requests no `secret.use` capability. See
+[`KAKAO-ADFIT.md`](../docs/monetization/KAKAO-ADFIT.md) for its exact boundary.
 
 ## Community expansion and federation
 

@@ -5,6 +5,7 @@ import {
   useState,
   type ChangeEvent,
   type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   type ReactNode,
 } from "react";
@@ -19,6 +20,7 @@ import type {
   CreatePostInput,
   DocumentSnapshot,
   EmbedReference,
+  HomePinTarget,
   OntologySidecar,
   PublishArtifact,
   SeriesSummary,
@@ -28,19 +30,30 @@ import type {
 import { AdminAccessKeyForm } from "./admin-access";
 import { useSession } from "./app";
 import { adminAuthChoices, studioAccessFor } from "./auth-policy";
-import { socialEmbedFromUrl } from "./social-embeds";
+import { socialEmbedDirective, socialEmbedFromInput } from "./social-embeds";
 import {
   acceptedEditorState,
   aiSummarySourceHash,
   editorFingerprint,
+  firstPartyAssetMarkdownUrl,
   homeCurationCandidates,
+  homeCurationRows,
+  homePinTargetKey,
+  homePinTargets,
+  insertMarkdownBlock,
+  markdownImageSource,
+  publishedSeriesMembership,
   type HomeCurationCandidate,
   isAiSummarySourceCurrent,
   normalizeSavePayload,
+  normalizedEditorSubtitle,
   normalizedEditorTitle,
   payloadFingerprint,
   revisionSavePayload,
   reviewAiSummaryCandidate,
+  selectStudioImageBatch,
+  subtitleCharacterCount,
+  uploadStudioImageQueue,
 } from "./studio-state";
 import {
   AppLink,
@@ -73,7 +86,7 @@ interface DraftMemoryScopes {
 
 interface PasteReceipt {
   occurredAt: string;
-  field: "title" | "slug" | "markdown" | "intent" | "embeds" | "ontology";
+  field: "title" | "subtitle" | "slug" | "markdown" | "intent" | "embeds" | "ontology";
   characters: number;
   mediaTypes: string[];
 }
@@ -103,8 +116,9 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const { session, capabilitiesError, refreshCapabilities } = useSession();
   const [documents, setDocuments] = useState<DocumentSnapshot[]>([]);
   const [categories, setCategories] = useState<CategorySummary[]>([]);
-  const [homePins, setHomePins] = useState<string[]>([]);
-  const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
+  const [series, setSeries] = useState<SeriesSummary[]>([]);
+  const [homePins, setHomePins] = useState<HomePinTarget[]>([]);
+  const [savedHomePins, setSavedHomePins] = useState<HomePinTarget[]>([]);
   const [homePinState, setHomePinState] = useState<HomePinLoadState>("unavailable");
   const [homePinNotice, setHomePinNotice] = useState<{ kind: "success" | "error"; text: string }>();
   const [savingHomePins, setSavingHomePins] = useState(false);
@@ -128,12 +142,16 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setLoading(true);
     setStatus(text("문서를 불러오는 중…", "Loading documents…"));
     try {
-      const [values, categoryResponse] = await Promise.all([
+      const [values, categoryResponse, seriesResponse] = await Promise.all([
         client.listStudioDocuments(),
         client.listStudioCategories(),
+        canCurateHome
+          ? client.listStudioSeries()
+          : Promise.resolve({ items: [] as SeriesSummary[] }),
       ]);
       setDocuments(values);
       setCategories(categoryResponse.items);
+      setSeries(seriesResponse.items);
       setStatus(values.length ? text(`${values.length}개의 문서를 불러왔습니다.`, `Loaded ${values.length} documents.`) : undefined);
     } catch (reason) {
       setStatus(asMessage(reason));
@@ -153,8 +171,9 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setHomePinNotice(undefined);
     try {
       const pins = await client.getHomePins();
-      setHomePins(pins.documentIds);
-      setSavedHomePins(pins.documentIds);
+      const targets = homePinTargets(pins);
+      setHomePins(targets);
+      setSavedHomePins(targets);
       setHomePinState("ready");
     } catch (reason) {
       if (isNotFound(reason)) setHomePinState("unavailable");
@@ -178,20 +197,34 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
   const collaboratorSession = studioAccess === "members" && session?.state === "authenticated"
     && Boolean(session.membershipRole && session.membershipRole !== "owner");
   const categoryById = new Map(categories.map((category) => [category.id, category]));
-  const documentById = new Map(documents.map((document) => [document.id, document]));
-  const homePinsChanged = homePins.join(":") !== savedHomePins.join(":");
+  const seriesMembership = publishedSeriesMembership(documents, series);
+  const homePinCandidates = homeCurationCandidates({
+    pinnedItems: [],
+    recentItems: [],
+  }, {
+    studioDocuments: documents,
+    studioSeries: series,
+    language: uiLanguage,
+  });
+  const homePinCandidateByKey = new Map(
+    homePinCandidates.map((candidate) => [homePinTargetKey(candidate.target), candidate]),
+  );
+  const selectedHomePinKeys = new Set(homePins.map(homePinTargetKey));
+  const homePinsChanged = homePins.map(homePinTargetKey).join(":")
+    !== savedHomePins.map(homePinTargetKey).join(":");
 
-  function toggleDashboardHomePin(documentId: string) {
+  function toggleDashboardHomePin(target: HomePinTarget) {
     setHomePinNotice(undefined);
-    if (homePins.includes(documentId)) {
-      setHomePins(homePins.filter((id) => id !== documentId));
+    const key = homePinTargetKey(target);
+    if (selectedHomePinKeys.has(key)) {
+      setHomePins(homePins.filter((item) => homePinTargetKey(item) !== key));
       return;
     }
     if (homePins.length >= 3) {
-      setHomePinNotice({ kind: "error", text: text("홈에는 글을 최대 3개까지 고정할 수 있습니다.", "You can pin up to three posts on the home page.") });
+      setHomePinNotice({ kind: "error", text: text("홈에는 시리즈와 일반 글을 합쳐 최대 3개까지 고정할 수 있습니다.", "You can pin up to three series and standalone posts combined.") });
       return;
     }
-    setHomePins([...homePins, documentId]);
+    setHomePins([...homePins, target]);
   }
 
   async function saveDashboardHomePins() {
@@ -199,10 +232,10 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
     setSavingHomePins(true);
     setHomePinNotice(undefined);
     try {
-      const saved = await client.replaceHomePins(homePins);
-      setHomePins(saved.documentIds);
-      setSavedHomePins(saved.documentIds);
-      setHomePinNotice({ kind: "success", text: text("홈 상단 고정 글을 저장했습니다.", "Saved home page pins.") });
+      const saved = homePinTargets(await client.replaceHomePinTargets(homePins));
+      setHomePins(saved);
+      setSavedHomePins(saved);
+      setHomePinNotice({ kind: "success", text: text("홈 항목의 고정 순서를 저장했습니다.", "Saved the pinned home-unit order.") });
     } catch (reason) {
       setHomePinNotice({ kind: "error", text: asMessage(reason) });
     } finally {
@@ -266,31 +299,56 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         <section className="studio-home-pin-panel" aria-labelledby="studio-home-pin-title">
           <div>
             <p className="eyebrow">Home curation</p>
-            <h2 id="studio-home-pin-title">{text("홈 상단 고정", "Pin to home")}</h2>
-            <p>{text("발행된 문서 카드에서 최대 3개를 선택하세요. 선택한 순서대로 공개 홈 맨 위에 표시됩니다.", "Choose up to three published documents. They appear at the top of the public home page in the selected order.")}</p>
+            <h2 id="studio-home-pin-title">{text("홈 순서 고정", "Pin home units")}</h2>
+            <p>{text("시리즈와 시리즈에 속하지 않은 일반 글을 합쳐 최대 3개까지 선택하세요. 고정한 항목은 공개 홈의 앞쪽에 선택 순서대로 놓입니다.", "Choose up to three series and standalone posts combined. Pinned units move to the front of the public home in your selected order.")}</p>
           </div>
           <span className="studio-home-pin-count">{homePins.length} / 3</span>
-          {homePinState === "loading" ? <p className="studio-home-pin-message" role="status">{text("현재 고정 글을 불러오는 중…", "Loading pinned posts…")}</p> : null}
+          {homePinState === "loading" ? <p className="studio-home-pin-message" role="status">{text("현재 고정 항목을 불러오는 중…", "Loading pinned units…")}</p> : null}
           {homePinState === "error" ? <p className="studio-home-pin-message is-error" role="alert">{homePinNotice?.text}</p> : null}
           {homePinState === "ready" ? (
             <>
-              <ol className="studio-home-pin-list" aria-label={text("현재 홈 상단 고정 순서", "Current home pin order")}>
-                {homePins.map((documentId, index) => {
-                  const document = documentById.get(documentId);
+              <ol className="studio-home-pin-list" aria-label={text("현재 홈 고정 순서", "Current home-unit pin order")}>
+                {homePins.map((target, index) => {
+                  const key = homePinTargetKey(target);
+                  const candidate = homePinCandidateByKey.get(key);
+                  const fallback = `${target.kind === "series" ? "Series" : "Post"} ${target.id.slice(0, 8)}`;
                   return (
-                    <li key={documentId}>
+                    <li key={key}>
                       <span aria-hidden="true">{index + 1}</span>
-                      <strong>{document?.revision.title || text(`발행 문서 ${documentId.slice(0, 8)}`, `Published document ${documentId.slice(0, 8)}`)}</strong>
-                      <button aria-label={text(`${document?.revision.title || "고정 글"} 고정 해제`, `Unpin ${document?.revision.title || "pinned post"}`)} onClick={() => toggleDashboardHomePin(documentId)} type="button">{text("해제", "Unpin")}</button>
+                      <span className={`home-pin-kind home-pin-kind-${target.kind}`}>{target.kind === "series" ? "Series" : "Post"}</span>
+                      <strong>{candidate?.title || fallback}</strong>
+                      <button aria-label={text(`${candidate?.title || fallback} 고정 해제`, `Unpin ${candidate?.title || fallback}`)} onClick={() => toggleDashboardHomePin(target)} type="button">{text("해제", "Unpin")}</button>
                     </li>
                   );
                 })}
               </ol>
-              {!homePins.length ? <p className="studio-home-pin-empty">{text("아직 고정한 글이 없습니다.", "No posts are pinned yet.")}</p> : null}
+              {!homePins.length ? <p className="studio-home-pin-empty">{text("아직 고정한 홈 항목이 없습니다.", "No home units are pinned yet.")}</p> : null}
+              {homePinCandidates.length ? (
+                <ul className="studio-home-pin-candidates" aria-label={text("고정할 수 있는 시리즈와 일반 글", "Series and standalone posts available to pin")}>
+                  {homePinCandidates.map((candidate) => {
+                    const key = homePinTargetKey(candidate.target);
+                    const selected = selectedHomePinKeys.has(key);
+                    return (
+                      <li key={key}>
+                        <button
+                          aria-pressed={selected}
+                          disabled={!selected && homePins.length >= 3}
+                          onClick={() => toggleDashboardHomePin(candidate.target)}
+                          type="button"
+                        >
+                          <span className={`home-pin-kind home-pin-kind-${candidate.kind}`}>{candidate.kind === "series" ? "Series" : "Post"}</span>
+                          <span><strong>{candidate.title}</strong><small>{candidate.locationLabel}</small></span>
+                          <span>{selected ? text("고정 해제", "Unpin") : text("고정", "Pin")}</span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              ) : <p className="studio-home-pin-empty">{text("고정할 수 있는 발행 시리즈나 일반 글이 없습니다.", "There are no published series or standalone posts available to pin.")}</p>}
               <div className="studio-home-pin-actions">
                 <AppLink className="button button-ghost" href="/studio/settings">{text("순서 자세히 관리", "Manage order")}</AppLink>
                 <button className="button button-primary" disabled={!homePinsChanged || savingHomePins} onClick={() => void saveDashboardHomePins()} type="button">
-                  {savingHomePins ? text("저장하는 중…", "Saving…") : text("홈 고정 저장", "Save home pins")}
+                  {savingHomePins ? text("저장하는 중…", "Saving…") : text("홈 순서 저장", "Save home order")}
                 </button>
               </div>
               {homePinNotice ? <p className={`studio-home-pin-message is-${homePinNotice.kind}`} role={homePinNotice.kind === "error" ? "alert" : "status"}>{homePinNotice.text}</p> : null}
@@ -310,35 +368,44 @@ export function StudioDashboard({ capabilities }: { capabilities: Capabilities |
         ) : null}
         {documents.length ? (
           <div className="document-cards">
-            {documents.map((document) => (
+            {documents.map((document) => {
+              const target: HomePinTarget = { kind: "post", id: document.id };
+              const targetKey = homePinTargetKey(target);
+              const isSeriesMember = seriesMembership.documentIds.has(document.id);
+              const selected = selectedHomePinKeys.has(targetKey);
+              return (
               <article className="document-card" key={document.id}>
                 <div className="document-status-row">
                   <span className={`status-badge status-${document.status}`}>{document.status === "archived" ? text("보관됨", "Archived") : document.publishedRevisionId === document.currentRevisionId ? text("발행됨", "Published") : document.publishedRevisionId ? text("발행 대기 변경", "Changes pending publication") : text("초안", "Draft")}</span>
                   <time dateTime={document.updatedAt}>{formatDate(document.updatedAt)}</time>
                 </div>
                 <h3><AppLink href={`/studio/write/${document.id}`}>{document.revision.title || text("제목 없는 글", "Untitled post")}</AppLink></h3>
+                {document.revision.subtitle
+                  ? <p className="document-subtitle">{document.revision.subtitle}</p>
+                  : null}
                 <p className="document-slug">{document.categoryId && categoryById.get(document.categoryId)
                   ? `${session.instanceAdministrator ? "" : `/@${blogHandle}`}/${categoryById.get(document.categoryId)!.slug}/${document.revision.slug || "untitled"}`
                   : `/@${session?.state === "authenticated" && session.blog ? session.blog.handle : "blog"}/${document.revision.slug || "untitled"}`}</p>
                 <div className="document-card-footer">
                   <span>{text(`저장 버전 ${document.revision.revisionNumber}`, `Saved revision ${document.revision.revisionNumber}`)}</span>
                   <div className="document-card-actions">
-                    {canCurateHome && homePinState === "ready" && document.publishedRevisionId && document.status !== "archived" ? (
+                    {canCurateHome && homePinState === "ready" && document.publishedRevisionId && document.status !== "archived" && !isSeriesMember ? (
                       <button
-                        aria-pressed={homePins.includes(document.id)}
+                        aria-pressed={selected}
                         className="document-home-pin"
-                        disabled={!homePins.includes(document.id) && homePins.length >= 3}
-                        onClick={() => toggleDashboardHomePin(document.id)}
+                        disabled={!selected && homePins.length >= 3}
+                        onClick={() => toggleDashboardHomePin(target)}
                         type="button"
                       >
-                        {homePins.includes(document.id) ? text("홈 고정 해제", "Unpin from home") : text("홈에 고정", "Pin to home")}
+                        {selected ? text("홈 고정 해제", "Unpin from home") : text("홈에 고정", "Pin to home")}
                       </button>
                     ) : null}
                     <AppLink href={`/studio/write/${document.id}`}>{text("계속 쓰기", "Continue writing")} <span aria-hidden="true">→</span></AppLink>
                   </div>
                 </div>
               </article>
-            ))}
+              );
+            })}
           </div>
         ) : null}
       </section>
@@ -360,9 +427,9 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const [customCss, setCustomCss] = useState("");
   const [saving, setSaving] = useState(false);
   const [settingsNotice, setSettingsNotice] = useState<{ kind: "success" | "error"; text: string }>();
-  const [curationPosts, setCurationPosts] = useState<HomeCurationCandidate[]>([]);
-  const [homePins, setHomePins] = useState<string[]>([]);
-  const [savedHomePins, setSavedHomePins] = useState<string[]>([]);
+  const [curationCandidates, setCurationCandidates] = useState<HomeCurationCandidate[]>([]);
+  const [homePins, setHomePins] = useState<HomePinTarget[]>([]);
+  const [savedHomePins, setSavedHomePins] = useState<HomePinTarget[]>([]);
   const [curationState, setCurationState] = useState<SettingsLoadState>("unavailable");
   const [curationNotice, setCurationNotice] = useState<{ kind: "success" | "error"; text: string }>();
   const [savingCuration, setSavingCuration] = useState(false);
@@ -442,7 +509,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   useEffect(() => {
     if (!homeCurationAvailable) {
       setCurationState("unavailable");
-      setCurationPosts([]);
+      setCurationCandidates([]);
       setHomePins([]);
       setSavedHomePins([]);
       return;
@@ -454,11 +521,17 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
       client.home(controller.signal),
       client.getHomePins(controller.signal),
       client.listStudioDocuments(controller.signal),
-    ]).then(([home, pins, documents]) => {
+      client.listStudioSeries(controller.signal),
+    ]).then(([home, pins, documents, seriesResponse]) => {
       if (controller.signal.aborted) return;
-      setCurationPosts(homeCurationCandidates(home, documents, uiLanguage));
-      setHomePins(pins.documentIds);
-      setSavedHomePins(pins.documentIds);
+      setCurationCandidates(homeCurationCandidates(home, {
+        studioDocuments: documents,
+        studioSeries: seriesResponse.items,
+        language: uiLanguage,
+      }));
+      const targets = homePinTargets(pins);
+      setHomePins(targets);
+      setSavedHomePins(targets);
       setCurationState("ready");
     }).catch((reason: unknown) => {
       if (controller.signal.aborted) return;
@@ -475,7 +548,9 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
   const settingsChanged = Boolean(settings) && (
     themePreset !== settings?.themePreset || (settings.customCssEnabled && customCss !== (settings.customCss ?? ""))
   );
-  const homePinsChanged = homePins.join(":") !== savedHomePins.join(":");
+  const homePinsChanged = homePins.map(homePinTargetKey).join(":")
+    !== savedHomePins.map(homePinTargetKey).join(":");
+  const curationRows = homeCurationRows(curationCandidates, homePins, uiLanguage);
 
   async function saveSettings() {
     if (!settings || saving) return;
@@ -539,21 +614,25 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     }
   }
 
-  function toggleHomePin(documentId: string) {
+  function toggleHomePin(target: HomePinTarget) {
     setCurationNotice(undefined);
     setHomePins((current) => {
-      if (current.includes(documentId)) return current.filter((id) => id !== documentId);
-      return current.length < 3 ? [...current, documentId] : current;
+      const key = homePinTargetKey(target);
+      if (current.some((item) => homePinTargetKey(item) === key)) {
+        return current.filter((item) => homePinTargetKey(item) !== key);
+      }
+      return current.length < 3 ? [...current, target] : current;
     });
   }
 
-  function moveHomePin(documentId: string, offset: -1 | 1) {
+  function moveHomePin(target: HomePinTarget, offset: -1 | 1) {
     setHomePins((current) => {
-      const index = current.indexOf(documentId);
-      const target = index + offset;
-      if (index < 0 || target < 0 || target >= current.length) return current;
+      const key = homePinTargetKey(target);
+      const index = current.findIndex((item) => homePinTargetKey(item) === key);
+      const targetIndex = index + offset;
+      if (index < 0 || targetIndex < 0 || targetIndex >= current.length) return current;
       const next = [...current];
-      [next[index], next[target]] = [next[target]!, next[index]!];
+      [next[index], next[targetIndex]] = [next[targetIndex]!, next[index]!];
       return next;
     });
   }
@@ -563,10 +642,10 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
     setSavingCuration(true);
     setCurationNotice(undefined);
     try {
-      const saved = await client.replaceHomePins(homePins);
-      setHomePins(saved.documentIds);
-      setSavedHomePins(saved.documentIds);
-      setCurationNotice({ kind: "success", text: text("홈 주요 글을 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다.", "Saved featured home posts. The public home cache will also refresh.") });
+      const saved = homePinTargets(await client.replaceHomePinTargets(homePins));
+      setHomePins(saved);
+      setSavedHomePins(saved);
+      setCurationNotice({ kind: "success", text: text("홈 항목의 고정 순서를 저장했습니다. 공개 홈 캐시도 새로 고쳐집니다.", "Saved the pinned home-unit order. The public home cache will also refresh.") });
     } catch (reason) {
       setCurationNotice({ kind: "error", text: asMessage(reason) });
     } finally {
@@ -681,7 +760,7 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
           {homeCurationAvailable ? (
             <section className="settings-panel home-curation-panel" aria-labelledby="home-curation-title">
               <div className="settings-panel-heading">
-                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">{text("홈 주요 글", "Featured home posts")}</h2><p>{text("발행된 글 중 최대 3개를 골라 공개 홈의 맨 위에 순서대로 고정합니다.", "Choose up to three published posts and pin them in order at the top of the public home page.")}</p></div></div>
+                <div><span className="settings-step" aria-hidden="true">02</span><div><h2 id="home-curation-title">{text("홈 항목 고정", "Pinned home units")}</h2><p>{text("시리즈와 시리즈에 속하지 않은 일반 글을 합쳐 최대 3개까지 고정합니다. 선택한 순서가 공개 홈의 앞쪽 순서가 됩니다.", "Pin up to three series and standalone posts combined. Your selected order becomes their order at the front of the public home.")}</p></div></div>
                 <span className="settings-revision">{homePins.length} / 3</span>
               </div>
               {curationState === "loading" ? <div className="collaboration-loading" role="status">{text("홈 구성을 불러오는 중…", "Loading home curation…")}</div> : null}
@@ -689,37 +768,42 @@ export function StudioSettingsPage({ capabilities }: { capabilities: Capabilitie
               {curationState === "unavailable" ? <div className="collaboration-off"><strong>{text("홈 큐레이션 DLC가 활성화되지 않았습니다.", "Home curation is not enabled.")}</strong><p>{text("공개 피드는 계속 최신순으로 동작합니다.", "The public feed continues to use most-recent-first order.")}</p></div> : null}
               {curationState === "ready" ? (
                 <>
-                  {curationPosts.length ? (
+                  {curationRows.length ? (
                     <ol className="home-curation-list">
-                      {curationPosts.map((post) => {
-                        const position = homePins.indexOf(post.id);
+                      {curationRows.map((candidate) => {
+                        const key = homePinTargetKey(candidate.target);
+                        const position = homePins.findIndex((target) => homePinTargetKey(target) === key);
                         const selected = position >= 0;
                         return (
-                          <li className={selected ? "is-selected" : ""} key={post.id}>
+                          <li className={selected ? "is-selected" : ""} key={key}>
                             <button
                               aria-pressed={selected}
                               className="home-curation-select"
                               disabled={!selected && homePins.length >= 3}
-                              onClick={() => toggleHomePin(post.id)}
+                              onClick={() => toggleHomePin(candidate.target)}
                               type="button"
                             >
                               <span aria-hidden="true">{selected ? position + 1 : "＋"}</span>
-                              <span><strong>{post.title}</strong><small>{post.locationLabel}</small></span>
+                              <span>
+                                <span className={`home-pin-kind home-pin-kind-${candidate.kind}`}>{candidate.kind === "series" ? "Series" : "Post"}</span>
+                                <strong>{candidate.title}</strong>
+                                <small>{candidate.locationLabel}</small>
+                              </span>
                               <span>{selected ? text("고정 해제", "Unpin") : text("고정", "Pin")}</span>
                             </button>
                             {selected ? (
-                              <div className="home-curation-order" aria-label={text(`${post.title} 순서 변경`, `Change order for ${post.title}`)}>
-                                <button disabled={position === 0} onClick={() => moveHomePin(post.id, -1)} type="button">{text("위", "Up")}</button>
-                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(post.id, 1)} type="button">{text("아래", "Down")}</button>
+                              <div className="home-curation-order" aria-label={text(`${candidate.title} 순서 변경`, `Change order for ${candidate.title}`)}>
+                                <button disabled={position === 0} onClick={() => moveHomePin(candidate.target, -1)} type="button">{text("위", "Up")}</button>
+                                <button disabled={position === homePins.length - 1} onClick={() => moveHomePin(candidate.target, 1)} type="button">{text("아래", "Down")}</button>
                               </div>
                             ) : null}
                           </li>
                         );
                       })}
                     </ol>
-                  ) : <div className="collaborator-empty"><p>{text("먼저 글을 하나 발행하면 여기에서 고를 수 있습니다.", "Publish a post first, then choose it here.")}</p></div>}
+                  ) : <div className="collaborator-empty"><p>{text("먼저 시리즈에 글을 발행하거나 일반 글을 하나 발행하면 여기에서 고를 수 있습니다.", "Publish a series entry or a standalone post first, then choose it here.")}</p></div>}
                   <div className="settings-save-row">
-                    <p>{text("고정 글은 최근 글 목록에서 중복해서 나오지 않습니다.", "Pinned posts are not duplicated in the recent-post list.")}</p>
+                    <p>{text("고정은 별도 구역이나 배지를 만들지 않고 홈 항목의 순서만 앞당깁니다.", "Pinning changes only the home-unit order; it does not add a separate section or badge.")}</p>
                     <button className="button button-primary" disabled={!homePinsChanged || savingCuration} onClick={() => void saveHomeCuration()} type="button">{savingCuration ? text("저장하는 중…", "Saving…") : text("홈 구성 저장", "Save home curation")}</button>
                   </div>
                   {curationNotice ? <p className={`settings-message is-${curationNotice.kind}`} role={curationNotice.kind === "error" ? "alert" : "status"}>{curationNotice.text}</p> : null}
@@ -820,6 +904,8 @@ export function StudioEditor({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [imageUploadPending, setImageUploadPending] = useState(false);
+  const [imageDragActive, setImageDragActive] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<EditorTab>("write");
   const [slugTouched, setSlugTouched] = useState(Boolean(draft.slug));
@@ -977,7 +1063,7 @@ export function StudioEditor({
     };
     // Sidecar parsing is intentionally deferred until save; source preview remains responsive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canEdit, loadingDocument, loadError, draft.title, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, draft.aiSummary, currentAiSummarySourceHash, embedText]);
+  }, [canEdit, loadingDocument, loadError, draft.title, draft.subtitle, draft.slug, draft.sourceMarkdown, draft.intent, draft.authorship, draft.aiSummary, currentAiSummarySourceHash, embedText]);
 
   function update<K extends keyof CreatePostInput>(key: K, value: CreatePostInput[K]) {
     setStatus(undefined);
@@ -997,6 +1083,7 @@ export function StudioEditor({
     const revision = document.revision;
     const post: CreatePostInput = {
       title: revision.title,
+      ...(revision.subtitle ? { subtitle: revision.subtitle } : {}),
       slug: revision.slug,
       sourceMarkdown: revision.sourceMarkdown,
       embeds: revision.embeds,
@@ -1030,6 +1117,7 @@ export function StudioEditor({
       const now = new Date();
       const post: CreatePostInput = {
         title: memoryScopes.core ? draft.title : "",
+        ...(memoryScopes.core && draft.subtitle ? { subtitle: draft.subtitle } : {}),
         slug: memoryScopes.core ? draft.slug : "",
         sourceMarkdown: memoryScopes.core ? draft.sourceMarkdown : "",
         ...(memoryScopes.core && draft.authorship ? { authorship: draft.authorship } : {}),
@@ -1059,11 +1147,11 @@ export function StudioEditor({
     }
   }
 
-  function handlePaste(field: PasteReceipt["field"], event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+  function handlePaste(field: PasteReceipt["field"], event: ClipboardEvent<HTMLInputElement | HTMLTextAreaElement>): boolean {
     if (pastePolicy === "block") {
       event.preventDefault();
       setStatus(text(`${field} 붙여넣기를 현재 초안 정책이 차단했습니다.`, `The current draft policy blocked pasting into ${field}.`));
-      return;
+      return false;
     }
     const characters = event.clipboardData.getData("text/plain").length;
     if (memoryScopes.pasteReceipts) {
@@ -1074,6 +1162,7 @@ export function StudioEditor({
         mediaTypes: Array.from(event.clipboardData.types).slice(0, 16),
       }]);
     }
+    return true;
   }
 
   function parsePayload(): CreatePostInput | undefined {
@@ -1102,8 +1191,17 @@ export function StudioEditor({
       setStatus(text("AI 지식 연결 정보의 JSON 형식을 확인해 주세요.", "Check the JSON format of the AI knowledge connection data."));
       return;
     }
+    const subtitle = normalizedEditorSubtitle(draft.subtitle);
+    if (subtitleCharacterCount(subtitle) > 500) {
+      setStatus(text(
+        "부제는 실제 글자 기준 500자 이하여야 합니다.",
+        "The subtitle must be 500 characters or fewer.",
+      ));
+      return;
+    }
     return normalizeSavePayload({
       title: normalizedEditorTitle(draft.title),
+      ...(subtitle ? { subtitle } : {}),
       slug: draft.slug.trim(),
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
@@ -1123,8 +1221,10 @@ export function StudioEditor({
     } catch {
       // Keep the writing preview responsive; save surfaces malformed JSON.
     }
+    const subtitle = normalizedEditorSubtitle(draft.subtitle);
     return {
       title: normalizedEditorTitle(draft.title) || text("제목 없는 글", "Untitled post"),
+      ...(subtitle ? { subtitle } : {}),
       slug: draft.slug || "untitled",
       sourceMarkdown: draft.sourceMarkdown,
       embeds,
@@ -1138,6 +1238,10 @@ export function StudioEditor({
   }
 
   async function saveRevision() {
+    if (imageUploadPending) {
+      setStatus(text("이미지 업로드가 끝난 뒤 글을 저장해 주세요.", "Wait for image uploads to finish before saving."));
+      return;
+    }
     if (!draft.title.trim() || !draft.slug.trim() || !draft.sourceMarkdown.trim()) {
       setStatus(text("제목과 본문을 입력해 주세요. 글 주소는 제목에서 자동으로 만들어집니다.", "Enter a title and body. The post address is generated automatically from the title."));
       return;
@@ -1172,6 +1276,10 @@ export function StudioEditor({
   }
 
   async function publishAccepted() {
+    if (imageUploadPending) {
+      setStatus(text("이미지 업로드가 끝난 뒤 글을 공개해 주세요.", "Wait for image uploads to finish before publishing."));
+      return;
+    }
     if (!canPublish) {
       setStatus(text("초안은 저장됐습니다. 공개 발행은 블로그 소유자만 할 수 있습니다.", "The draft is saved. Only the blog owner can publish."));
       return;
@@ -1223,26 +1331,124 @@ export function StudioEditor({
     window.requestAnimationFrame(() => textarea.focus());
   }
 
-  async function uploadImage(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setStatus(text(`${file.name} 업로드 중…`, `Uploading ${file.name}…`));
-    try {
-      const uploaded = await client.uploadStudioAsset(file, file.name);
-      const markdown = `![${uploaded.record.originalFilename}](${uploaded.url})`;
-      const textarea = textareaRef.current;
-      if (textarea) {
-        const index = textarea.selectionStart;
-        update("sourceMarkdown", `${draft.sourceMarkdown.slice(0, index)}\n${markdown}\n${draft.sourceMarkdown.slice(index)}`);
-      } else {
-        update("sourceMarkdown", `${draft.sourceMarkdown.replace(/\s*$/, "")}\n\n${markdown}\n`);
-      }
-      setStatus(text("이미지를 저장하고 본문에 넣었습니다.", "Saved the image and inserted it into the body."));
-    } catch (reason) {
-      setStatus(asMessage(reason));
-    } finally {
-      event.target.value = "";
+  async function uploadImages(
+    files: readonly File[],
+    selectionStart: number,
+    selectionEnd: number,
+  ) {
+    if (imageUploadPending) {
+      setStatus(text("진행 중인 이미지 업로드가 끝난 뒤 다시 시도해 주세요.", "Wait for the current image upload to finish, then try again."));
+      return;
     }
+    const selected = selectStudioImageBatch(files);
+    if (!selected.accepted.length) {
+      setStatus(imageSelectionError(selected.rejected.map(({ reason }) => reason)));
+      return;
+    }
+
+    setImageUploadPending(true);
+    setImageDragActive(false);
+    let current = 0;
+    try {
+      const uploaded = await uploadStudioImageQueue(selected.accepted, async (file) => {
+        current += 1;
+        const displayName = imageDisplayName(file, current);
+        setStatus(text(
+          `이미지 ${current}/${selected.accepted.length} · ${displayName} 업로드 중…`,
+          `Uploading image ${current}/${selected.accepted.length} · ${displayName}…`,
+        ));
+        const response = await client.uploadStudioAsset(file, displayName);
+        const url = firstPartyAssetMarkdownUrl(response.url, window.location.href);
+        return markdownImageSource(displayName, url);
+      });
+
+      if (uploaded.completed.length) {
+        const block = uploaded.completed.map(({ result }) => result).join("\n\n");
+        let caret = selectionStart;
+        setDraft((value) => {
+          const insertion = insertMarkdownBlock(
+            value.sourceMarkdown,
+            selectionStart,
+            selectionEnd,
+            block,
+          );
+          caret = insertion.caret;
+          return { ...value, sourceMarkdown: insertion.sourceMarkdown };
+        });
+        window.requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(caret, caret);
+        });
+      }
+
+      const rejectedCount = selected.rejected.length;
+      const failedCount = uploaded.failed.length;
+      if (failedCount || rejectedCount) {
+        setStatus(text(
+          `이미지 ${uploaded.completed.length}개를 넣었습니다. ${failedCount + rejectedCount}개는 형식·크기 또는 업로드 응답을 확인해 주세요.`,
+          `Inserted ${uploaded.completed.length} image(s). Check the format, size, or upload response for ${failedCount + rejectedCount} image(s).`,
+        ));
+      } else {
+        setStatus(text(
+          `이미지 ${uploaded.completed.length}개를 저장하고 본문에 넣었습니다.`,
+          `Saved and inserted ${uploaded.completed.length} image(s).`,
+        ));
+      }
+    } finally {
+      setImageUploadPending(false);
+    }
+  }
+
+  function uploadSelectedImages(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? draft.sourceMarkdown.length;
+    const end = textarea?.selectionEnd ?? start;
+    event.target.value = "";
+    void uploadImages(files, start, end);
+  }
+
+  function handleMarkdownPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!handlePaste("markdown", event)) return;
+    const files = transferFiles(event.clipboardData);
+    if (!files.length) return;
+    event.preventDefault();
+    void uploadImages(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  }
+
+  function handleImageDrag(event: DragEvent<HTMLTextAreaElement>) {
+    if (!transferContainsFiles(event.dataTransfer)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setImageDragActive(true);
+  }
+
+  function handleImageDragLeave(event: DragEvent<HTMLTextAreaElement>) {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) return;
+    setImageDragActive(false);
+  }
+
+  function handleImageDrop(event: DragEvent<HTMLTextAreaElement>) {
+    const files = transferFiles(event.dataTransfer);
+    setImageDragActive(false);
+    if (!files.length) return;
+    event.preventDefault();
+    void uploadImages(files, event.currentTarget.selectionStart, event.currentTarget.selectionEnd);
+  }
+
+  function insertSemanticEmbed(directive: string): boolean {
+    if (draft.sourceMarkdown.includes(directive)) return false;
+    const textarea = textareaRef.current;
+    const start = textarea?.selectionStart ?? draft.sourceMarkdown.length;
+    const end = textarea?.selectionEnd ?? start;
+    const insertion = insertMarkdownBlock(draft.sourceMarkdown, start, end, directive);
+    update("sourceMarkdown", insertion.sourceMarkdown);
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(insertion.caret, insertion.caret);
+    });
+    return true;
   }
 
   const sanitizedPreview = useMemo(
@@ -1258,6 +1464,7 @@ export function StudioEditor({
     [draft, embedText, ontologyText],
   );
   const bodyCharacterCount = draft.sourceMarkdown.length;
+  const subtitleLength = subtitleCharacterCount(normalizedEditorSubtitle(draft.subtitle));
   const readingMinutes = estimateReadingMinutes(draft.sourceMarkdown);
   const revisionMatchesDraft = Boolean(accepted && acceptedFingerprint === currentFingerprint);
   const currentRevisionPublished = Boolean(
@@ -1287,12 +1494,12 @@ export function StudioEditor({
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
       if (event.key.toLowerCase() === "s") {
         event.preventDefault();
-        if (!saving && !publishing && !revisionMatchesDraft) void saveRevision();
+        if (!saving && !publishing && !imageUploadPending && !revisionMatchesDraft) void saveRevision();
         return;
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        if (canPublish && !publishing && !publishOpen) setPublishOpen(true);
+        if (canPublish && !publishing && !imageUploadPending && !publishOpen) setPublishOpen(true);
       }
     }
     window.addEventListener("keydown", handleEditorShortcut);
@@ -1337,7 +1544,7 @@ export function StudioEditor({
           <button
             aria-keyshortcuts="Control+S Meta+S"
             className="button button-save-draft"
-            disabled={saving || publishing || revisionMatchesDraft}
+            disabled={saving || publishing || imageUploadPending || revisionMatchesDraft}
             onClick={() => void saveRevision()}
             title={text("현재 내용 저장 (Ctrl/⌘ + S)", "Save current content (Ctrl/⌘ + S)")}
             type="button"
@@ -1348,7 +1555,7 @@ export function StudioEditor({
           <button
             aria-keyshortcuts="Control+Enter Meta+Enter"
             className="button button-publish"
-            disabled={publishing || !canPublish}
+            disabled={publishing || imageUploadPending || !canPublish}
             onClick={() => setPublishOpen(true)}
             title={canPublish ? text("출간 화면 열기 (Ctrl/⌘ + Enter)", "Open publish panel (Ctrl/⌘ + Enter)") : text("공개 발행은 블로그 소유자만 할 수 있습니다", "Only the blog owner can publish")}
             type="button"
@@ -1378,6 +1585,29 @@ export function StudioEditor({
               rows={1}
               value={draft.title}
             />
+            <label className="subtitle-editor-field" htmlFor="post-subtitle">
+              <span>
+                {text("부제 · 한 줄 소개", "Subtitle · one-line introduction")}
+                <small>{text("선택", "optional")}</small>
+              </span>
+              <input
+                aria-invalid={subtitleLength > 500}
+                className="subtitle-editor"
+                id="post-subtitle"
+                onChange={(event) => update("subtitle", event.target.value)}
+                onPaste={(event) => handlePaste("subtitle", event)}
+                placeholder={text(
+                  "제목 바로 아래에서 글을 소개하는 한 문장",
+                  "One line that introduces the post below its title",
+                )}
+                type="text"
+                value={draft.subtitle ?? ""}
+              />
+              <span className="subtitle-editor-meta">
+                <span>{text("입력한 경우에만 공개 글의 제목 아래에 표시됩니다.", "Shown below the public post title only when provided.")}</span>
+                <span>{subtitleLength} / 500</span>
+              </span>
+            </label>
             <span className="title-rule" aria-hidden="true" />
             <CategorySelector
               categories={categories}
@@ -1396,6 +1626,7 @@ export function StudioEditor({
               />
             ) : null}
             <MarkdownToolbar
+              disabled={imageUploadPending}
               onCommand={(command) => {
                 if (command === "heading") prefixLines("## ", text("제목", "Heading"));
                 if (command === "bold") applyFormat("**", "**", text("굵은 텍스트", "bold text"));
@@ -1411,13 +1642,13 @@ export function StudioEditor({
             {capabilities?.features.includes("social_embeds") ? (
               <SocialEmbedComposer
                 embedText={embedText}
-                setDraft={setDraft}
+                insertDirective={insertSemanticEmbed}
                 setEmbedText={setEmbedText}
                 setStatus={setStatus}
               />
             ) : null}
             <div className="editor-writing-meta">
-              <span className="writing-help">{text("서식 버튼으로 본문을 쉽게 꾸밀 수 있어요.", "Use the formatting buttons to style the body easily.")}</span>
+              <span className="writing-help">{text("이미지는 선택하거나 본문에 붙여넣고, 끌어다 놓을 수도 있어요.", "Choose, paste, or drag images directly into the body.")}</span>
               <span className="writing-stats">{text(`공백 포함 ${bodyCharacterCount.toLocaleString("ko-KR")}자 · 예상 ${readingMinutes ? `${readingMinutes}분` : "1분 미만"}`, `${bodyCharacterCount.toLocaleString("en-US")} characters including spaces · about ${readingMinutes ? `${readingMinutes} min` : "under 1 min"}`)}</span>
               <span className={`revision-state ${revisionMatchesDraft ? "is-saved" : "is-dirty"}`}>
                 {saving ? text("서버 저장 중", "Saving to server") : revisionMatchesDraft ? currentRevisionPublished ? text("현재 글 공개됨", "Post is public") : canPublish ? text("출간 준비됨", "Ready to publish") : text("소유자 검토 대기", "Awaiting owner review") : accepted ? text("변경 내용 저장 필요", "Changes need saving") : text("첫 저장 전", "Not yet saved")}
@@ -1425,21 +1656,34 @@ export function StudioEditor({
             </div>
             {status ? <p className="editor-notice" role="status">{status}</p> : null}
             <label className="sr-only" htmlFor="markdown-source">{text("Markdown 본문", "Markdown body")}</label>
-            <textarea
-              className="markdown-editor"
-              id="markdown-source"
-              onChange={(event) => update("sourceMarkdown", event.target.value)}
-              onPaste={(event) => handlePaste("markdown", event)}
-              placeholder={text("이야기를 시작해 보세요.\n\nMarkdown을 몰라도 위의 서식 버튼을 누르면 됩니다.", "Start your story.\n\nYou can use the formatting buttons above even if you do not know Markdown.")}
-              ref={textareaRef}
-              spellCheck="true"
-              value={draft.sourceMarkdown}
-            />
+            <div
+              aria-busy={imageUploadPending}
+              className={`markdown-editor-dropzone${imageDragActive ? " is-dragging" : ""}${imageUploadPending ? " is-uploading" : ""}`}
+            >
+              <textarea
+                className="markdown-editor"
+                id="markdown-source"
+                onChange={(event) => update("sourceMarkdown", event.target.value)}
+                onDragEnter={handleImageDrag}
+                onDragLeave={handleImageDragLeave}
+                onDragOver={handleImageDrag}
+                onDrop={handleImageDrop}
+                onPaste={handleMarkdownPaste}
+                placeholder={text("이야기를 시작해 보세요.\n\nMarkdown을 몰라도 위의 서식 버튼을 누르면 됩니다.", "Start your story.\n\nYou can use the formatting buttons above even if you do not know Markdown.")}
+                readOnly={imageUploadPending}
+                ref={textareaRef}
+                spellCheck="true"
+                value={draft.sourceMarkdown}
+              />
+              {imageDragActive ? <span className="image-drop-overlay">{text("여기에 놓아 이미지 넣기", "Drop to insert images")}</span> : null}
+            </div>
             <input
               accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
               aria-label={text("이미지 파일 선택", "Choose image file")}
               className="visually-hidden-input"
-              onChange={(event) => void uploadImage(event)}
+              disabled={imageUploadPending}
+              multiple
+              onChange={uploadSelectedImages}
               ref={fileInputRef}
               tabIndex={-1}
               type="file"
@@ -1476,6 +1720,9 @@ export function StudioEditor({
             <div className="preview-label"><span>{text("미리보기", "Preview")}</span><span>{previewState === "loading" ? text("최종 화면 확인 중…", "Checking final view…") : previewState === "ready" ? text("실제 공개 화면 기준", "Matches public view") : text("간단 미리보기", "Basic preview")}</span></div>
             <article className="editor-preview-article">
               <h1>{draft.title || text("제목 없는 글", "Untitled post")}</h1>
+              {normalizedEditorSubtitle(draft.subtitle)
+                ? <p className="article-deck">{normalizedEditorSubtitle(draft.subtitle)}</p>
+                : null}
               <div className="preview-byline"><span>{session?.state === "authenticated" ? session.user.displayName : text("작성자", "Author")}</span><span>·</span><span>{formatDate(new Date().toISOString())}</span></div>
               {previewArtifact ? (
                 <div className="article-content" dangerouslySetInnerHTML={{ __html: sanitizedPreview }} />
@@ -1842,21 +2089,24 @@ function AiSummaryPreview({ summary }: { summary: AiSummary }) {
 
 function SocialEmbedComposer({
   embedText,
-  setDraft,
+  insertDirective,
   setEmbedText,
   setStatus,
 }: {
   embedText: string;
-  setDraft: React.Dispatch<React.SetStateAction<CreatePostInput>>;
+  insertDirective: (directive: string) => boolean;
   setEmbedText: (value: string) => void;
   setStatus: (value: string | undefined) => void;
 }) {
   const [url, setUrl] = useState("");
-  const preview = useMemo(() => socialEmbedFromUrl(url, uiLanguage), [url]);
+  const preview = useMemo(() => socialEmbedFromInput(url, uiLanguage), [url]);
 
   function insert() {
     if (!preview) {
-      setStatus(text("지원하는 YouTube 또는 X 게시물의 https 주소를 확인해 주세요.", "Enter a supported HTTPS URL for a YouTube video or X post."));
+      setStatus(text(
+        "지원하는 YouTube·X 주소 또는 YouTube iframe 코드를 확인해 주세요.",
+        "Enter a supported YouTube or X URL, or a YouTube iframe snippet.",
+      ));
       return;
     }
     let current: EmbedReference[] = [];
@@ -1869,28 +2119,44 @@ function SocialEmbedComposer({
     }
     const next = [...current.filter((embed) => embed.id !== preview.id), preview];
     setEmbedText(JSON.stringify(next, null, 2));
-    setDraft((draft) => {
-      const directive = `::osb-embed ${preview.id}`;
-      if (draft.sourceMarkdown.includes(directive)) return draft;
-      const separator = draft.sourceMarkdown.trimEnd() ? "\n\n" : "";
-      return { ...draft, sourceMarkdown: `${draft.sourceMarkdown.trimEnd()}${separator}${directive}\n` };
-    });
+    const inserted = insertDirective(socialEmbedDirective(preview));
     setUrl("");
-    setStatus(text(`${preview.title} 연결과 본문 블록을 추가했습니다.`, `Added the ${preview.title} reference and body block.`));
+    setStatus(inserted
+      ? text(
+        `${preview.title}을 현재 커서 위치에 안전한 블록으로 넣었습니다.`,
+        `Inserted the ${preview.title} as a safe block at the cursor.`,
+      )
+      : text(
+        `${preview.title} 연결 정보는 갱신했고, 본문 블록은 이미 있어 그대로 두었습니다.`,
+        `Updated the ${preview.title} reference; its body block was already present.`,
+      ));
   }
 
   return (
-    <details className="social-embed-composer">
-      <summary>{text("동영상·X 게시물 넣기", "Insert video or X post")} <small>{text("URL만 붙여넣으세요", "Just paste a URL")}</small></summary>
+    <details className="social-embed-composer" open>
+      <summary>{text("웹 콘텐츠 넣기", "Insert web content")} <small>{text("YouTube · X", "YouTube · X")}</small></summary>
+      <p className="social-embed-help" id="social-embed-help">
+        {text(
+          "주소나 YouTube iframe 코드를 붙여넣으면 실행 코드는 버리고, 현재 커서 위치에 안전한 시맨틱 블록으로 바꿉니다.",
+          "Paste a URL or YouTube iframe snippet. OSB discards executable markup and inserts a safe semantic block at the cursor.",
+        )}
+      </p>
       <div className="social-embed-input-row">
-        <label htmlFor="social-embed-url">{text("YouTube 또는 X 주소", "YouTube or X URL")}</label>
+        <label htmlFor="social-embed-url">{text("주소 또는 iframe 코드", "URL or iframe snippet")}</label>
         <div>
           <input
+            aria-describedby="social-embed-help"
             id="social-embed-url"
             inputMode="url"
             onChange={(event) => setUrl(event.target.value)}
-            placeholder={text("https://youtu.be/… 또는 https://x.com/…/status/…", "https://youtu.be/… or https://x.com/…/status/…")}
-            type="url"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && preview) {
+                event.preventDefault();
+                insert();
+              }
+            }}
+            placeholder={text("YouTube·X 주소 또는 <iframe …>", "YouTube/X URL or <iframe …>")}
+            type="text"
             value={url}
           />
           <button className="button button-primary" disabled={!preview} onClick={insert} type="button">{text("본문에 넣기", "Insert into body")}</button>
@@ -1911,9 +2177,15 @@ function SocialEmbedComposer({
 
 type ToolbarCommand = "heading" | "bold" | "italic" | "strike" | "quote" | "link" | "image" | "code" | "codeblock";
 
-function MarkdownToolbar({ onCommand }: { onCommand: (command: ToolbarCommand) => void }) {
+function MarkdownToolbar({
+  disabled = false,
+  onCommand,
+}: {
+  disabled?: boolean;
+  onCommand: (command: ToolbarCommand) => void;
+}) {
   const tools: Array<{ command: ToolbarCommand; label: string; glyph: ReactNode }> = [
-    { command: "heading", label: text("제목 2", "Heading 2"), glyph: "H₂" },
+    { command: "heading", label: text("본문 소제목", "Section heading"), glyph: "H₂" },
     { command: "bold", label: text("굵게", "Bold"), glyph: <strong>B</strong> },
     { command: "italic", label: text("기울임", "Italic"), glyph: <em>I</em> },
     { command: "strike", label: text("취소선", "Strikethrough"), glyph: <s>S</s> },
@@ -1926,7 +2198,7 @@ function MarkdownToolbar({ onCommand }: { onCommand: (command: ToolbarCommand) =
   return (
     <div className="markdown-toolbar" role="toolbar" aria-label={text("Markdown 서식", "Markdown formatting")}>
       {tools.map((tool, index) => (
-        <button className={index === 4 || index === 7 ? "toolbar-separator" : ""} key={tool.command} onClick={() => onCommand(tool.command)} title={tool.label} type="button"><span aria-hidden="true">{tool.glyph}</span><span className="sr-only">{tool.label}</span></button>
+        <button className={index === 4 || index === 7 ? "toolbar-separator" : ""} disabled={disabled} key={tool.command} onClick={() => onCommand(tool.command)} title={tool.label} type="button"><span aria-hidden="true">{tool.glyph}</span><span className="sr-only">{tool.label}</span></button>
       ))}
     </div>
   );
@@ -2002,7 +2274,7 @@ function AdvancedEditorOptions({
           <p>{text("브라우저에 보관할 항목", "Items to store in browser")}</p>
           <div className="memory-checks">
             {([
-              ["core", text("기본 글(제목·주소·본문)", "Basic post (title, address, body)")],
+              ["core", text("기본 글(제목·부제·주소·본문)", "Basic post (title, subtitle, address, body)")],
               ["intent", text("별도 HTML 화면", "Separate HTML view")],
               ["embeds", text("외부 콘텐츠 연결 정보", "External content references")],
               ["ontology", text("AI 지식 연결 정보", "AI knowledge connections")],
@@ -2054,11 +2326,21 @@ function PublishPanel({
   const currentRevisionPublished = Boolean(
     revisionMatchesDraft && accepted && accepted.publishedRevisionId === accepted.currentRevisionId,
   );
+  const publishSubtitle = normalizedEditorSubtitle(draft.subtitle);
   return (
     <dialog aria-labelledby="publish-dialog-title" className="publish-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} ref={dialogRef}>
       <div className="publish-panel-heading"><div><p className="eyebrow">{text("공개 전 확인", "Before publishing")}</p><h2 id="publish-dialog-title">{text("글을 블로그에 공개할까요?", "Publish this post to the blog?")}</h2></div><button aria-label={text("출간 패널 닫기", "Close publish panel")} className="dialog-close" onClick={onClose} type="button">×</button></div>
-      <div className="publish-summary"><span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span><div><strong>{draft.title || text("제목 없는 글", "Untitled post")}</strong><code>/{draft.slug || "untitled"}</code></div></div>
-      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목과 본문을 안전한 새 버전으로 보관합니다.", "Store the title and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
+      <div className="publish-summary">
+        <span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span>
+        <div>
+          <strong>{draft.title || text("제목 없는 글", "Untitled post")}</strong>
+          {publishSubtitle
+            ? <p>{publishSubtitle}</p>
+            : <small>{text("부제 없음", "No subtitle")}</small>}
+          <code>/{draft.slug || "untitled"}</code>
+        </div>
+      </div>
+      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목·부제·본문을 안전한 새 버전으로 보관합니다.", "Store the title, subtitle, and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
       {accepted && exactRevisionReady ? <p className="revision-proof">{text("현재 내용이 저장되어 출간할 준비가 됐습니다.", "The current content is saved and ready to publish.")} <code>{accepted.currentRevisionId.slice(0, 8)}</code></p> : <p className="revision-proof warning">{accepted ? text("저장 뒤 바뀐 내용이 있습니다. 현재 내용을 한 번 더 저장해 주세요.", "Content changed after the last save. Save the current content once more.") : text("아직 서버에 저장되지 않았습니다. 먼저 현재 내용을 저장해 주세요.", "This content has not been saved to the server yet. Save it first.")}</p>}
       {status ? <p className="inline-status" role="status">{status}</p> : null}
       <div className="publish-actions"><button className="button button-ghost" disabled={saving || publishing || exactRevisionReady} onClick={onSave} type="button">{saving ? text("저장 중…", "Saving…") : exactRevisionReady ? text("현재 내용 저장됨", "Current content saved") : text("현재 내용 저장", "Save current content")}</button><button className="button button-primary" disabled={!exactRevisionReady || saving || publishing || currentRevisionPublished} onClick={onPublish} type="button">{publishing ? text("공개 중…", "Publishing…") : currentRevisionPublished ? text("이미 공개된 글", "Already published") : text("블로그에 공개", "Publish to blog")}</button></div>
@@ -2085,19 +2367,34 @@ function StudioAccessGate({
     capabilities && studioAccessFor(capabilities) === "members",
   );
   return (
-    <section className="empty-state studio-access-gate">
+    <section
+      aria-labelledby="studio-access-title"
+      className="empty-state studio-access-gate"
+    >
       <span className="empty-symbol" aria-hidden="true">✦</span>
-      <h1>{text("Studio를 열 수 없습니다", "Cannot open Studio")}</h1>
+      <h1 id="studio-access-title">
+        {accessKeyMethod
+          ? text(
+            "관리자 Access Key로 Studio 열기",
+            "Open Studio with an administrator access key",
+          )
+          : text("Studio를 열 수 없습니다", "Cannot open Studio")}
+      </h1>
       <p>{detail}</p>
       {onRetry ? <button className="button button-primary" onClick={onRetry} type="button">{text("다시 시도", "Try again")}</button> : null}
       {accessKeyMethod ? (
         <div className="studio-inline-admin-access">
           <AdminAccessKeyForm
+            autoFocus
             method={accessKeyMethod}
             onAuthenticated={(next) => {
               setSession(next);
               if (next.state === "authenticated" && !next.blog) navigate("/onboarding");
             }}
+            submitLabel={text(
+              "관리자 키로 Studio 열기",
+              "Open Studio with administrator key",
+            )}
           />
           {localAccountLogin ? <AppLink className="button button-ghost" href="/login">{text("계정 로그인", "Account login")}</AppLink> : null}
         </div>
@@ -2188,6 +2485,50 @@ function capabilityModeLabel(capabilities: Capabilities): string {
   if (access === "disabled") return text("읽기 전용", "Read only");
   if (access === "admin_only") return text("관리자 전용", "Administrator only");
   return text("계정별 블로그", "Per-account blogs");
+}
+
+function transferContainsFiles(transfer: DataTransfer): boolean {
+  return Array.from(transfer.items).some((item) => item.kind === "file")
+    || transfer.files.length > 0;
+}
+
+function transferFiles(transfer: DataTransfer): File[] {
+  const itemFiles = Array.from(transfer.items)
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  return itemFiles.length ? itemFiles : Array.from(transfer.files);
+}
+
+function imageDisplayName(file: File, position: number): string {
+  if (file.name.trim()) return file.name;
+  const extension = ({
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/avif": "avif",
+  } as Record<string, string>)[file.type.toLowerCase()] ?? "png";
+  return `pasted-image-${position}.${extension}`;
+}
+
+function imageSelectionError(reasons: readonly string[]): string {
+  if (reasons.includes("too_large")) {
+    return text(
+      "이미지는 파일당 10 MiB 이하여야 합니다.",
+      "Each image must be no larger than 10 MiB.",
+    );
+  }
+  if (reasons.includes("batch_limit")) {
+    return text(
+      "이미지는 한 번에 최대 8개까지 넣을 수 있습니다.",
+      "You can insert up to 8 images at a time.",
+    );
+  }
+  return text(
+    "PNG, JPEG, GIF, WebP 또는 AVIF 이미지 파일을 선택해 주세요. SVG와 HTML은 안전을 위해 지원하지 않습니다.",
+    "Choose a PNG, JPEG, GIF, WebP, or AVIF image. SVG and HTML are not supported for safety.",
+  );
 }
 
 function estimateReadingMinutes(markdown: string): number {
