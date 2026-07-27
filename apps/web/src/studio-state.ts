@@ -22,6 +22,11 @@ export function normalizedEditorSubtitle(subtitle: string | undefined): string |
   return normalized ? normalized : undefined;
 }
 
+/** Matches Rust `str::chars()` so Studio and the server enforce one limit. */
+export function subtitleCharacterCount(subtitle: string | undefined): number {
+  return Array.from(subtitle ?? "").length;
+}
+
 export const STUDIO_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 export const STUDIO_IMAGE_BATCH_LIMIT = 8;
 

@@ -52,6 +52,7 @@ import {
   revisionSavePayload,
   reviewAiSummaryCandidate,
   selectStudioImageBatch,
+  subtitleCharacterCount,
   uploadStudioImageQueue,
 } from "./studio-state";
 import {
@@ -1191,6 +1192,13 @@ export function StudioEditor({
       return;
     }
     const subtitle = normalizedEditorSubtitle(draft.subtitle);
+    if (subtitleCharacterCount(subtitle) > 500) {
+      setStatus(text(
+        "부제는 실제 글자 기준 500자 이하여야 합니다.",
+        "The subtitle must be 500 characters or fewer.",
+      ));
+      return;
+    }
     return normalizeSavePayload({
       title: normalizedEditorTitle(draft.title),
       ...(subtitle ? { subtitle } : {}),
@@ -1456,6 +1464,7 @@ export function StudioEditor({
     [draft, embedText, ontologyText],
   );
   const bodyCharacterCount = draft.sourceMarkdown.length;
+  const subtitleLength = subtitleCharacterCount(normalizedEditorSubtitle(draft.subtitle));
   const readingMinutes = estimateReadingMinutes(draft.sourceMarkdown);
   const revisionMatchesDraft = Boolean(accepted && acceptedFingerprint === currentFingerprint);
   const currentRevisionPublished = Boolean(
@@ -1578,13 +1587,13 @@ export function StudioEditor({
             />
             <label className="subtitle-editor-field" htmlFor="post-subtitle">
               <span>
-                {text("소제목", "Subtitle")}
+                {text("부제 · 한 줄 소개", "Subtitle · one-line introduction")}
                 <small>{text("선택", "optional")}</small>
               </span>
               <input
+                aria-invalid={subtitleLength > 500}
                 className="subtitle-editor"
                 id="post-subtitle"
-                maxLength={500}
                 onChange={(event) => update("subtitle", event.target.value)}
                 onPaste={(event) => handlePaste("subtitle", event)}
                 placeholder={text(
@@ -1595,8 +1604,8 @@ export function StudioEditor({
                 value={draft.subtitle ?? ""}
               />
               <span className="subtitle-editor-meta">
-                <span>{text("공개 글의 제목 아래에 표시됩니다.", "Shown directly below the public post title.")}</span>
-                <span>{draft.subtitle?.length ?? 0} / 500</span>
+                <span>{text("입력한 경우에만 공개 글의 제목 아래에 표시됩니다.", "Shown below the public post title only when provided.")}</span>
+                <span>{subtitleLength} / 500</span>
               </span>
             </label>
             <span className="title-rule" aria-hidden="true" />
@@ -2176,7 +2185,7 @@ function MarkdownToolbar({
   onCommand: (command: ToolbarCommand) => void;
 }) {
   const tools: Array<{ command: ToolbarCommand; label: string; glyph: ReactNode }> = [
-    { command: "heading", label: text("제목 2", "Heading 2"), glyph: "H₂" },
+    { command: "heading", label: text("본문 소제목", "Section heading"), glyph: "H₂" },
     { command: "bold", label: text("굵게", "Bold"), glyph: <strong>B</strong> },
     { command: "italic", label: text("기울임", "Italic"), glyph: <em>I</em> },
     { command: "strike", label: text("취소선", "Strikethrough"), glyph: <s>S</s> },
@@ -2265,7 +2274,7 @@ function AdvancedEditorOptions({
           <p>{text("브라우저에 보관할 항목", "Items to store in browser")}</p>
           <div className="memory-checks">
             {([
-              ["core", text("기본 글(제목·소제목·주소·본문)", "Basic post (title, subtitle, address, body)")],
+              ["core", text("기본 글(제목·부제·주소·본문)", "Basic post (title, subtitle, address, body)")],
               ["intent", text("별도 HTML 화면", "Separate HTML view")],
               ["embeds", text("외부 콘텐츠 연결 정보", "External content references")],
               ["ontology", text("AI 지식 연결 정보", "AI knowledge connections")],
@@ -2317,11 +2326,21 @@ function PublishPanel({
   const currentRevisionPublished = Boolean(
     revisionMatchesDraft && accepted && accepted.publishedRevisionId === accepted.currentRevisionId,
   );
+  const publishSubtitle = normalizedEditorSubtitle(draft.subtitle);
   return (
     <dialog aria-labelledby="publish-dialog-title" className="publish-dialog" onCancel={(event) => { event.preventDefault(); onClose(); }} ref={dialogRef}>
       <div className="publish-panel-heading"><div><p className="eyebrow">{text("공개 전 확인", "Before publishing")}</p><h2 id="publish-dialog-title">{text("글을 블로그에 공개할까요?", "Publish this post to the blog?")}</h2></div><button aria-label={text("출간 패널 닫기", "Close publish panel")} className="dialog-close" onClick={onClose} type="button">×</button></div>
-      <div className="publish-summary"><span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span><div><strong>{draft.title || text("제목 없는 글", "Untitled post")}</strong><code>/{draft.slug || "untitled"}</code></div></div>
-      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목·소제목·본문을 안전한 새 버전으로 보관합니다.", "Store the title, subtitle, and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
+      <div className="publish-summary">
+        <span className="publish-cover" aria-hidden="true">{draft.title.slice(0, 1) || "✦"}</span>
+        <div>
+          <strong>{draft.title || text("제목 없는 글", "Untitled post")}</strong>
+          {publishSubtitle
+            ? <p>{publishSubtitle}</p>
+            : <small>{text("부제 없음", "No subtitle")}</small>}
+          <code>/{draft.slug || "untitled"}</code>
+        </div>
+      </div>
+      <div className="revision-flow" aria-label={text("출간 단계", "Publishing steps")}><div className="flow-step"><span>1</span><div><strong>{text("현재 글 저장", "Save current post")}</strong><p>{text("지금 화면의 제목·부제·본문을 안전한 새 버전으로 보관합니다.", "Store the title, subtitle, and body currently on screen as a safe new revision.")}</p></div>{exactRevisionReady ? <b aria-label={text("완료", "Complete")}>✓</b> : null}</div><div className="flow-step"><span>2</span><div><strong>{text("블로그에 공개", "Publish to blog")}</strong><p>{text("저장된 버전만 독자에게 보입니다. 작성 중인 변경은 실수로 공개되지 않습니다.", "Readers see only saved revisions. Work-in-progress changes cannot be published accidentally.")}</p></div></div></div>
       {accepted && exactRevisionReady ? <p className="revision-proof">{text("현재 내용이 저장되어 출간할 준비가 됐습니다.", "The current content is saved and ready to publish.")} <code>{accepted.currentRevisionId.slice(0, 8)}</code></p> : <p className="revision-proof warning">{accepted ? text("저장 뒤 바뀐 내용이 있습니다. 현재 내용을 한 번 더 저장해 주세요.", "Content changed after the last save. Save the current content once more.") : text("아직 서버에 저장되지 않았습니다. 먼저 현재 내용을 저장해 주세요.", "This content has not been saved to the server yet. Save it first.")}</p>}
       {status ? <p className="inline-status" role="status">{status}</p> : null}
       <div className="publish-actions"><button className="button button-ghost" disabled={saving || publishing || exactRevisionReady} onClick={onSave} type="button">{saving ? text("저장 중…", "Saving…") : exactRevisionReady ? text("현재 내용 저장됨", "Current content saved") : text("현재 내용 저장", "Save current content")}</button><button className="button button-primary" disabled={!exactRevisionReady || saving || publishing || currentRevisionPublished} onClick={onPublish} type="button">{publishing ? text("공개 중…", "Publishing…") : currentRevisionPublished ? text("이미 공개된 글", "Already published") : text("블로그에 공개", "Publish to blog")}</button></div>

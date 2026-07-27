@@ -521,7 +521,6 @@ export function ArticlePage({
     ? storedAiSummary
     : undefined;
   const articleTheme = post.category?.themePreset ?? post.blog.theme.presetId;
-  const articleDeck = post.subtitle ?? post.excerpt;
   const selectView = (nextView: ViewMode) => {
     if (nextView === view && articleViewFromSearch(window.location.search) === nextView) return;
     navigate(articleHref({
@@ -558,7 +557,7 @@ export function ArticlePage({
             <AuthorshipBadge value={post.authorship} />
           </div>
           <h1>{post.title}</h1>
-          {articleDeck ? <p className="article-deck">{articleDeck}</p> : null}
+          {post.subtitle ? <p className="article-deck">{post.subtitle}</p> : null}
           <div className="article-author-row">
             <span className="avatar" aria-hidden="true">{initials(post.author.displayName)}</span>
             <div><strong>{post.author.displayName}</strong><span>{text("글쓴이", "Author")}</span></div>

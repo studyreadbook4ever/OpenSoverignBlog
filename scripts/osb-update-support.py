@@ -987,7 +987,7 @@ def command_self_test(_: argparse.Namespace) -> None:
     repository_example = Path(__file__).resolve().parent.parent / "osb.lock.example.json"
     if repository_example.is_file():
         example_lock = load_lock(repository_example)
-        assert example_lock["engine"]["version"] == "0.1.3"
+        assert example_lock["engine"]["version"] == "0.1.4"
         assert example_lock["selection"]["cache"] == "redis_managed"
     with tempfile.TemporaryDirectory(prefix="osb-update-support-test-") as raw:
         root = Path(raw)

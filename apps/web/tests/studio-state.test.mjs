@@ -22,6 +22,7 @@ import {
   revisionSavePayload,
   reviewAiSummaryCandidate,
   selectStudioImageBatch,
+  subtitleCharacterCount,
   uploadStudioImageQueue,
 } from "../src/studio-state.ts";
 
@@ -44,12 +45,17 @@ test("Studio canonicalizes optional subtitles and includes them in save identity
     payloadFingerprint(normalized),
     payloadFingerprint({ ...normalized, subtitle: "다른 소개" }),
   );
+  assert.equal(subtitleCharacterCount("🙂".repeat(500)), 500);
+  assert.equal(subtitleCharacterCount("🙂".repeat(501)), 501);
 });
 
 test("Studio create and edit surfaces expose the subtitle field and preview", async () => {
   const source = await readFile(new URL("../src/studio.tsx", import.meta.url), "utf8");
   assert.match(source, /id="post-subtitle"/);
-  assert.match(source, /maxLength=\{500\}/);
+  assert.doesNotMatch(source, /id="post-subtitle"[\s\S]{0,200}maxLength=\{500\}/);
+  assert.match(source, /subtitleCharacterCount\(normalizedEditorSubtitle\(draft\.subtitle\)\)/);
+  assert.match(source, /부제 · 한 줄 소개/);
+  assert.match(source, /본문 소제목/);
   assert.match(source, /revision\.subtitle/);
   assert.match(source, /normalizedEditorSubtitle\(draft\.subtitle\)/);
   assert.match(source, /className="article-deck"/);

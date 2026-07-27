@@ -3350,11 +3350,17 @@ async fn render_community_post_document(
     let projection_label = ui_text(state.language, "콘텐츠 보기 방식", "Content view");
     let intent_label = ui_text(state.language, "작성자 보기", "Author intent");
     let source_label = ui_text(state.language, ".md 원문", ".md source");
+    let subtitle_html = document
+        .revision
+        .subtitle
+        .as_deref()
+        .map(|subtitle| format!("<p class=\"article-deck\">{}</p>", escape_xml(subtitle)))
+        .unwrap_or_default();
     let root = format!(
         "<main class=\"route-main\" id=\"main-content\"><div class=\"osb-site-frame\"><div class=\"article-page osb-site-theme\" data-site-id=\"{}\" data-theme=\"{}\">\
          <article class=\"article-shell\"><header class=\"article-header\"><div class=\"article-kicker\">\
          <a href=\"{}\">@{}</a><span aria-hidden=\"true\">/</span>\
-         <time datetime=\"{}\">{}</time>{}</div><h1>{}</h1><p class=\"article-deck\">{}</p>\
+         <time datetime=\"{}\">{}</time>{}</div><h1>{}</h1>{subtitle_html}\
          <div class=\"article-author-row\"><div><strong>{}</strong><span>{author_label}</span></div></div>\
          <nav class=\"projection-switcher\" aria-label=\"{projection_label}\">\
          <a href=\"{}?view=intent\"{intent_current}>{intent_label}</a>\
@@ -3377,7 +3383,6 @@ async fn render_community_post_document(
         ),
         authorship_badge(&document.revision.authorship, state.language),
         escape_xml(&document.revision.title),
-        escape_xml(&description),
         escape_xml(&owner.display_name),
         escape_attribute(canonical.as_str()),
         escape_attribute(canonical.as_str()),
@@ -7434,6 +7439,7 @@ mod tests {
         assert_eq!(revise.status(), StatusCode::CREATED);
         let revised = json(revise).await;
         assert_eq!(revised["revision"]["title"], "Private draft title");
+        assert_eq!(revised["revision"]["subtitle"], serde_json::Value::Null);
         assert_eq!(revised["publishedRevisionId"], first_revision);
 
         let direct_document = router
@@ -8074,7 +8080,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn community_ssr_prefers_escaped_subtitles_and_falls_back_to_markdown_summaries() {
+    async fn community_ssr_keeps_authored_subtitles_separate_from_meta_fallbacks() {
         let mut state = test_state(None);
         state.seo_policy = Arc::new(SeoPolicy {
             public_url: Url::parse("https://blog.example/base").unwrap(),
@@ -8190,11 +8196,7 @@ mod tests {
         assert!(fallback_article.contains(
             "<meta name=\"description\" content=\"Fallback sentence for readers. More detail.\">"
         ));
-        assert!(
-            fallback_article.contains(
-                "<p class=\"article-deck\">Fallback sentence for readers. More detail.</p>"
-            )
-        );
+        assert!(!fallback_article.contains("<p class=\"article-deck\">"));
     }
 
     #[tokio::test]
